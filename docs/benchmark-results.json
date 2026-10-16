@@ -1,0 +1,39 @@
+{
+  "date": "2026-10-16",
+  "platform": "windows/amd64",
+  "cpu": "Intel Core i5-12400F",
+  "go_version": "1.27.2",
+  "mygo_version": "0.5.5",
+  "real_scan": {
+    "engine": "Directory scan",
+    "cache_condition": "warm, uncontrolled",
+    "workers": 4,
+    "elapsed_ms": 9778.48,
+    "files": 1047038,
+    "folders": 329581,
+    "index_bytes": 119160816,
+    "heap_bytes_after_gc": 120661616,
+    "errors": 124,
+    "hard_link_aliases": 120875
+  },
+  "synthetic": {
+    "million_record_index_ms": 36.3691,
+    "million_record_index_bytes": 76000000,
+    "million_file_search_ms": 6.5161,
+    "million_file_search_matches": 100000,
+    "million_file_search_filter": "ext:mp4 min:900KB",
+    "million_file_search_runs": 3,
+    "table_100k_rows_ms_per_frame": 0.5366,
+    "table_allocated_bytes_per_frame": 12168,
+    "table_measured_frames": 3,
+    "ntfs_parser_ns_per_record": 143.7,
+    "fuzz_inputs": 10758025
+  },
+  "limitations": [
+    "Single machine; timing and cache conditions vary.",
+    "Index bytes exclude UI, GPU and transient maps.",
+    "Headless frame costs exclude native presentation.",
+    "Physical NTFS MFT path requires elevated real-volume validation.",
+    "No same-machine WizTree benchmark was performed."
+  ]
+}

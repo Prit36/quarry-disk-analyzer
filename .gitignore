@@ -1,0 +1,6 @@
+.tools/
+build/
+*.test.exe
+*.prof
+coverage.out
+.DS_Store
