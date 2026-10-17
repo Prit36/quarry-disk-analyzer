@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -19,6 +17,13 @@ import (
 )
 
 type event struct {
+	drives        []platform.Drive
+	selected      index.ID
+	mapTypes      []index.FileType
+	duplicates    index.DuplicateResult
+	savedScans    []index.SnapshotInfo
+	changes       []index.Change
+	analysis      index.Analysis
 	kind          string
 	generation    uint64
 	snapshot      *index.Snapshot
@@ -30,8 +35,61 @@ type event struct {
 	selectedIndex int
 }
 type App struct {
+	mapZoom                           float64
+	mapPanX, mapPanY                  float32
+	typeFilterOpen, allTypes          bool
+	listSelection                     index.ID
+	issueList                         ui.ListState
+	historyOpen                       bool
+	mapTypes                          []index.FileType
+	mapTypeList                       ui.ListState
+	sunPaths                          []ui.Path
+	sunWidth, sunHeight               float32
+	duplicateResult                   index.DuplicateResult
+	duplicateBusy                     bool
+	duplicateCancel                   context.CancelFunc
+	duplicateGeneration               uint64
+	duplicateSource                   *index.Snapshot
+	duplicateRoot                     index.ID
+	duplicateProgress                 *index.DuplicateProgress
+	duplicateList                     ui.ListState
+	duplicateRow                      int
+	savedScans                        []index.SnapshotInfo
+	historyLoaded, historyBusy        bool
+	savedList, changesList            ui.ListState
+	savedRow                          int
+	changes                           []index.Change
+	comparisonLabel                   string
+	sectors                           []treemap.Sector
+	selectAddress                     bool
+	advancedOpen                      bool
+	filterName                        string
+	filterExtension                   string
+	filterMinimum                     string
+	filterMaximum                     string
+	filterKind                        string
+	filterAfter                       string
+	filterBefore                      string
+	hiddenColumns                     map[string]bool
+	recentLocations                   []string
+	units                             string
+	analyticsCollapsed, mapCollapsed  bool
+	analysis                          index.Analysis
+	analysisSource                    *index.Snapshot
+	analysisRoot                      index.ID
+	analysisMetric                    int
+	analysisGeneration                uint64
+	analysisCancel                    context.CancelFunc
+	analysisBusy                      bool
+	followSelection                   bool
+	typeQuery                         string
+	visibleTypes                      []index.FileType
+	topList                           ui.ListState
+	topRow                            int
 	window                            *mygo.Window
 	path, query, notice               string
+	address                           string
+	settingsOpen, issuesOpen          bool
 	busy, queryBusy, exporting, light bool
 	admin, mftBlocked                 bool
 	scanMode                          string
@@ -45,9 +103,14 @@ type App struct {
 	summary                           index.Summary
 	drives                            []platform.Drive
 	rows                              []index.Row
+	searchScope                       string
+	compact                           bool
+	mapTab, typeTab                   int
 	matches, selectedRow, tab, metric int
 	selected, focus                   index.ID
 	open                              map[index.ID]bool
+	history                           []index.ID
+	historyPos                        int
 	list                              ui.ListState
 	typeList                          ui.ListState
 	typeRow                           int
@@ -55,29 +118,49 @@ type App struct {
 	columnSplit                       float32
 	sort                              ui.SortOrder
 	queryDue                          time.Time
-	searchHandle                      ui.Handle
+	searchHandle, pathHandle          ui.Handle
 	divider                           float32
 	branches                          []treemap.Branch
 	cells                             []treemap.Cell
 	mapCancel                         context.CancelFunc
 	mapWidth, mapHeight               float32
 	mapFor                            index.ID
+	showMetadata                      bool
+	mapTotal                          uint64
+	mapBusy                           bool
+	mapHistory                        []index.ID
+	mapHistoryPos                     int
 }
 
 func New(path string) *App {
 	if path == "" {
 		path = `C:\`
 	}
-	return &App{path: path, events: make(chan event, 16), done: make(chan struct{}), drives: platform.Drives(), open: make(map[index.ID]bool), sort: ui.SortOrder{Column: "Allocated", Descending: true}, typeSort: ui.SortOrder{Column: "Allocated", Descending: true}, divider: 62, columnSplit: 68, selectedRow: -1, typeRow: -1, selected: index.None, mapFor: index.None, admin: platform.Elevated(), scanMode: "Automatic"}
+	a := &App{path: path, events: make(chan event, 16), done: make(chan struct{}), drives: platform.Drives(), open: make(map[index.ID]bool), history: []index.ID{0}, historyPos: 0, sort: ui.SortOrder{Column: "Size", Descending: true}, typeSort: ui.SortOrder{Column: "Bytes", Descending: true}, divider: defaultDivider, columnSplit: 68, typeTab: 1, mapTab: 0, searchScope: "Subtree", selectedRow: -1, typeRow: -1, selected: index.None, mapFor: index.None, admin: platform.Elevated(), scanMode: "Automatic"}
+	a.followSelection = true
+	a.mapZoom = 1
+	a.showMetadata = true
+	a.hiddenColumns = make(map[string]bool)
+	a.units = "Binary"
+	a.filterKind = "Files"
+	a.loadPreferences()
+	a.address = a.path
+	a.analysisRoot = index.None
+	a.topRow = -1
+	a.listSelection = index.None
+	a.duplicateRow = -1
+	a.savedRow = -1
+	return a
 }
 func Run(initial string) error {
 	app := New(initial)
 	mygo.Theme.SetSource(mygo.ThemeDark)
 	mygo.App.WhenReady(func() {
-		app.window = mygo.NewWindow(mygo.WindowOptions{Title: "Stratum", Width: 1400, Height: 850, MinWidth: 1000, MinHeight: 600, BackgroundColor: "#202020", Content: ui.View(app.view)})
+		app.window = mygo.NewWindow(mygo.WindowOptions{Title: "Stratum — Disk Space Analyzer", StateKey: "main", TitleBarStyle: mygo.TitleBarHidden, TitleBarHeight: 42, Width: 1672, Height: 941, UseContentSize: true, MinWidth: 1000, MinHeight: 600, BackgroundColor: windowBackground, Content: ui.View(app.view)})
 		// Win32 can consume the first ShowWindow using the launcher's SW_HIDE.
 		app.window.Show()
 		app.window.OnClosed(func() {
+			app.savePreferences()
 			close(app.done)
 			if app.cancel != nil {
 				app.cancel()
@@ -88,6 +171,12 @@ func Run(initial string) error {
 			if app.mapCancel != nil {
 				app.mapCancel()
 			}
+			if app.analysisCancel != nil {
+				app.analysisCancel()
+			}
+			if app.duplicateCancel != nil {
+				app.duplicateCancel()
+			}
 		})
 		if initial != "" {
 			app.start()
@@ -96,8 +185,13 @@ func Run(initial string) error {
 	return mygo.App.Run()
 }
 func (a *App) start() {
-	if a.busy {
+	if a.busy || a.historyBusy {
 		return
+	}
+	if a.duplicateCancel != nil {
+		a.duplicateCancel()
+		a.duplicateGeneration++
+		a.duplicateBusy = false
 	}
 	if strings.TrimSpace(a.path) == "" {
 		a.notice = "Choose a drive or enter a folder path."
@@ -115,6 +209,7 @@ func (a *App) start() {
 	a.mftBlocked = false
 	a.notice = ""
 	a.mapGeneration++
+	a.mapBusy = false
 	if a.mapCancel != nil {
 		a.mapCancel()
 	}
@@ -131,7 +226,11 @@ func (a *App) start() {
 		// Release the transient identity map, aggregation queue and scan buffers
 		// once, off the UI thread. Idle frames then retain the compact index.
 		runtime.GC()
-		a.post(event{kind: "scan", snapshot: s, summary: summary, err: err})
+		var drives []platform.Drive
+		if err == nil {
+			drives = platform.Drives()
+		}
+		a.post(event{kind: "scan", snapshot: s, summary: summary, err: err, drives: drives})
 	}()
 }
 func (a *App) drain() {
@@ -139,7 +238,58 @@ func (a *App) drain() {
 		select {
 		case e := <-a.events:
 			switch e.kind {
-			case "scan":
+			case "duplicates":
+				if e.generation == a.duplicateGeneration && e.snapshot == a.snapshot {
+					a.duplicateBusy = false
+					a.duplicateResult = e.duplicates
+					if e.err != nil {
+						a.notice = "Duplicate check: " + e.err.Error()
+					}
+				}
+			case "history":
+				a.historyBusy = false
+				a.historyLoaded = true
+				a.savedScans = e.savedScans
+				a.savedRow = -1
+				if e.err != nil {
+					a.notice = e.err.Error()
+				}
+			case "saved":
+				a.historyBusy = false
+				a.historyLoaded = false
+				if e.err != nil {
+					a.notice = "Snapshot save failed: " + e.err.Error()
+				} else {
+					a.notice = "Snapshot saved"
+				}
+			case "compare":
+				a.historyBusy = false
+				if e.snapshot == a.snapshot {
+					if e.err != nil {
+						a.notice = e.err.Error()
+					} else {
+						a.changes = e.changes
+						a.comparisonLabel = e.path
+					}
+				}
+			case "restore-error":
+				a.historyBusy = false
+				a.notice = "Snapshot restore failed: " + e.err.Error()
+			case "analysis":
+				if e.generation == a.analysisGeneration && e.snapshot == a.snapshot {
+					a.analysisBusy = false
+					if e.err != nil {
+						a.notice = e.err.Error()
+					} else {
+						a.analysis = e.analysis
+						a.filterTypes()
+					}
+				}
+			case "scan", "restore":
+				if e.kind == "restore" {
+					a.historyOpen = false
+				}
+				a.historyBusy = false
 				a.busy = false
 				a.cancel = nil
 				if e.err != nil {
@@ -156,16 +306,33 @@ func (a *App) drain() {
 				a.mapWidth = 0
 				a.selectedRow = -1
 				a.query = ""
-				a.tab = 0
 				a.open = make(map[index.ID]bool)
 				a.snapshot = e.snapshot
+				if e.kind == "scan" {
+					a.drives = e.drives
+				}
+				a.changes = nil
+				a.comparisonLabel = ""
+				if a.duplicateCancel != nil {
+					a.duplicateCancel()
+				}
+				a.duplicateGeneration++
+				a.duplicateBusy = false
+				a.duplicateSource = nil
+				a.duplicateResult = index.DuplicateResult{}
 				a.summary = e.summary
 				a.path = e.snapshot.Root
+				a.address = a.path
+				a.rememberLocation(a.path)
 				a.selected = 0
 				a.focus = 0
 				a.open[0] = true
+				a.history = []index.ID{0}
+				a.historyPos = 0
 				a.requestRows()
 				a.requestMap(0)
+				a.mapHistory = []index.ID{0}
+				a.mapHistoryPos = 0
 				if e.snapshot.Cancelled {
 					a.notice = "Scan stopped. Results show only the files visited before cancellation."
 				}
@@ -182,9 +349,16 @@ func (a *App) drain() {
 					if e.err != nil {
 						a.notice = e.err.Error()
 					} else {
+						if a.selected != a.listSelection {
+							a.list = ui.ListState{Columns: a.list.Columns}
+							a.listSelection = a.selected
+						}
 						a.rows = e.query.Rows
 						a.matches = e.query.Matches
 						a.selectedRow = e.selectedIndex
+						if e.selected != a.selected {
+							a.selectedRow = -1
+						}
 						if a.selectedRow >= 0 {
 							a.list.ScrollIntoView(a.selectedRow)
 						}
@@ -192,7 +366,15 @@ func (a *App) drain() {
 				}
 			case "map":
 				if e.generation == a.mapGeneration {
+					a.mapBusy = false
 					a.branches = e.branches
+					a.mapTotal = 0
+					for _, branch := range e.branches {
+						a.mapTotal += branch.Item.Bytes
+					}
+					a.sectors = treemap.Sunburst(e.branches, 4)
+					a.mapTypes = e.mapTypes
+					a.sunPaths = nil
 					a.mapWidth = 0
 				}
 			case "export":
@@ -200,7 +382,7 @@ func (a *App) drain() {
 				if e.err != nil {
 					a.notice = "Export failed: " + e.err.Error()
 				} else if e.path != "" {
-					a.notice = "CSV exported to " + e.path
+					a.notice = "Export complete: " + e.path
 				}
 			case "elevate":
 				if e.err != nil {
@@ -235,7 +417,11 @@ func (a *App) requestRows() {
 	if a.tab == 1 {
 		mode = "largest"
 	}
-	q := index.Query{Text: a.query, Mode: mode, Root: a.focus, Open: open, Sort: index.Sort{Column: a.sort.Column, Desc: a.sort.Descending, Allocated: a.metric == 1}}
+	root := a.focus
+	if (a.query != "" || a.tab == 1) && a.searchScope == "Scan" {
+		root = 0
+	}
+	q := index.Query{Text: a.query, Mode: mode, Root: root, Open: open, Sort: index.Sort{Column: a.sort.Column, Desc: a.sort.Descending, Allocated: a.metric == 1}}
 	s := a.snapshot
 	selected := a.selected
 	go func() {
@@ -248,7 +434,7 @@ func (a *App) requestRows() {
 			}
 		}
 		if ctx.Err() == nil {
-			a.post(event{kind: "query", generation: generation, query: result, err: err, selectedIndex: selectedIndex})
+			a.post(event{kind: "query", generation: generation, query: result, err: err, selectedIndex: selectedIndex, selected: selected})
 		}
 	}()
 }
@@ -263,6 +449,7 @@ func (a *App) requestMap(id index.ID) {
 		id = 0
 	}
 	a.mapFor = id
+	a.mapBusy = true
 	if a.mapCancel != nil {
 		a.mapCancel()
 	}
@@ -270,11 +457,12 @@ func (a *App) requestMap(id index.ID) {
 	a.mapCancel = cancel
 	a.mapGeneration++
 	generation := a.mapGeneration
-	s, allocated := a.snapshot, a.metric == 1
+	s, allocated, showMetadata := a.snapshot, a.metric == 1, a.showMetadata
 	go func() {
-		branches := treemap.Hierarchy(ctx, s, id, allocated, 4096)
+		branches := treemap.HierarchyFiltered(ctx, s, id, allocated, 4096, showMetadata)
+		analysis, err := s.Analyze(ctx, id, allocated, 0, showMetadata)
 		if ctx.Err() == nil {
-			a.post(event{kind: "map", generation: generation, branches: branches})
+			a.post(event{kind: "map", generation: generation, branches: branches, mapTypes: analysis.Types, err: err})
 		}
 	}()
 }
@@ -291,48 +479,48 @@ func (a *App) chooseFolder() {
 		a.post(e)
 	}()
 }
-func (a *App) export() {
-	if a.snapshot == nil || a.exporting {
-		return
-	}
-	a.exporting = true
-	s := a.snapshot
-	go func() {
-		path, err := mygo.Dialog.Save(mygo.SaveDialogOptions{Parent: a.window, Title: "Export scan as CSV", DefaultPath: "stratum-scan.csv", Filters: []mygo.FileFilter{{Name: "CSV", Extensions: []string{"csv"}}}})
-		if err == nil && path != "" {
-			err = exportFile(s, path)
-		}
-		a.post(event{kind: "export", path: path, err: err})
-	}()
-}
-func exportFile(s *index.Snapshot, path string) error {
-	f, err := os.CreateTemp(filepath.Dir(path), ".stratum-*.csv")
-	if err != nil {
-		return err
-	}
-	tmp := f.Name()
-	defer os.Remove(tmp)
-	err = s.Export(context.Background(), f)
-	if closeErr := f.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
-}
 func (a *App) navigate(id index.ID) {
-	if a.snapshot == nil || !a.snapshot.Nodes[id].IsDir() {
+	a.navigateTo(id, true)
+}
+func (a *App) navigateTo(id index.ID, record bool) {
+	if a.snapshot == nil || id == index.None || !a.snapshot.Nodes[id].IsDir() {
 		return
 	}
 	a.focus = id
+	a.address = a.snapshot.Path(id)
 	a.selected = id
+	a.selectedRow = -1
 	a.open[id] = true
 	a.query = ""
 	a.tab = 0
+	if record {
+		// Truncate any forward history and record the new location.
+		if a.historyPos < len(a.history)-1 {
+			a.history = a.history[:a.historyPos+1]
+		}
+		if len(a.history) == 0 || a.history[len(a.history)-1] != id {
+			a.history = append(a.history, id)
+			a.historyPos = len(a.history) - 1
+		}
+	}
 	a.requestRows()
-	a.requestMap(id)
+	a.focusMap(id)
 }
+
+func (a *App) goBack() {
+	if a.historyPos > 0 {
+		a.historyPos--
+		a.navigateTo(a.history[a.historyPos], false)
+	}
+}
+
+func (a *App) goForward() {
+	if a.historyPos < len(a.history)-1 {
+		a.historyPos++
+		a.navigateTo(a.history[a.historyPos], false)
+	}
+}
+
 func (a *App) safePath(id index.ID) string {
 	if a.snapshot == nil || id == index.None {
 		return ""
@@ -383,7 +571,7 @@ func Bytes(n uint64) string {
 	if n < 1024 {
 		return fmt.Sprintf("%d B", n)
 	}
-	units := []string{"KiB", "MiB", "GiB", "TiB", "PiB"}
+	units := []string{"KiB", "MiB", "GiB", "TiB", "PiB", "EiB"}
 	value := float64(n) / 1024
 	u := 0
 	for value >= 1024 && u < len(units)-1 {

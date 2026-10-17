@@ -1,47 +1,75 @@
-# Stratum 0.0.1 visual QA
+# Stratum — supplied-reference visual QA
 
-final result: passed
+## Target and evidence
 
-## Visual target and evidence
+- Source visual truth: `C:/Users/My_Home/.codex/attachments/90dfe854-2c4d-44cf-aebe-178eaf7cb635/image-1.png`. This supersedes the earlier WizTree baseline, retained in `docs/DESIGN-QA-BASELINE.md`.
+- Latest implementation: `build/reference-match/final/reference-desktop.png`, captured from the actual native MyGO renderer, not a web mockup or painted screenshot.
+- Source and implementation: **1672×941 pixels**, 1672×941 native content DIPs at scale **1**. No resizing, stretching or density correction is applied inside the comparison artifacts. OS-owned caption buttons are not present in the headless content capture; their actual native rendering is checked in the packaged application.
+- Matched state: dark theme; completed scan; Tree view with root expanded and selected; File types analytics; Size metric; root treemap; default pane proportions.
+- Full-view evidence: `build/reference-match/final/comparison-full.png` — source left, implementation right.
+- Focused evidence in that directory: `comparison-title.png`, `comparison-toolbar.png`, `comparison-summary.png`, `comparison-explorer.png`, `comparison-analytics.png`, `comparison-treemap.png`.
+- Alternate native-renderer views: `reference-minimum.png` (1000×600), `reference-intermediate.png` (1386×842), `reference-light.png` (1672×941).
 
-Source visual truth: `build/design-audit/wiztree-reference.png`, captured in this run from the [official WizTree screenshot](https://antibodysoftware-17031.kxcdn.com/images/wiztree_treeviewwithmap4.jpg), linked from its homepage.
+The scan fixture is explicitly **synthetic**: 275 files, 81 folders, roughly 1.26 TiB. Source file counts, timestamps, issue markers, extension ordering and tile areas are not copied into production. The supplied image's displayed percentages and rectangle areas are not mutually consistent; the application retains correct indexed proportions. Comparison conclusions concern visual chrome, type, spacing and hierarchy, not equality of disk contents.
 
-Implementation: `build/design-audit/final/completed-dark.png`. Additional states: `completed-light.png`, `minimum-dark.png`, `empty.png`, and `mft-unavailable.png` in that directory. These are fresh screenshots from the actual MyGO native renderer and a deterministic **synthetic scan fixture**, not claims about disk data or MFT throughput. The native Windows application was also launched and inspected with an actual project-folder scan; its scan strip correctly reported Folders.
+## Findings and fixes
 
-Full-view comparison: `build/design-audit/comparison-full.png` contains both the source and implementation in one comparison image. Focused table comparison: `build/design-audit/comparison-table.png`. Minimum-size and light-theme comparison: `build/design-audit/comparison-states.png`.
+No remaining P0/P1/P2 findings in the inspected views. The final comparison pass introduces no further visual fixes.
 
-Source capture: 1280 × 720 pixels at browser density 1, including black margins and WizTree's native title/menu chrome. Implementation: 1280 × 720 native content pixels at scale 1; minimum content viewport 1000 × 600. No stretch or resampling was used to construct comparisons. The source's outer window frame is excluded from spacing conclusions. Different scan contents and expansion states prevent pixel-for-pixel data comparison. The target is the tool's composition and density, with the user's requested reduction in copy and decoration, rather than a branded clone.
+| Earlier finding | Severity | Fix and post-fix evidence |
+| --- | --- | --- |
+| Main/treemap proportions and toolbar density differed substantially | P1 | 42-DIP title, 54-DIP toolbar, 62-DIP summary, 12-DIP gutters, 68% explorer split and 71.5% vertical split. Final full-view comparison shows the same six-region composition and shallow treemap. |
+| Generic controls and icon treatment drifted from the reference | P2 | Licensed Fluent controls, exact supplied brand crop, cached native shell icons, joined Scan split button, raised navigation/Stop controls, compact underline tabs and blue 12-DIP zoom thumb. Final title/toolbar/analytics/treemap comparisons inspected. |
+| Invalid font family and sparse table styling | P2 | Installed Segoe UI verified through runtime font enumeration; 13-DIP body, 12-DIP metadata, 28-DIP rows, tabular digits, restrained alternating stripes, continuous blue selection and stable 44×14 percentage bars. Final explorer comparison inspected. |
+| Hierarchical labels and zoom control did not match the target | P2 | Folder headers now show name/size/share when space permits; smaller directories retain useful metadata. Real zoom/pan and root reset are implemented and tested, not static chrome. Final treemap comparison inspected. |
+| Narrow analytics tabs and quick-stat values wrapped or clipped | P2 | Compact tabs and two-row metrics below 500-DIP pane width; reduced footer spacing at the 1000×600 minimum. Final intermediate/minimum captures inspected, with a regression test checking metric bounds and responsive row placement. |
+| Light selected tabs and rows had weak contrast | P2 | White-on-blue active tabs and dark text on pale-blue selected rows. Final light capture inspected. |
+| Size column could follow allocation mode; extension sort indicator was missing | P2 | Explicit Size comparison uses logical size independently; initial extension sort uses the visible Bytes column ID. Focused regression and final header comparison pass. |
+| Flat extension icons lost the reference's folded-document shading and category colors | P2 | Palette-only variants of the official Fluent document asset now retain the folded corner and gradients: gray data, yellow binary/resource, purple package/document, green executable, red disk/bitmap and cyan image/debug icons. The allocated-size asset is blue and the folder statistic uses the native folder image. The revised full/analytics comparisons were inspected. |
 
-## Initial audit
+## Required fidelity surfaces
 
-Fresh baseline: `build/design-audit/before/native-preview.png`.
-
-- **P1 — Analysis space displaced by dashboard decoration.** The original 210-pixel sidebar, large promotional heading, four summary cards and generous outer margins left a small data region. The reference places scan controls and analysis panes directly against the window. Fix: replace the dashboard with a 42-pixel toolbar, 30-pixel scan strip, split tables and treemap.
-- **P1 — MFT failure hidden by slower scanning.** The prior interface reported directory fallback only in Details. Fix: refuse fallback by default, keep method visible, and show an actionable MFT-unavailable state with an explicit elevation control.
-- **P1 — Map hid descendant files.** The original showed only immediate directory children. Fix: retain nested directory membership and render file rectangles within folder groups.
-- **P2 — File results were incomplete under other sorts.** A size-based 10,000-file cap preceded column sorting. Fix: sort all matching files and retain virtualization.
+- **Fonts and typography:** Segoe UI is installed and selected explicitly, rather than relying on an unavailable `Segoe UI Variable` family. The supplied raster does not expose authoritative font metadata; Segoe UI is the closest grounded Windows UI match. Names and values use 13 DIPs, muted metadata 12, summary values 14, title 16 with semibold brand. Normal/compact rows are 28/24 DIPs. Single-line text, tabular numerals, baseline alignment and truncation were inspected in focused comparisons. Native rasterization remains slightly different from the supplied raster.
+- **Spacing and layout rhythm:** Regions, gutters, borders, six-DIP panel radii, table/control heights and default splits match the reference composition. The explorer toolbar and table are separate surfaces. Analytics retains ten initial types, Show more and bottom statistics. The treemap header remains shallow with a right-aligned metric selector. At smaller widths, horizontal table scrolling is intentional; persistent controls remain available and statistics do not disappear behind the panel edge.
+- **Colors and tokens:** Source surfaces were sampled: title approximately `#141E2B`, raised summary `#19232F`, panels `#121A23`. These drive explicit native tokens with blue action/selection and muted blue-gray metadata. Dark/light selected states were checked. Subtle tile/selection shading replaces the earlier flat mismatch; no decorative dashboard cards or unrelated accent palette was introduced.
+- **Image quality and icons:** Exact reference brand crop is rendered at 20×20 DIPs. Navigation/action SVGs are original pinned Microsoft Fluent assets, with provenance in `internal/desktop/assets/ASSETS.md`; no handcrafted replacement SVGs or emoji controls are used. The total-file icon retains Fluent geometry with the reference's purple palette. Folder/drive assets come from the installed Windows Shell, cached once. These are sharp at the inspected scales but naturally differ slightly by OS version. Treemap shapes remain real data visualization, not an image asset.
+- **Copy and content:** Persistent labels closely follow the source. `% of Scope` deliberately replaces `% of Disk` because analytics can follow a selected directory. Allocation/logical ratio is distinct from actual volume utilization and can exceed 100%; a regression verifies 200% is not clamped. Dynamic counts, dates, errors and map proportions are truthful. History, advanced filters and settings remain reachable without adding unrelated persistent toolbar chrome.
+- **Interaction and accessibility:** Native editable address, labeled buttons, menus, tables, range slider and Windows caption controls are retained. Tests cover keyboard address/search editing, navigation/selection, zoom/pan/root reset, sorting, preference migration and million-entry virtualization. Native capture confirms real folder scans and caption controls. This is not a screen-reader, high-contrast or physical multi-monitor DPI certification.
 
 ## Comparison history
 
-1. The first compact implementation removed the dashboard and restored the two tables plus map. Its minimum-size capture showed extension Files data clipping at the right edge. The table rows were also wider vertically than the reference's utility density.
-2. Fixed the default split to leave 32% for the extension table; reduced row content from 21 to 16 pixels; retained 12-pixel Segoe UI names and 11-pixel numeric text. Added sortable extension headers and corrected allocated-size ranking.
-3. Fixed map/table selection synchronization, visible selection strokes, and contrast-aware labels on colored tiles. Captured all states again and inspected the combined full-view, table-region and minimum/light comparisons.
-4. The final captures show no clipped persistent controls or extension counts at the minimum viewport. Data, headers, scrollable rows, splitters and map stay within their panes. Remaining differences from WizTree are intentional: original branding, flatter map rendering, fewer summary fields, different fixture data and a more compact toolbar.
+1. `build/reference-match/iteration1`: replaced the older design with measured reference geometry. Full/focused comparisons exposed treemap-header and narrow-window differences.
+2. `build/reference-match/iteration2`: introduced native shell icons, directory metadata headers and actual viewport zoom/pan. Comparison exposed thin percentage bars, missing row treatment and compact tab wrapping.
+3. `build/reference-match/iteration3`: restored table stripes/selection and 14-DIP bars, single-line view tabs. Subsequent minimum/light inspection exposed compact-footer clipping and selected-text contrast.
+4. `build/reference-match/final`: fixed contrast, tightened minimum footer, replaced the default white slider thumb, joined Scan controls and restored the allocation ratio. A real packaged-window check at intermediate width exposed a four-column quick-stat threshold that was still too low.
+5. Final recapture: raised the compact threshold, added the intermediate capture and bounds regression, aligned tree indentation/percentage bars, retained three-line smaller folder headers and fixed visible sort defaults. Reopened the source and combined full/focused outputs, then inspected minimum/intermediate/light states. No actionable P0/P1/P2 findings remain.
+6. Completion audit identified flat, incorrectly colored extension icons. Preserved the original Fluent geometry in six palette variants, adjusted allocated-size blue and reused the native folder asset. Regenerated all captures and combined comparisons, inspected the revised analytics/full views and alternate sizes, and rebuilt into a separate release directory without controlling or replacing the user's running window. The post-fix comparison identifies no further P0/P1/P2 changes.
 
-## Required surfaces
+## Verification and deliverables
 
-- **Typography:** Segoe UI, restrained hierarchy, consistent UI sizing, single-line names and numeric alignment. Long paths and names truncate within their panes; map labels are clipped to tiles and tooltips expose full names. Source outer chrome and its screenshot compression are not treated as font mismatches.
-- **Layout:** No marketing area, sidebar or card grid. Primary controls remain visible at 1000 × 600; both splitters resize; all table columns fit the default minimum-size layout. Narrow user-dragged table panes retain native horizontal scrolling.
-- **Color:** Neutral dark surfaces, thin gray borders, blue selection/action color. File-type colors are limited to extension swatches and data rectangles. Light mode preserves equivalent hierarchy. Map label color is chosen by relative luminance. No decorative gradients or shadows were introduced.
-- **Assets:** Original Microsoft Fluent System Icons are embedded as licensed SVG files. No source logo was cloned. The treemap is a data visualization drawn with the native painter, not a raster decoration.
-- **Copy:** No slogan, onboarding paragraph, reassurance banner or “native engine” branding. Persistent text is control labels, data, paths, scan method and status. The extra MFT message appears only when it is needed to explain a blocked scan.
+- `scripts/build.ps1`: full `go test ./...`, `go vet ./...`, `go tool mygo vet`, executable and NSIS packaging pass.
+- Three repeated runs pass for quick-stat bounds, zoom/pan, million-entry virtualization, preference migration and keyboard editing; explicit Size/allocation sort regression also passes three runs.
+- Latest versioned artifacts: `build/releases/0.0.2/windows-amd64/Stratum.exe` and `build/releases/0.0.2/windows-amd64/Stratum Setup 0.0.2 amd64.exe`. The prior `build/windows-amd64` and `build/reference-release` packages are retained. The version bump changes package metadata, not the verified interface.
+- Final non-interactive gate: `go test ./...`, `go vet ./...`, `go tool mygo vet`, `go tool mygo build -o build/reference-release` and `git diff --check` pass. The original packaging script passed before the final palette-only refinement.
+- Release 0.0.2 repeats tests and both static checks, then successfully packages with `go tool mygo build -o build/releases/0.0.2`.
+- A final packaged-window recheck was interrupted by physical Escape; it is not represented as a successful new live check. Current visual verification uses the actual native renderer, current controls are interaction-tested, and earlier packaged-window evidence confirms native caption/file-scan integration. No further desktop automation is required or performed for this visual handoff.
+- Evidence generation: `STRATUM_REFERENCE_DIR=build/reference-match/final` with `TestReferenceMatchEvidence`; paired comparisons generated by `scripts/reference-qa.py`.
+- Earlier six-phase implementation evidence remains in `docs/UPGRADE.md`. The separate 26-section audit in `docs/SECTION-VERIFICATION.md` is not claimed complete by this visual pass.
 
-## Interaction checks
+## Follow-up polish and constraints
 
-Automated native tests pass for expansion, File view, filtering, Details, theme switching, minimum sizing, MFT-unavailable visibility and map/table synchronization. Separate scanner tests cover all-file results, sorting, hard links, sparse data, junctions, cancellation and fragmented MFT continuation mapping. The live Windows window exposed its controls through UI Automation.
+- P3: OS shell icon appearance and native caption metrics can differ from the supplied raster. Their native behavior is intentionally retained.
+- P3: The source has stronger glossy icon/tile shading and some inconsistent rasterized glyphs. Original Fluent/Shell assets are used instead of tracing those artifacts; a pixel-perfect claim is not made.
+- Correct scan contents, area proportions, responsive truncation and truthful issue states necessarily differ from the reference fixture.
+- Physical-volume elevated NTFS throughput, signing, screen-reader narration, Windows high contrast and physical monitor transitions remain separate release-environment checks, not prerequisites for the visual-reference match.
 
-The OS-owned UAC approval was not automated. Physical-volume MFT throughput, secure-desktop behavior, screen-reader narration, Windows contrast themes and additional DPI configurations remain release-validation gaps. The visual pass does not certify accessibility compliance or assert that MFT performance matches WizTree.
+## Implementation checklist
 
-## Follow-up polish
+- [x] Match measured region geometry, hierarchy and table density.
+- [x] Verify installed font, typography, semantic colors and icon provenance.
+- [x] Compare combined full view and focused regions after fixes.
+- [x] Inspect minimum, intermediate and light states.
+- [x] Preserve functional controls and accurate indexed data.
+- [x] Run regressions, static checks and Windows packaging.
 
-P3: add user-persisted table and splitter positions. This does not block the current analysis workflow.
+final result: passed

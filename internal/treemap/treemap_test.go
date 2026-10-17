@@ -81,3 +81,31 @@ func TestEmptyMap(t *testing.T) {
 		t.Fatal("zero bounds")
 	}
 }
+
+func TestMetadataVisibilityPreservesSnapshot(t *testing.T) {
+	snapshot := index.New(`C:\`)
+	snapshot.Engine = "NTFS MFT"
+	snapshot.Add(0, "$BadClus", 1000, 0, 0, 0)
+	snapshot.Add(0, "ordinary.bin", 100, 100, 0, 0)
+	snapshot.Finalize()
+	branches := HierarchyFiltered(context.Background(), snapshot, 0, false, 100, false)
+	if len(branches) != 1 || branches[0].Item.Bytes != 100 || snapshot.Nodes[0].Size != 1100 {
+		t.Fatal("metadata scope or global totals wrong")
+	}
+}
+
+func TestSunburstAnglesAndDepth(t *testing.T) {
+	branches := []Branch{{Item: Item{ID: 1, Bytes: 600}, Children: []Branch{{Item: Item{ID: 3, Bytes: 200}}, {Item: Item{ID: 4, Bytes: 400}}}}, {Item: Item{ID: 2, Bytes: 400}}}
+	sectors := Sunburst(branches, 2)
+	if len(sectors) != 4 {
+		t.Fatal("missing sectors", sectors)
+	}
+	for _, sector := range sectors {
+		if sector.Depth > 1 || sector.Start < 0 || sector.End > 2*math.Pi+.00001 || sector.End <= sector.Start {
+			t.Fatal("invalid sector", sector)
+		}
+		if math.Abs((sector.End-sector.Start)/(2*math.Pi)-float64(sector.Bytes)/1000) > .000001 {
+			t.Fatal("incorrect angular proportion", sector)
+		}
+	}
+}

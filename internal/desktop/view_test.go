@@ -17,6 +17,7 @@ import (
 
 func testApp(t *testing.T) *App {
 	t.Helper()
+	t.Setenv("STRATUM_CONFIG_DIR", t.TempDir())
 	a := New(`C:\Storage`)
 	a.drives = nil
 	s := index.New(`C:\Storage`)
@@ -37,6 +38,7 @@ func testApp(t *testing.T) *App {
 	a.focus = 0
 	a.open[0] = true
 	a.mapFor = 0
+	a.mapTotal = s.Nodes[0].Size
 	a.branches = treemap.Hierarchy(context.Background(), s, 0, false, 4096)
 	r, _ := s.QueryRows(context.Background(), index.Query{Open: a.open, Sort: index.Sort{Desc: true}})
 	a.rows = r.Rows
@@ -48,12 +50,16 @@ func testApp(t *testing.T) *App {
 		if a.mapCancel != nil {
 			a.mapCancel()
 		}
+		if a.analysisCancel != nil {
+			a.analysisCancel()
+		}
 		close(a.done)
 	})
 	return a
 }
 
 func TestMFTBlockedStateAndMapSelection(t *testing.T) {
+	t.Setenv("STRATUM_CONFIG_DIR", t.TempDir())
 	a := New(`C:\`)
 	a.drives = nil
 	a.admin = false
@@ -95,7 +101,7 @@ func TestFailedRescanPreservesResults(t *testing.T) {
 func settle(t *testing.T, a *App, tt *ui.Tester) {
 	t.Helper()
 	timeout := time.After(5 * time.Second)
-	for a.queryBusy {
+	for a.queryBusy || a.analysisBusy || a.mapBusy || a.historyBusy || a.duplicateBusy {
 		select {
 		case e := <-a.events:
 			a.events <- e
@@ -164,11 +170,15 @@ func TestNativeNavigationSearchAndResize(t *testing.T) {
 	}
 }
 func TestEmptyAndTheme(t *testing.T) {
+	t.Setenv("STRATUM_CONFIG_DIR", t.TempDir())
 	a := New("")
 	a.drives = nil
 	tt := ui.NewTester(a.view, 1200, 800)
 	if !tt.HasText("Select a drive or folder.") {
 		t.Fatal("empty state missing")
+	}
+	if err := tt.Click("Settings"); err != nil {
+		t.Fatal(err)
 	}
 	if err := tt.Click("Toggle theme"); err != nil {
 		t.Fatal(err)
@@ -197,6 +207,7 @@ func TestNativeRender(t *testing.T) {
 }
 
 func TestDesignEvidence(t *testing.T) {
+	t.Setenv("STRATUM_CONFIG_DIR", t.TempDir())
 	dir := os.Getenv("STRATUM_DESIGN_DIR")
 	if dir == "" {
 		t.Skip("design capture is opt-in")
@@ -226,6 +237,7 @@ func TestDesignEvidence(t *testing.T) {
 	a.open[0] = true
 	a.open[1] = true
 	a.metric = 1
+	a.mapTotal = s.Nodes[0].Allocated
 	a.branches = treemap.Hierarchy(context.Background(), s, 0, true, 4096)
 	r, _ := s.QueryRows(context.Background(), index.Query{Open: a.open, Sort: index.Sort{Column: "Allocated", Desc: true}})
 	a.rows = r.Rows
@@ -233,6 +245,9 @@ func TestDesignEvidence(t *testing.T) {
 	save := func(name string, tt *ui.Tester) {
 		t.Helper()
 		tt.Frame()
+		if a.analysisBusy {
+			settle(t, a, tt)
+		}
 		f, err := os.Create(filepath.Join(dir, name+".png"))
 		if err != nil {
 			t.Fatal(err)
@@ -244,6 +259,26 @@ func TestDesignEvidence(t *testing.T) {
 	}
 	tt := ui.NewTester(a.view, 1280, 720)
 	save("completed-dark", tt)
+	a.mapTab = 1
+	save("sunburst", tt)
+	a.mapTab = 2
+	save("file-types-chart", tt)
+	a.mapTab = 3
+	save("history-empty", tt)
+	a.mapTab = 0
+	a.typeTab = 0
+	save("overview", tt)
+	a.typeTab = 2
+	save("top-files", tt)
+	a.typeTab = 3
+	save("duplicates-ready", tt)
+	a.typeTab = 1
+	a.settingsOpen = true
+	save("settings", tt)
+	a.settingsOpen = false
+	a.advancedOpen = true
+	save("advanced-filters", tt)
+	a.advancedOpen = false
 	tt.SetSize(1000, 600)
 	save("minimum-dark", tt)
 	a.light = true
@@ -258,6 +293,7 @@ func TestDesignEvidence(t *testing.T) {
 	save("mft-unavailable", ui.NewTester(empty.view, 1280, 720))
 }
 func BenchmarkVirtualizedTable100k(b *testing.B) {
+	b.Setenv("STRATUM_CONFIG_DIR", b.TempDir())
 	a := New(`C:\bench`)
 	a.drives = nil
 	s := index.New(a.path)

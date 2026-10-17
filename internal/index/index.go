@@ -174,6 +174,25 @@ type Sort struct {
 func (s *Snapshot) Sort(ids []ID, by Sort) {
 	slices.SortFunc(ids, func(a, b ID) int { return s.Compare(a, b, by) })
 }
+
+func (s *Snapshot) SortContext(ctx context.Context, ids []ID, by Sort) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	comparisons := 0
+	canceled := false
+	slices.SortFunc(ids, func(first, second ID) int {
+		comparisons++
+		if comparisons&4095 == 0 && ctx.Err() != nil {
+			canceled = true
+		}
+		if canceled {
+			return 0
+		}
+		return s.Compare(first, second, by)
+	})
+	return ctx.Err()
+}
 func (s *Snapshot) Compare(a, b ID, by Sort) int {
 	x, y := s.Nodes[a], s.Nodes[b]
 	var v int
@@ -184,8 +203,28 @@ func (s *Snapshot) Compare(a, b ID, by Sort) int {
 		v = cmp.Compare(x.Modified, y.Modified)
 	case "Files":
 		v = cmp.Compare(x.Files, y.Files)
+	case "Folders":
+		v = cmp.Compare(x.Dirs, y.Dirs)
+	case "% of Parent":
+		share := func(node Node) float64 {
+			parent := node.Parent
+			if parent == None {
+				return 1
+			}
+			value, total := node.Size, s.Nodes[parent].Size
+			if by.Allocated {
+				value, total = node.Allocated, s.Nodes[parent].Allocated
+			}
+			if total == 0 {
+				return 0
+			}
+			return float64(value) / float64(total)
+		}
+		v = cmp.Compare(share(x), share(y))
 	case "Allocated":
 		v = cmp.Compare(x.Allocated, y.Allocated)
+	case "Size":
+		v = cmp.Compare(x.Size, y.Size)
 	default:
 		if by.Allocated {
 			v = cmp.Compare(x.Allocated, y.Allocated)
@@ -227,16 +266,39 @@ func (s *Snapshot) Bytes() uint64 {
 	return uint64(cap(s.Nodes))*uint64(unsafe.Sizeof(Node{})) + uint64(cap(s.Names))
 }
 func (s *Snapshot) Export(ctx context.Context, w io.Writer) error {
+	return s.ExportScope(ctx, w, 0)
+}
+
+func (s *Snapshot) ExportScope(ctx context.Context, w io.Writer, root ID) error {
+	return s.exportRecords(w, func(visit func(ID) error) error { return s.Visit(ctx, root, visit) })
+}
+
+func (s *Snapshot) ExportRows(ctx context.Context, w io.Writer, rows []Row) error {
+	return s.exportRecords(w, func(visit func(ID) error) error {
+		for position, row := range rows {
+			if position&1023 == 0 {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+			}
+			if row.ID == None || int(row.ID) >= len(s.Nodes) {
+				return fmt.Errorf("invalid export record")
+			}
+			if err := visit(row.ID); err != nil {
+				return err
+			}
+		}
+		return ctx.Err()
+	})
+}
+
+func (s *Snapshot) exportRecords(w io.Writer, visit func(func(ID) error) error) error {
 	c := csv.NewWriter(w)
 	if err := c.Write([]string{"Path", "Type", "Size", "Allocated", "Files", "Folders", "Modified", "Shared", "Incomplete"}); err != nil {
 		return err
 	}
-	for i, n := range s.Nodes {
-		if i%1024 == 0 {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-		}
+	err := visit(func(id ID) error {
+		n := s.Nodes[id]
 		kind := "file"
 		if n.IsDir() {
 			kind = "folder"
@@ -245,9 +307,10 @@ func (s *Snapshot) Export(ctx context.Context, w io.Writer) error {
 		if n.Modified != 0 {
 			modified = time.Unix(n.Modified, 0).UTC().Format(time.RFC3339)
 		}
-		if err := c.Write([]string{s.Path(ID(i)), kind, strconv.FormatUint(n.Size, 10), strconv.FormatUint(n.Allocated, 10), strconv.FormatUint(uint64(n.Files), 10), strconv.FormatUint(uint64(n.Dirs), 10), modified, strconv.FormatBool(n.Flags&Shared != 0), strconv.FormatBool(n.Flags&Incomplete != 0)}); err != nil {
-			return err
-		}
+		return c.Write([]string{s.Path(id), kind, strconv.FormatUint(n.Size, 10), strconv.FormatUint(n.Allocated, 10), strconv.FormatUint(uint64(n.Files), 10), strconv.FormatUint(uint64(n.Dirs), 10), modified, strconv.FormatBool(n.Flags&Shared != 0), strconv.FormatBool(n.Flags&Incomplete != 0)})
+	})
+	if err != nil {
+		return err
 	}
 	c.Flush()
 	return c.Error()

@@ -1,5 +1,21 @@
 # Research, plan and implementation
 
+## Six-phase October 2026 upgrade
+
+The current implementation and verification record is [UPGRADE.md](UPGRADE.md). The sections below also retain historical baseline decisions.
+
+Desktop composition is split into semantic design tokens, core chrome/summary/dialogs, virtualized exploration, contextual analytics, visualization, interactions/preferences, advanced workflows and exports. The immutable scanner/index contract remains intact.
+
+`Snapshot.Visit` walks a subtree with constant auxiliary memory. Queries honor their root in both file and tree modes. Size/type/date filters and sorting run in cancelable workers. Contextual analytics uses bounded heaps for top 100 files and top 10 immediate directories; frames do not rescan or sort the index. Snapshot and generation identities reject stale analytics, visualization and duplicate results.
+
+Treemap branches and four-level sunburst sectors share metric, scope and deterministic folder colors. Geometry/path caches are invalidated on bounds or input changes. Tiny items remain accounted for in Other aggregates, which lead to the complete indexed file view. Metadata visibility affects only visualization scope. Volume capacity comes independently from Windows; logical and allocated file totals never act as utilization denominators.
+
+Version-1 historical indexes use a gzip stream with a fixed binary header, bounded JSON metadata, explicit little-endian records and the UTF-8 name arena. Reads check limits, gzip integrity, name bounds, root/parent/child relationships and cycles before publishing a snapshot. Writes use a temporary file, flush and rename. Manual retention keeps at most five saves / 256 MiB; each uncompressed index is limited to 128 MiB. Comparisons require matching roots and compute unsigned-safe changes for their immediate children.
+
+Duplicate checking is explicit and independent of ordinary scanning: size candidates, complete SHA-256 hashes, before/after file metadata checks, hard-link identity exclusion and cancellation between read buffers. It reports verified groups and skipped records, with no destructive operations or reclaimable-space claims.
+
+CSV/JSON/report exports stream from a captured immutable snapshot and explicit scope. PNG exports rebuild the bounded treemap at export resolution. UI preferences persist atomically on close or Settings Done; column positions and splitter movements do not trigger per-motion disk writes. MyGO's native window StateKey restores normal/maximized bounds only when they remain on an available monitor.
+
 ## 0.0.1 baseline
 
 The Product Design audit and visual QA replace the original dashboard with a compact native utility. See `design-qa.md` for captured evidence and the iteration history. The interface uses Microsoft Fluent System Icons, Segoe UI, neutral surfaces, resizable tables and a nested map; marketing copy and summary cards are removed.

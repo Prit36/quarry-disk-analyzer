@@ -4,10 +4,12 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"math"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type FileType struct {
@@ -82,16 +84,23 @@ func (s *Snapshot) QueryRows(ctx context.Context, q Query) (QueryResult, error) 
 			return QueryResult{}, err
 		}
 		rows := make([]Row, 0, min(len(s.Nodes), 16384))
-		for i, n := range s.Nodes {
-			if i%4096 == 0 {
-				if err := ctx.Err(); err != nil {
-					return QueryResult{}, err
+		err = s.Visit(ctx, q.Root, func(id ID) error {
+			n := s.Nodes[id]
+			if filter.foldersOnly {
+				if !n.IsDir() {
+					return nil
 				}
+			} else if n.IsDir() {
+				return nil
 			}
-			if n.IsDir() || !filter.matches(s.NameView(ID(i)), n.Size) {
-				continue
+			if !filter.matches(s.NameView(id), n.Size) || ((filter.hasAfter || filter.hasBefore) && n.Modified == 0) || (filter.hasAfter && n.Modified < filter.after) || (filter.hasBefore && n.Modified >= filter.before) {
+				return nil
 			}
-			rows = append(rows, Row{ID: ID(i)})
+			rows = append(rows, Row{ID: id})
+			return nil
+		})
+		if err != nil {
+			return QueryResult{}, err
 		}
 		if err := ctx.Err(); err != nil {
 			return QueryResult{}, err
@@ -115,14 +124,19 @@ func (s *Snapshot) QueryRows(ctx context.Context, q Query) (QueryResult, error) 
 	}
 	rows := []Row{{q.Root, 0}}
 	stack := []Row{}
-	push := func(id ID, depth uint32) {
+	push := func(id ID, depth uint32) error {
 		children := s.Children(id)
-		s.Sort(children, q.Sort)
+		if err := s.SortContext(ctx, children, q.Sort); err != nil {
+			return err
+		}
 		for i := len(children) - 1; i >= 0; i-- {
 			stack = append(stack, Row{children[i], depth})
 		}
+		return nil
 	}
-	push(q.Root, 1)
+	if err := push(q.Root, 1); err != nil {
+		return QueryResult{}, err
+	}
 	for len(stack) > 0 {
 		if len(rows)%4096 == 0 {
 			if err := ctx.Err(); err != nil {
@@ -133,22 +147,45 @@ func (s *Snapshot) QueryRows(ctx context.Context, q Query) (QueryResult, error) 
 		stack = stack[:len(stack)-1]
 		rows = append(rows, r)
 		if q.Open[r.ID] && r.Depth < 256 {
-			push(r.ID, r.Depth+1)
+			if err := push(r.ID, r.Depth+1); err != nil {
+				return QueryResult{}, err
+			}
 		}
 	}
 	return QueryResult{rows, len(rows)}, nil
 }
 
 type filter struct {
-	words       []string
-	extension   string
-	minimum     uint64
-	noExtension bool
+	hasAfter, hasBefore bool
+	after, before       int64
+	words               []string
+	extension           string
+	minimum             uint64
+	maximum             uint64
+	hasMaximum          bool
+	noExtension         bool
+	filesOnly           bool
+	foldersOnly         bool
 }
 
 func parseFilter(text string) (filter, error) {
 	f := filter{}
 	for _, word := range strings.Fields(strings.ToLower(text)) {
+		if strings.HasPrefix(word, "after:") || strings.HasPrefix(word, "before:") {
+			parts := strings.SplitN(word, ":", 2)
+			date, err := time.ParseInLocation("2006-01-02", parts[1], time.Local)
+			if err != nil {
+				return f, fmt.Errorf("invalid date; use after:YYYY-MM-DD or before:YYYY-MM-DD")
+			}
+			if parts[0] == "after" {
+				f.after = date.Unix()
+				f.hasAfter = true
+			} else {
+				f.before = date.AddDate(0, 0, 1).Unix()
+				f.hasBefore = true
+			}
+			continue
+		}
 		if strings.HasPrefix(word, "ext:") {
 			if word == "ext:none" {
 				f.noExtension = true
@@ -165,12 +202,41 @@ func parseFilter(text string) (filter, error) {
 			f.minimum = size
 			continue
 		}
+		if strings.HasPrefix(word, "max:") {
+			size, err := parseSize(strings.TrimPrefix(word, "max:"))
+			if err != nil {
+				return f, err
+			}
+			f.maximum = size
+			f.hasMaximum = true
+			continue
+		}
+		if word == "file:" || word == "files" || word == "type:file" {
+			f.filesOnly = true
+			continue
+		}
+		if word == "folder:" || word == "folders" || word == "type:folder" {
+			f.foldersOnly = true
+			continue
+		}
 		f.words = append(f.words, word)
+	}
+	if f.hasMaximum && f.minimum > f.maximum {
+		return f, fmt.Errorf("minimum size exceeds maximum size")
+	}
+	if f.filesOnly && f.foldersOnly {
+		return f, fmt.Errorf("choose either files or folders")
+	}
+	if f.hasBefore && f.hasAfter && f.after >= f.before {
+		return f, fmt.Errorf("modified date range is reversed")
 	}
 	return f, nil
 }
 func (f filter) matches(name string, size uint64) bool {
 	if size < f.minimum {
+		return false
+	}
+	if f.hasMaximum && size > f.maximum {
 		return false
 	}
 	if f.extension != "" && !strings.EqualFold(filepath.Ext(name), f.extension) {
@@ -225,8 +291,8 @@ func parseSize(s string) (uint64, error) {
 		}
 	}
 	v, err := strconv.ParseFloat(s, 64)
-	if err != nil || v < 0 || v*mult >= float64(^uint64(0)) {
-		return 0, fmt.Errorf("invalid minimum size; try min:100MB")
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) || v < 0 || v*mult >= float64(^uint64(0)) {
+		return 0, fmt.Errorf("invalid size; try min:100MB or max:1GiB")
 	}
 	return uint64(v * mult), nil
 }

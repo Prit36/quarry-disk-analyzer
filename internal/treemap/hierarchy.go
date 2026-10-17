@@ -17,14 +17,28 @@ type Cell struct {
 	Group bool
 }
 
+func LabelHeight(bounds Rect) float32 {
+	if bounds.W >= 80 && bounds.H >= 115 {
+		return 68
+	}
+	if bounds.W >= 65 && bounds.H >= 90 {
+		return 48
+	}
+	return 20
+}
+
 func Hierarchy(ctx context.Context, s *index.Snapshot, root index.ID, allocated bool, budget int) []Branch {
+	return HierarchyFiltered(ctx, s, root, allocated, budget, true)
+}
+
+func HierarchyFiltered(ctx context.Context, s *index.Snapshot, root index.ID, allocated bool, budget int, showMetadata bool) []Branch {
 	left := max(2, budget)
 	var build func(index.ID, int) []Branch
 	build = func(dir index.ID, depth int) []Branch {
 		if ctx.Err() != nil || left < 2 {
 			return nil
 		}
-		items := Items(s, dir, allocated, min(left, 96))
+		items := items(ctx, s, dir, allocated, min(left, 96), showMetadata)
 		left -= len(items)
 		branches := make([]Branch, len(items))
 		for i, item := range items {
@@ -52,7 +66,8 @@ func NestedLayout(branches []Branch, bounds Rect) []Cell {
 			group := len(nodes[i].Children) > 0 && r.W > 55 && r.H > 42
 			cells = append(cells, Cell{Tile: tile, Depth: depth, Group: group})
 			if group {
-				layout(nodes[i].Children, Rect{X: r.X + 2, Y: r.Y + 17, W: max(0, r.W-4), H: max(0, r.H-19)}, depth+1)
+				header := LabelHeight(r)
+				layout(nodes[i].Children, Rect{X: r.X + 1, Y: r.Y + header, W: max(0, r.W-2), H: max(0, r.H-header-1)}, depth+1)
 			}
 		}
 	}

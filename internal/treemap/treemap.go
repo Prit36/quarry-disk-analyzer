@@ -4,7 +4,9 @@ package treemap
 import (
 	"cmp"
 	"container/heap"
+	"context"
 	"slices"
+	"strings"
 
 	"stratum/internal/index"
 )
@@ -25,12 +27,24 @@ type Item struct {
 // Items scans a directory once and retains at most limit entries. The remainder
 // becomes an honest aggregate tile, rather than disappearing from the map.
 func Items(s *index.Snapshot, dir index.ID, allocated bool, limit int) []Item {
+	return items(context.Background(), s, dir, allocated, limit, true)
+}
+
+func items(ctx context.Context, s *index.Snapshot, dir index.ID, allocated bool, limit int, showMetadata bool) []Item {
 	if limit < 2 {
 		limit = 2
 	}
 	h := &itemHeap{}
 	var other uint64
+	visited := 0
 	for id := s.Nodes[dir].FirstChild; id != index.None; id = s.Nodes[id].NextSibling {
+		visited++
+		if visited&4095 == 0 && ctx.Err() != nil {
+			return nil
+		}
+		if !showMetadata && dir == 0 && strings.Contains(s.Engine, "MFT") && strings.HasPrefix(s.NameView(id), "$") {
+			continue
+		}
 		n := s.Nodes[id]
 		value := n.Size
 		if allocated {
