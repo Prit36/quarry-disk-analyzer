@@ -19,24 +19,40 @@ type DuplicateResult struct {
 	Issues           []Issue
 	Checked, Skipped uint64
 }
-type DuplicateProgress struct{ Files, Bytes atomic.Uint64 }
+type DuplicateProgress struct{ Files, Bytes, TotalBytes atomic.Uint64 }
 type hashedFile struct {
 	id   ID
 	info os.FileInfo
 }
 
 func (s *Snapshot) FindDuplicates(ctx context.Context, root ID, progress *DuplicateProgress) (DuplicateResult, error) {
+	return s.FindDuplicatesOver(ctx, root, 1, progress)
+}
+
+// FindDuplicatesOver verifies duplicates among files of at least minSize
+// bytes: same-size candidates are confirmed by a full SHA-256 of the content.
+func (s *Snapshot) FindDuplicatesOver(ctx context.Context, root ID, minSize uint64, progress *DuplicateProgress) (DuplicateResult, error) {
 	result := DuplicateResult{}
+	minSize = max(minSize, 1)
 	candidates := make(map[uint64][]ID)
 	err := s.Visit(ctx, root, func(id ID) error {
 		node := s.Nodes[id]
-		if !node.IsDir() && node.Size > 0 && node.Flags&(Reparse|Shared|Unplaced|Incomplete) == 0 {
+		if !node.IsDir() && node.Size >= minSize && node.Flags&(Reparse|Shared|Unplaced|Incomplete) == 0 {
 			candidates[node.Size] = append(candidates[node.Size], id)
 		}
 		return nil
 	})
 	if err != nil {
 		return result, err
+	}
+	if progress != nil {
+		var total uint64
+		for size, ids := range candidates {
+			if len(ids) > 1 {
+				total += size * uint64(len(ids))
+			}
+		}
+		progress.TotalBytes.Store(total)
 	}
 	buffer := make([]byte, 64<<10)
 	for _, ids := range candidates {

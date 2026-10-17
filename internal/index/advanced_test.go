@@ -44,7 +44,7 @@ func TestSnapshotRoundTripCorruptionAndRetention(t *testing.T) {
 	snapshot.Finalize()
 	for number := range 7 {
 		snapshot.Started = time.Unix(int64(number+1), 0)
-		path := filepath.Join(directory, "scan-"+time.Unix(int64(number+1), 0).Format("150405")+".stratum")
+		path := filepath.Join(directory, "scan-"+time.Unix(int64(number+1), 0).Format("150405")+".quarry")
 		if err := snapshot.Save(context.Background(), path); err != nil {
 			t.Fatal(err)
 		}
@@ -76,10 +76,10 @@ func TestSnapshotRoundTripCorruptionAndRetention(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := snapshot.Save(ctx, filepath.Join(directory, "scan-canceled.stratum")); err != context.Canceled {
+	if err := snapshot.Save(ctx, filepath.Join(directory, "scan-canceled.quarry")); err != context.Canceled {
 		t.Fatal("save cancellation ignored", err)
 	}
-	if _, err := os.Stat(filepath.Join(directory, "scan-canceled.stratum")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(directory, "scan-canceled.quarry")); !os.IsNotExist(err) {
 		t.Fatal("canceled save published")
 	}
 	broken := New("root")

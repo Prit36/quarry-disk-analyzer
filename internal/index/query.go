@@ -4,12 +4,9 @@ import (
 	"cmp"
 	"context"
 	"fmt"
-	"math"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
-	"time"
 )
 
 type FileType struct {
@@ -75,50 +72,29 @@ type QueryResult struct {
 	Matches int
 }
 
-// QueryRows runs off the UI thread. All matching files remain available to the
-// virtualized table; sorting must apply to the entire result, not a top-k subset.
+// QueryRows runs off the UI thread. All matching entries remain available to
+// the virtualized table; sorting applies to the entire result, not a top-k subset.
+// Mode "search" matches files and folders, "largest" (and a text query in tree
+// mode) files only, unless the query names a type.
 func (s *Snapshot) QueryRows(ctx context.Context, q Query) (QueryResult, error) {
-	if q.Mode == "largest" || strings.TrimSpace(q.Text) != "" {
-		filter, err := parseFilter(q.Text)
+	if q.Mode == "largest" || q.Mode == "search" || strings.TrimSpace(q.Text) != "" {
+		f, err := ParseFilter(q.Text)
 		if err != nil {
 			return QueryResult{}, err
 		}
-		rows := make([]Row, 0, min(len(s.Nodes), 16384))
-		err = s.Visit(ctx, q.Root, func(id ID) error {
-			n := s.Nodes[id]
-			if filter.foldersOnly {
-				if !n.IsDir() {
-					return nil
-				}
-			} else if n.IsDir() {
-				return nil
-			}
-			if !filter.matches(s.NameView(id), n.Size) || ((filter.hasAfter || filter.hasBefore) && n.Modified == 0) || (filter.hasAfter && n.Modified < filter.after) || (filter.hasBefore && n.Modified >= filter.before) {
-				return nil
-			}
-			rows = append(rows, Row{ID: id})
-			return nil
-		})
+		if f.Kind == KindAny && q.Mode != "search" {
+			f.Kind = KindFiles
+		}
+		ids, err := s.Search(ctx, q.Root, &f)
 		if err != nil {
 			return QueryResult{}, err
 		}
-		if err := ctx.Err(); err != nil {
+		if err := s.SortContext(ctx, ids, q.Sort); err != nil {
 			return QueryResult{}, err
 		}
-		comparisons := 0
-		cancelled := false
-		slices.SortFunc(rows, func(a, b Row) int {
-			comparisons++
-			if comparisons&4095 == 0 && ctx.Err() != nil {
-				cancelled = true
-			}
-			if cancelled {
-				return 0
-			}
-			return s.Compare(a.ID, b.ID, q.Sort)
-		})
-		if err := ctx.Err(); err != nil {
-			return QueryResult{}, err
+		rows := make([]Row, len(ids))
+		for i, id := range ids {
+			rows[i] = Row{ID: id}
 		}
 		return QueryResult{rows, len(rows)}, nil
 	}
@@ -155,103 +131,56 @@ func (s *Snapshot) QueryRows(ctx context.Context, q Query) (QueryResult, error) 
 	return QueryResult{rows, len(rows)}, nil
 }
 
-type filter struct {
-	hasAfter, hasBefore bool
-	after, before       int64
-	words               []string
-	extension           string
-	minimum             uint64
-	maximum             uint64
-	hasMaximum          bool
-	noExtension         bool
-	filesOnly           bool
-	foldersOnly         bool
+// Search returns every entry below root (excluding root) that matches f, in
+// index order. It reads only the immutable snapshot.
+func (s *Snapshot) Search(ctx context.Context, root ID, f *Filter) ([]ID, error) {
+	if root == None || int(root) >= len(s.Nodes) {
+		return nil, fmt.Errorf("invalid search scope")
+	}
+	ids := make([]ID, 0, 1024)
+	var ancestorOK []bool
+	if f.AncestorTerms() {
+		ancestorOK = make([]bool, len(s.Nodes))
+		ok := false
+		for p := s.Nodes[root].Parent; p != None; p = s.Nodes[p].Parent {
+			if f.MatchPathComponent(s.NameView(p)) {
+				ok = true
+				break
+			}
+		}
+		if ok || f.MatchPathComponent(s.displayName(root)) {
+			ancestorOK[root] = true
+		}
+	}
+	err := s.Visit(ctx, root, func(id ID) error {
+		if id == root {
+			return nil
+		}
+		n := s.Nodes[id]
+		name := s.NameView(id)
+		inherited := false
+		if ancestorOK != nil {
+			inherited = ancestorOK[n.Parent]
+			if n.IsDir() {
+				ancestorOK[id] = inherited || f.MatchPathComponent(name)
+			}
+		}
+		if f.MatchNode(name, n, func() string { return s.Path(id) }, inherited) {
+			ids = append(ids, id)
+		}
+		return nil
+	})
+	return ids, err
 }
 
-func parseFilter(text string) (filter, error) {
-	f := filter{}
-	for _, word := range strings.Fields(strings.ToLower(text)) {
-		if strings.HasPrefix(word, "after:") || strings.HasPrefix(word, "before:") {
-			parts := strings.SplitN(word, ":", 2)
-			date, err := time.ParseInLocation("2006-01-02", parts[1], time.Local)
-			if err != nil {
-				return f, fmt.Errorf("invalid date; use after:YYYY-MM-DD or before:YYYY-MM-DD")
-			}
-			if parts[0] == "after" {
-				f.after = date.Unix()
-				f.hasAfter = true
-			} else {
-				f.before = date.AddDate(0, 0, 1).Unix()
-				f.hasBefore = true
-			}
-			continue
-		}
-		if strings.HasPrefix(word, "ext:") {
-			if word == "ext:none" {
-				f.noExtension = true
-				continue
-			}
-			f.extension = "." + strings.TrimPrefix(strings.TrimPrefix(word, "ext:"), ".")
-			continue
-		}
-		if strings.HasPrefix(word, "min:") {
-			size, err := parseSize(strings.TrimPrefix(word, "min:"))
-			if err != nil {
-				return f, err
-			}
-			f.minimum = size
-			continue
-		}
-		if strings.HasPrefix(word, "max:") {
-			size, err := parseSize(strings.TrimPrefix(word, "max:"))
-			if err != nil {
-				return f, err
-			}
-			f.maximum = size
-			f.hasMaximum = true
-			continue
-		}
-		if word == "file:" || word == "files" || word == "type:file" {
-			f.filesOnly = true
-			continue
-		}
-		if word == "folder:" || word == "folders" || word == "type:folder" {
-			f.foldersOnly = true
-			continue
-		}
-		f.words = append(f.words, word)
+// displayName is the name shown for an entry; the scan root shows its path.
+func (s *Snapshot) displayName(id ID) string {
+	if id == 0 {
+		return s.Root
 	}
-	if f.hasMaximum && f.minimum > f.maximum {
-		return f, fmt.Errorf("minimum size exceeds maximum size")
-	}
-	if f.filesOnly && f.foldersOnly {
-		return f, fmt.Errorf("choose either files or folders")
-	}
-	if f.hasBefore && f.hasAfter && f.after >= f.before {
-		return f, fmt.Errorf("modified date range is reversed")
-	}
-	return f, nil
+	return s.NameView(id)
 }
-func (f filter) matches(name string, size uint64) bool {
-	if size < f.minimum {
-		return false
-	}
-	if f.hasMaximum && size > f.maximum {
-		return false
-	}
-	if f.extension != "" && !strings.EqualFold(filepath.Ext(name), f.extension) {
-		return false
-	}
-	if f.noExtension && filepath.Ext(name) != "" {
-		return false
-	}
-	for _, word := range f.words {
-		if !containsFold(name, word) {
-			return false
-		}
-	}
-	return true
-}
+
 func containsFold(s, lower string) bool {
 	// ASCII names avoid allocating a lowercase copy per file. Unicode retains
 	// correct case-insensitive matching through the standard library fallback.
@@ -277,22 +206,4 @@ func containsFold(s, lower string) bool {
 		}
 	}
 	return false
-}
-func parseSize(s string) (uint64, error) {
-	mult := float64(1)
-	for _, u := range []struct {
-		suffix string
-		scale  float64
-	}{{"tib", 1 << 40}, {"gib", 1 << 30}, {"mib", 1 << 20}, {"kib", 1 << 10}, {"tb", 1e12}, {"gb", 1e9}, {"mb", 1e6}, {"kb", 1e3}, {"b", 1}} {
-		if strings.HasSuffix(s, u.suffix) {
-			s = strings.TrimSuffix(s, u.suffix)
-			mult = u.scale
-			break
-		}
-	}
-	v, err := strconv.ParseFloat(s, 64)
-	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) || v < 0 || v*mult >= float64(^uint64(0)) {
-		return 0, fmt.Errorf("invalid size; try min:100MB or max:1GiB")
-	}
-	return uint64(v * mult), nil
 }

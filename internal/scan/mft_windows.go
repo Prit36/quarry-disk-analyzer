@@ -14,8 +14,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
-	"stratum/internal/index"
-	"stratum/internal/ntfs"
+	"quarry/internal/index"
+	"quarry/internal/ntfs"
 )
 
 const refMask uint64 = 0x0000ffffffffffff

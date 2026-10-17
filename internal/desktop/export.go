@@ -1,134 +1,228 @@
 package desktop
 
 import (
+	"bufio"
 	"context"
-	"fmt"
-	"image"
-	"image/color"
-	"image/draw"
-	"image/png"
+	"encoding/csv"
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/egoist/mygo"
-	"golang.org/x/image/font"
-	"golang.org/x/image/font/basicfont"
-	"golang.org/x/image/math/fixed"
-	"stratum/internal/index"
-	"stratum/internal/treemap"
+	"quarry/internal/index"
+	"quarry/internal/platform"
 )
 
-func (a *App) export() { a.exportAs("csv", a.focus) }
-
-func (a *App) exportRows(rows []index.Row, label string) {
-	if a.snapshot == nil || a.exporting {
-		return
-	}
-	a.exporting = true
-	snapshot, window := a.snapshot, a.window
+// saveAs asks for a destination, then writes off the UI thread through a
+// temporary file, so a failed export never leaves a truncated file behind.
+func (a *App) saveAs(title, name, ext, kind string, write func(io.Writer) error) {
 	go func() {
-		path, err := mygo.Dialog.Save(mygo.SaveDialogOptions{Parent: window, Title: label, DefaultPath: "stratum-results.csv", Filters: []mygo.FileFilter{{Name: "CSV", Extensions: []string{"csv"}}}})
-		if err == nil && path != "" {
-			err = atomicExport(path, func(writer io.Writer) error { return snapshot.ExportRows(context.Background(), writer, rows) })
+		path, err := mygo.Dialog.Save(mygo.SaveDialogOptions{Parent: a.win, Title: title, DefaultPath: name, Filters: []mygo.FileFilter{{Name: kind, Extensions: []string{ext}}}})
+		if err != nil || path == "" {
+			return
 		}
-		a.post(event{kind: "export", path: path, err: err})
+		if filepath.Ext(path) == "" {
+			path += "." + ext
+		}
+		a.post(func() { a.notify("Exporting to %s…", filepath.Base(path)) })
+		err = atomicWrite(path, write)
+		a.post(func() {
+			if err != nil {
+				a.fail("Export failed: %v", err)
+				return
+			}
+			a.notify("Saved %s.", path)
+		})
 	}()
 }
 
-func (a *App) exportAs(format string, root index.ID) {
-	if a.snapshot == nil || a.exporting {
-		return
-	}
-	a.exporting = true
-	snapshot, copyApp := a.snapshot, *a
-	go func() {
-		path, err := mygo.Dialog.Save(mygo.SaveDialogOptions{Parent: copyApp.window, Title: "Export " + format + " · " + snapshot.Path(root), DefaultPath: "stratum-export." + format, Filters: []mygo.FileFilter{{Name: format, Extensions: []string{format}}}})
-		if err == nil && path != "" {
-			err = atomicExport(path, func(writer io.Writer) error {
-				switch format {
-				case "json":
-					return snapshot.ExportJSON(context.Background(), writer, root)
-				case "txt":
-					return snapshot.ExportReport(context.Background(), writer, root)
-				case "png":
-					return copyApp.exportTreemapPNG(writer)
-				default:
-					return snapshot.ExportScope(context.Background(), writer, root)
-				}
-			})
-		}
-		a.post(event{kind: "export", path: path, err: err})
-	}()
-}
-
-func atomicExport(path string, write func(io.Writer) error) error {
-	file, err := os.CreateTemp(filepath.Dir(path), ".stratum-export-*")
+func atomicWrite(path string, write func(io.Writer) error) error {
+	f, err := os.CreateTemp(filepath.Dir(path), ".quarry-export-*")
 	if err != nil {
 		return err
 	}
-	defer os.Remove(file.Name())
-	err = write(file)
+	defer os.Remove(f.Name())
+	w := bufio.NewWriterSize(f, 1<<20)
+	err = write(w)
 	if err == nil {
-		err = file.Sync()
+		err = w.Flush()
 	}
-	if closeErr := file.Close(); err == nil {
-		err = closeErr
+	if cerr := f.Close(); err == nil {
+		err = cerr
 	}
 	if err != nil {
 		return err
 	}
-	return os.Rename(file.Name(), path)
+	_ = os.Remove(path)
+	return os.Rename(f.Name(), path)
 }
 
-func exportFile(snapshot *index.Snapshot, path string) error {
-	return atomicExport(path, func(writer io.Writer) error { return snapshot.Export(context.Background(), writer) })
-}
-func exportJSON(snapshot *index.Snapshot, path string) error {
-	return atomicExport(path, func(writer io.Writer) error { return snapshot.ExportJSON(context.Background(), writer, 0) })
+func (a *App) baseName() string {
+	if a.snap == nil {
+		return "quarry"
+	}
+	name := strings.Trim(filepath.Base(a.snap.Root), `\:`)
+	if name == "" || name == "." {
+		name = strings.Trim(a.snap.Root, `\:`)
+	}
+	return name + " " + time.Now().Format("2006-01-02")
 }
 
-func (a *App) exportTreemapPNG(writer io.Writer) error {
-	if a.snapshot == nil {
-		return fmt.Errorf("no scan available")
+// exportView exports what the active view shows: the File View results, the
+// extension summary, or the current location's subtree.
+func (a *App) exportView() {
+	s := a.snap
+	switch a.prefs.View {
+	case viewFiles:
+		rows := make([]index.Row, len(a.files.ids))
+		for i, id := range a.files.ids {
+			rows[i] = index.Row{ID: id}
+		}
+		a.saveAs("Export File View", a.baseName()+" files.csv", "csv", "CSV", func(w io.Writer) error {
+			return s.ExportRows(context.Background(), w, rows)
+		})
+	case viewExtensions:
+		a.exportExtensions()
+	default:
+		loc := a.location
+		a.saveAs("Export "+a.name(loc), a.baseName()+" tree.csv", "csv", "CSV", func(w io.Writer) error {
+			return s.ExportScope(context.Background(), w, loc)
+		})
 	}
-	bitmap := image.NewRGBA(image.Rect(0, 0, 1600, 900))
-	draw.Draw(bitmap, bitmap.Bounds(), image.NewUniform(color.RGBA{R: 13, G: 21, B: 32, A: 255}), image.Point{}, draw.Src)
-	cells := treemap.NestedLayout(a.branches, treemap.Rect{X: 8, Y: 36, W: 1584, H: 856})
-	text := &font.Drawer{Dst: bitmap, Face: basicfont.Face7x13, Src: image.White}
-	text.Dot = fixed.P(8, 20)
-	text.DrawString(a.snapshot.Path(a.mapRoot()) + " | " + a.metricName() + " | " + a.formatBytes(a.mapTotal))
-	for _, cell := range cells {
-		tile := cell.Tile
-		bounds := tile.Rect
-		rectangle := image.Rectangle{Min: image.Pt(int(bounds.X), int(bounds.Y)), Max: image.Pt(int(bounds.X+bounds.W)-1, int(bounds.Y+bounds.H)-1)}
-		if rectangle.Empty() {
-			continue
-		}
-		shade := a.tileShade(tile.ID, tile.Other)
-		draw.Draw(bitmap, rectangle, image.NewUniform(color.RGBA{R: shade.R, G: shade.G, B: shade.B, A: 255}), image.Point{}, draw.Src)
-		border := tileBorder(shade)
-		outline := image.NewUniform(color.RGBA{R: border.R, G: border.G, B: border.B, A: 255})
-		if rectangle.Dx() >= 3 && rectangle.Dy() >= 3 {
-			for _, edge := range []image.Rectangle{image.Rect(rectangle.Min.X, rectangle.Min.Y, rectangle.Max.X, rectangle.Min.Y+1), image.Rect(rectangle.Min.X, rectangle.Max.Y-1, rectangle.Max.X, rectangle.Max.Y), image.Rect(rectangle.Min.X, rectangle.Min.Y, rectangle.Min.X+1, rectangle.Max.Y), image.Rect(rectangle.Max.X-1, rectangle.Min.Y, rectangle.Max.X, rectangle.Max.Y)} {
-				draw.Draw(bitmap, edge, outline, image.Point{}, draw.Src)
-			}
-		}
-		foreground := mapTextColor(shade)
-		text.Src = image.NewUniform(color.RGBA{R: foreground.R, G: foreground.G, B: foreground.B, A: 255})
-		if rectangle.Dx() > 80 && rectangle.Dy() > 16 {
-			text.Dst = bitmap.SubImage(rectangle.Inset(2)).(*image.RGBA)
-			name := a.snapshot.NameView(tile.ID)
-			if tile.Other {
-				name = "Other items"
-			}
-			text.Dot = fixed.P(rectangle.Min.X+4, rectangle.Min.Y+13)
-			text.DrawString(truncate(name, (rectangle.Dx()-8)/7))
-			if !cell.Group && rectangle.Dy() > 34 {
-				text.Dot = fixed.P(rectangle.Min.X+4, rectangle.Min.Y+29)
-				text.DrawString(a.formatBytes(tile.Bytes))
-			}
-		}
+}
+
+func (a *App) exportSelection() {
+	s, ids := a.snap, a.selected()
+	rows := make([]index.Row, len(ids))
+	for i, id := range ids {
+		rows[i] = index.Row{ID: id}
 	}
-	return png.Encode(writer, bitmap)
+	a.saveAs("Export Selection", a.baseName()+" selection.csv", "csv", "CSV", func(w io.Writer) error {
+		return s.ExportRows(context.Background(), w, rows)
+	})
+}
+
+// exportScan writes every entry of the unfiltered scan.
+func (a *App) exportScan() {
+	s := a.base
+	a.saveAs("Export Entire Scan", a.baseName()+".csv", "csv", "CSV", func(w io.Writer) error {
+		return s.Export(context.Background(), w)
+	})
+}
+
+func (a *App) exportJSON() {
+	s := a.base
+	a.saveAs("Export Scan as JSON", a.baseName()+".json", "json", "JSON", func(w io.Writer) error {
+		return s.ExportJSON(context.Background(), w, 0)
+	})
+}
+
+func (a *App) exportExtensions() {
+	s, scope, allocated, scopeName := a.snap, a.files.scope, a.metricAllocated(), a.files.scopeName()
+	a.saveAs("Export Extension Summary", a.baseName()+" extensions.csv", "csv", "CSV", func(w io.Writer) error {
+		analysis, err := s.Analyze(context.Background(), scope, allocated, 0)
+		if err != nil {
+			return err
+		}
+		var total uint64
+		for _, t := range analysis.Types {
+			if allocated {
+				total += t.Allocated
+			} else {
+				total += t.Bytes
+			}
+		}
+		c := csv.NewWriter(w)
+		_ = c.Write([]string{"Extension", "Type", "Files", "Size", "Allocated", "Percent", "Scope"})
+		for _, t := range analysis.Types {
+			v := t.Bytes
+			if allocated {
+				v = t.Allocated
+			}
+			_ = c.Write([]string{t.Extension, platform.FileTypeName(t.Extension), strconv.FormatUint(t.Count, 10), strconv.FormatUint(t.Bytes, 10), strconv.FormatUint(t.Allocated, 10), strconv.FormatFloat(percent(v, total), 'f', 3, 64), scopeName})
+		}
+		c.Flush()
+		return c.Error()
+	})
+}
+
+// Snapshots.
+
+var scanFilters = []mygo.FileFilter{{Name: "Quarry scan", Extensions: []string{"quarry", "stratum"}}}
+
+func (a *App) saveSnapshotDialog() {
+	s := a.base
+	go func() {
+		path, err := mygo.Dialog.Save(mygo.SaveDialogOptions{Parent: a.win, Title: "Save Scan", DefaultPath: a.baseName() + ".quarry", Filters: []mygo.FileFilter{{Name: "Quarry scan", Extensions: []string{"quarry"}}}})
+		if err != nil || path == "" {
+			return
+		}
+		if filepath.Ext(path) == "" {
+			path += ".quarry"
+		}
+		err = s.Save(context.Background(), path)
+		a.post(func() {
+			if err != nil {
+				a.fail("Could not save the scan: %v", err)
+				return
+			}
+			a.notify("Saved scan to %s.", path)
+		})
+	}()
+}
+
+func (a *App) openSnapshotDialog() {
+	go func() {
+		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: a.win, Title: "Open Saved Scan", Filters: scanFilters})
+		if err != nil || len(paths) == 0 {
+			return
+		}
+		a.post(func() { a.openSnapshot(paths[0]) })
+	}()
+}
+
+func (a *App) openSnapshot(path string) {
+	a.notify("Opening %s…", filepath.Base(path))
+	go func() {
+		s, err := index.LoadSnapshot(context.Background(), path)
+		a.post(func() {
+			if err != nil {
+				a.fail("Could not open %s: %v", filepath.Base(path), err)
+				return
+			}
+			if a.scanning {
+				a.stopScan()
+				a.scanGen++
+				a.scanning = false
+			}
+			a.setBase(s, path)
+			a.notify("Opened saved scan of %s from %s. This is historical data.", s.Root, s.Started.Format("2006-01-02 15:04"))
+		})
+	}()
+}
+
+// compareDialog compares the current scan with a saved scan of the same root.
+func (a *App) compareDialog() {
+	current := a.base
+	go func() {
+		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: a.win, Title: "Compare with Saved Scan", Filters: scanFilters})
+		if err != nil || len(paths) == 0 {
+			return
+		}
+		previous, err := index.LoadSnapshot(context.Background(), paths[0])
+		var changes []index.Change
+		if err == nil {
+			changes, err = index.CompareSnapshots(previous, current, a.metricAllocated())
+		}
+		a.post(func() {
+			if err != nil {
+				a.fail("Compare: %v", err)
+				return
+			}
+			a.dlg.compare = compareDialog{open: true, changes: changes, label: filepath.Base(paths[0]) + " (" + previous.Started.Format("2006-01-02 15:04") + ")"}
+		})
+	}()
 }

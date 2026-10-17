@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.0 — 2026-10-17
+
+A rebuild of the interface as a compact Windows utility, released under a new name: **Stratum is now Quarry**, with a new logo. The scan engines and index format are unchanged.
+
+- **Name.** Executable `Quarry.exe`, settings in `%APPDATA%\Quarry`, saved scans use `.quarry` (`.stratum` files from earlier releases still open), `QUARRY_CONFIG_DIR` overrides the settings folder.
+- **Layout.** Native title bar and menu bar (File, Edit, View, Tools, Options, Help), one compact toolbar, a one-line information bar, Tree/Files/Extensions views over a resizable treemap, and a status bar. Removed: the summary strip, quick-stat cards, the permanent analytics panel, sunburst and file-type charts, the treemap zoom slider and repeated totals.
+- **Commands.** One command table drives menus, context menus and shortcuts, with availability based on the selection, the scan and the item type.
+- **Tree View.** Incremental expand/collapse with stable selection, Explorer keyboard behaviour, multi-select, expand/collapse one level, collapse all, bounded expand subtree, % of parent and % of scan, sortable, resizable, movable and hideable columns with auto-size and reset.
+- **Explorer integration.** Open, Show in Explorer with selection, Properties (Alt+Enter), Cut/Copy as shell items, Copy Full Path (Ctrl+Alt+C), copy rows as text, drag to Explorer, drop folders to scan, Recycle Bin and permanent delete, F2 rename, optional "Analyze with Stratum" Explorer verb.
+- **Search.** Wildcards, phrases, negation, `ext:`, `size:`, `modified:`, `path:`, `type:` and `regex:`; Advanced Search dialog; visible scope; search history; the File View lists every match.
+- **Filters.** Analysis filters recompute totals for what remains; scan exclusions skip folders or name patterns and are reported.
+- **Treemap.** Synchronized with the tree, drill-in and back, color by extension (aggregated blocks by dominant type), top-level folder or monochrome, logical or allocated size, hide, maximize.
+- **Duplicates.** Candidate (name and size) or verified (SHA-256) groups in a Tools dialog, with a minimum size and scope.
+- **Snapshots and CLI.** Save and open scans, compare with a saved scan; `-scan`, `-csv`, `-save`, `-json`, `-exclude`, `-quiet` with documented exit codes.
+- **Behaviour change.** Automatic scanning now falls back to directory enumeration when direct MFT reading is not permitted, and says so in the status bar, instead of refusing to scan.
+
+Verified on Windows 11 with the built executable: scans of a fixture tree and of C:\ (1.07 million files, 9 s warm, about 390 MB with a 200,000-row expansion), tree keyboard and mouse navigation, search and filters, extension drill-down, treemap selection and drill-down, back/forward, rename, Recycle Bin delete with index update, Properties, shell clipboard, duplicate verification, snapshot save/open, CLI exit codes, Explorer verb install/removal, theme and layout persistence. Not verified here: elevated MFT scans, removable drives, drag and drop with Explorer, screen readers and high-contrast themes.
+
 ## 0.0.3 — 2026-10-17
 
 - Nested treemap tiles are now clearly distinct: depth-aware borders and stable within-family shading replace gaps that blended into the parent fill, in both the live map and the PNG export.
@@ -17,7 +35,7 @@
 - Fix indexed navigation/selection synchronization, explicit logical Size sorting, allocation ratios and narrow-window/light-theme presentation.
 - Expand regression coverage for million-entry virtualization, keyboard navigation, zoom/pan, preferences, snapshots, duplicates, exports and responsive layout.
 
-Builds remain unsigned. Physical-volume elevated NTFS performance, physical monitor transitions, screen-reader narration and Windows high-contrast validation remain release-environment checks; see `docs/UPGRADE.md` and `design-qa.md`.
+Builds remain unsigned. Physical-volume elevated NTFS performance, physical monitor transitions, screen-reader narration and Windows high-contrast validation remain release-environment checks.
 
 ## 0.0.1
 

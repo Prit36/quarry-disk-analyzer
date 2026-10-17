@@ -1,4 +1,4 @@
-module stratum
+module quarry
 
 go 1.27.1
 

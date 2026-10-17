@@ -1,4 +1,4 @@
-Stratum contains or links the following third-party components:
+Quarry contains or links the following third-party components:
 
 MyGO v0.5.5 — https://github.com/egoist/mygo
 purego v0.11.1 — https://github.com/ebitengine/purego
@@ -10,4 +10,4 @@ Fluent UI System Icons — https://github.com/microsoft/fluentui-system-icons
 
 Their license texts accompany this notice. Go's runtime license is included
 as go-LICENSE.txt. These notices describe dependency licenses, not a license
-grant for the original Stratum application source.
+grant for the original Quarry application source.

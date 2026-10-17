@@ -1,6 +1,6 @@
 {
-  "name": "Stratum",
-  "identifier": "dev.stratum.disk",
-  "version": "0.0.3",
+  "name": "Quarry",
+  "identifier": "dev.quarry.disk",
+  "version": "0.1.0",
   "out": "build"
 }

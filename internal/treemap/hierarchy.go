@@ -2,7 +2,7 @@ package treemap
 
 import (
 	"context"
-	"stratum/internal/index"
+	"quarry/internal/index"
 )
 
 // Branches keeps nested directory membership without a widget per file.
@@ -16,16 +16,6 @@ type Cell struct {
 	Depth  int
 	Group  bool
 	Header float32
-}
-
-func LabelHeight(bounds Rect) float32 {
-	if bounds.W >= 80 && bounds.H >= 115 {
-		return 68
-	}
-	if bounds.W >= 65 && bounds.H >= 90 {
-		return 48
-	}
-	return 20
 }
 
 func Hierarchy(ctx context.Context, s *index.Snapshot, root index.ID, allocated bool, budget int) []Branch {
@@ -85,16 +75,11 @@ func NestedLayout(branches []Branch, bounds Rect) []Cell {
 			group := len(nodes[i].Children) > 0 && r.W >= 18 && r.H >= 18
 			header := float32(0)
 			if group {
-				header = min(LabelHeight(r), r.H*.45)
-				if depth > 0 {
+				// A compact strip carries the folder's name; small groups
+				// keep only a thin frame so their contents stay visible.
+				header = 2
+				if r.W > 60 && r.H >= 40 {
 					header = 16
-					if r.W >= 80 && r.H >= 50 {
-						header = 24
-					}
-					header = min(header, r.H*.35)
-				}
-				if header < 16 || r.W <= 60 {
-					header = 2
 				}
 			}
 			cells = append(cells, Cell{Tile: tile, Depth: depth, Group: group, Header: header})

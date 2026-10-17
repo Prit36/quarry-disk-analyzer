@@ -6,7 +6,7 @@ import (
 	"context"
 	"io"
 	"os"
-	"stratum/internal/index"
+	"quarry/internal/index"
 	"syscall"
 )
 

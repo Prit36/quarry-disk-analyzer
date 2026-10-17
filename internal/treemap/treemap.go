@@ -8,7 +8,7 @@ import (
 	"slices"
 	"strings"
 
-	"stratum/internal/index"
+	"quarry/internal/index"
 )
 
 type Rect struct{ X, Y, W, H float32 }

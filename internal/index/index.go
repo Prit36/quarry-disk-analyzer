@@ -51,6 +51,10 @@ type Snapshot struct {
 	Started                                     time.Time
 	Elapsed                                     time.Duration
 	Cancelled                                   bool
+	// Exclusions lists the scan exclusion patterns in effect; Excluded counts
+	// the entries they kept out. Totals are then incomplete by design.
+	Exclusions []string
+	Excluded   uint64
 }
 
 func New(root string) *Snapshot {

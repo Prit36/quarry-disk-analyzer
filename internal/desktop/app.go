@@ -1,589 +1,507 @@
+// Package desktop is Quarry's native Windows interface: a menu bar, a
+// compact toolbar, one data workspace (Tree, Files, Extensions), an optional
+// treemap below it and a status bar. Commands are defined once (commands.go)
+// and drive the menus, context menus and keyboard shortcuts alike.
 package desktop
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
-	"stratum/internal/index"
-	"stratum/internal/platform"
-	"stratum/internal/scan"
-	"stratum/internal/treemap"
+	"quarry/internal/index"
+	"quarry/internal/platform"
+	"quarry/internal/scan"
 )
 
-type event struct {
-	drives        []platform.Drive
-	selected      index.ID
-	mapTypes      []index.FileType
-	duplicates    index.DuplicateResult
-	savedScans    []index.SnapshotInfo
-	changes       []index.Change
-	analysis      index.Analysis
-	kind          string
-	generation    uint64
-	snapshot      *index.Snapshot
-	summary       index.Summary
-	query         index.QueryResult
-	branches      []treemap.Branch
-	path          string
-	err           error
-	selectedIndex int
-}
+const (
+	viewTree = iota
+	viewFiles
+	viewExtensions
+)
+
 type App struct {
-	mapZoom                           float64
-	mapPanX, mapPanY                  float32
-	typeFilterOpen, allTypes          bool
-	listSelection                     index.ID
-	issueList                         ui.ListState
-	historyOpen                       bool
-	mapTypes                          []index.FileType
-	mapTypeList                       ui.ListState
-	sunPaths                          []ui.Path
-	sunWidth, sunHeight               float32
-	duplicateResult                   index.DuplicateResult
-	duplicateBusy                     bool
-	duplicateCancel                   context.CancelFunc
-	duplicateGeneration               uint64
-	duplicateSource                   *index.Snapshot
-	duplicateRoot                     index.ID
-	duplicateProgress                 *index.DuplicateProgress
-	duplicateList                     ui.ListState
-	duplicateRow                      int
-	savedScans                        []index.SnapshotInfo
-	historyLoaded, historyBusy        bool
-	savedList, changesList            ui.ListState
-	savedRow                          int
-	changes                           []index.Change
-	comparisonLabel                   string
-	sectors                           []treemap.Sector
-	selectAddress                     bool
-	advancedOpen                      bool
-	filterName                        string
-	filterExtension                   string
-	filterMinimum                     string
-	filterMaximum                     string
-	filterKind                        string
-	filterAfter                       string
-	filterBefore                      string
-	hiddenColumns                     map[string]bool
-	recentLocations                   []string
-	units                             string
-	analyticsCollapsed, mapCollapsed  bool
-	analysis                          index.Analysis
-	analysisSource                    *index.Snapshot
-	analysisRoot                      index.ID
-	analysisMetric                    int
-	analysisGeneration                uint64
-	analysisCancel                    context.CancelFunc
-	analysisBusy                      bool
-	followSelection                   bool
-	typeQuery                         string
-	visibleTypes                      []index.FileType
-	topList                           ui.ListState
-	topRow                            int
-	window                            *mygo.Window
-	path, query, notice               string
-	address                           string
-	settingsOpen, issuesOpen          bool
-	busy, queryBusy, exporting, light bool
-	admin, mftBlocked                 bool
-	scanMode                          string
-	progress                          *scan.Progress
-	started                           time.Time
-	cancel, queryCancel               context.CancelFunc
-	events                            chan event
-	done                              chan struct{}
-	generation, mapGeneration         uint64
-	snapshot                          *index.Snapshot
-	summary                           index.Summary
-	drives                            []platform.Drive
-	rows                              []index.Row
-	searchScope                       string
-	compact                           bool
-	mapTab, typeTab                   int
-	matches, selectedRow, tab, metric int
-	selected, focus                   index.ID
-	open                              map[index.ID]bool
-	history                           []index.ID
-	historyPos                        int
-	list                              ui.ListState
-	typeList                          ui.ListState
-	typeRow                           int
-	typeSort                          ui.SortOrder
-	columnSplit                       float32
-	sort                              ui.SortOrder
-	queryDue                          time.Time
-	searchHandle, pathHandle          ui.Handle
-	divider                           float32
-	branches                          []treemap.Branch
-	cells                             []treemap.Cell
-	mapCancel                         context.CancelFunc
-	mapWidth, mapHeight               float32
-	mapFor                            index.ID
-	showMetadata                      bool
-	mapTotal                          uint64
-	mapBusy                           bool
-	mapHistory                        []index.ID
-	mapHistoryPos                     int
+	win    *mygo.Window
+	closed bool
+	queue  chan func() // results for a windowless view (tests)
+	prefs  prefs
+	cmds   map[string]*command
+	menu   *menuBar
+
+	admin  bool
+	drives []platform.Drive
+
+	// Scanning.
+	target     string // the scan target box
+	scanning   bool
+	progress   *scan.Progress
+	scanStart  time.Time
+	cancelScan context.CancelFunc
+	scanGen    uint64
+
+	// Data. base is the authoritative index (updated by file operations);
+	// snap is what the views show: base, or a filtered copy with the same IDs.
+	base       *index.Snapshot
+	snap       *index.Snapshot
+	source     string // snapshot file the data came from, "" for a live scan
+	stale      string // why on-disk state may differ from the index
+	filter     analysisFilter
+	filterBusy bool
+	filterGen  uint64
+
+	// Navigation: one history shared by the tree and the treemap.
+	location index.ID
+	history  []index.ID
+	histPos  int
+
+	tree  treeModel
+	files fileModel
+	ext   extModel
+	tm    treemapModel
+
+	search       string
+	searchHandle ui.Handle
+	targetHandle ui.Handle
+	focusTable   bool
+	wantSearch   bool
+	extFilter    string
+	focused      map[string]bool
+
+	message   string // transient status-bar message
+	messageAt time.Time
+	errorMsg  bool
+
+	dlg dialogs
 }
 
-func New(path string) *App {
-	if path == "" {
-		path = `C:\`
-	}
-	a := &App{path: path, events: make(chan event, 16), done: make(chan struct{}), drives: platform.Drives(), open: make(map[index.ID]bool), history: []index.ID{0}, historyPos: 0, sort: ui.SortOrder{Column: "Size", Descending: true}, typeSort: ui.SortOrder{Column: "Bytes", Descending: true}, divider: defaultDivider, columnSplit: 68, typeTab: 1, mapTab: 0, searchScope: "Subtree", selectedRow: -1, typeRow: -1, selected: index.None, mapFor: index.None, admin: platform.Elevated(), scanMode: "Automatic"}
-	a.followSelection = true
-	a.mapZoom = 1
-	a.showMetadata = true
-	a.hiddenColumns = make(map[string]bool)
-	a.units = "Binary"
-	a.filterKind = "Files"
-	a.loadPreferences()
-	a.address = a.path
-	a.analysisRoot = index.None
-	a.topRow = -1
-	a.listSelection = index.None
-	a.duplicateRow = -1
-	a.savedRow = -1
-	return a
+// isScanFile reports a saved scan: .quarry, or .stratum from releases made
+// under the previous name (same format).
+func isScanFile(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	return ext == ".quarry" || ext == ".stratum"
 }
+
+// Run opens the main window. initial is a folder to scan or a .quarry file.
 func Run(initial string) error {
-	app := New(initial)
-	mygo.Theme.SetSource(mygo.ThemeDark)
+	a := newApp()
 	mygo.App.WhenReady(func() {
-		app.window = mygo.NewWindow(mygo.WindowOptions{Title: "Stratum — Disk Space Analyzer", StateKey: "main", TitleBarStyle: mygo.TitleBarHidden, TitleBarHeight: 42, Width: 1672, Height: 941, UseContentSize: true, MinWidth: 1000, MinHeight: 600, BackgroundColor: windowBackground, Content: ui.View(app.view)})
-		// Win32 can consume the first ShowWindow using the launcher's SW_HIDE.
-		app.window.Show()
-		app.window.OnClosed(func() {
-			app.savePreferences()
-			close(app.done)
-			if app.cancel != nil {
-				app.cancel()
-			}
-			if app.queryCancel != nil {
-				app.queryCancel()
-			}
-			if app.mapCancel != nil {
-				app.mapCancel()
-			}
-			if app.analysisCancel != nil {
-				app.analysisCancel()
-			}
-			if app.duplicateCancel != nil {
-				app.duplicateCancel()
-			}
+		a.setTheme(a.prefs.Theme) // also themes the native title bar and menus
+		a.win = mygo.NewWindow(mygo.WindowOptions{
+			Title: "Quarry", StateKey: "main", Width: 1280, Height: 800, UseContentSize: true,
+			MinWidth: 760, MinHeight: 480, Content: ui.View(a.view),
 		})
-		if initial != "" {
-			app.start()
+		a.menu = a.buildMenu()
+		a.win.SetMenu(a.menu.menu)
+		a.win.Show()
+		a.win.OnClosed(a.shutdown)
+		switch {
+		case isScanFile(initial):
+			a.openSnapshot(initial)
+		case initial != "":
+			a.target = initial
+			a.startScan()
 		}
 	})
 	return mygo.App.Run()
 }
-func (a *App) start() {
-	if a.busy || a.historyBusy {
-		return
+
+func newApp() *App {
+	a := &App{prefs: loadPrefs(), admin: platform.Elevated(), drives: platform.Drives(), focused: map[string]bool{}, queue: make(chan func(), 64)}
+	a.target = a.prefs.Target
+	if a.target == "" && len(a.drives) > 0 {
+		a.target = a.drives[0].Path
 	}
-	if a.duplicateCancel != nil {
-		a.duplicateCancel()
-		a.duplicateGeneration++
-		a.duplicateBusy = false
+	a.cmds = newCommands()
+	a.dlg.explorerVerb = platform.ExplorerVerbInstalled()
+	a.dlg.driveRow = -1
+	if len(a.drives) > 0 {
+		a.dlg.driveRow = 0
 	}
-	if strings.TrimSpace(a.path) == "" {
-		a.notice = "Choose a drive or enter a folder path."
-		return
-	}
-	if a.queryCancel != nil {
-		a.queryCancel()
-	}
-	a.queryBusy = false
-	a.queryDue = time.Time{}
-	a.generation++
-	a.progress = &scan.Progress{}
-	a.started = time.Now()
-	a.busy = true
-	a.mftBlocked = false
-	a.notice = ""
-	a.mapGeneration++
-	a.mapBusy = false
-	if a.mapCancel != nil {
-		a.mapCancel()
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	a.cancel = cancel
-	root, forceWalk, progress := a.path, a.scanMode == "Folders", a.progress
-	go func() {
-		s, err := scan.Run(ctx, root, scan.Options{ForceWalk: forceWalk}, progress)
-		var summary index.Summary
-		if err == nil && s != nil {
-			progress.Phase.Store("Indexing file types")
-			summary, err = s.Summarize(context.Background())
-		}
-		// Release the transient identity map, aggregation queue and scan buffers
-		// once, off the UI thread. Idle frames then retain the compact index.
-		runtime.GC()
-		var drives []platform.Drive
-		if err == nil {
-			drives = platform.Drives()
-		}
-		a.post(event{kind: "scan", snapshot: s, summary: summary, err: err, drives: drives})
-	}()
+	a.tree.init(a)
+	a.files.init(a)
+	a.ext.init(a)
+	a.tm.a = a
+	a.tm.reset()
+	return a
 }
-func (a *App) drain() {
+
+func (a *App) shutdown() {
+	a.closed = true
+	a.prefs.Target = a.target
+	_ = a.savePrefs()
+	for _, cancel := range []context.CancelFunc{a.cancelScan, a.files.cancel, a.ext.cancel, a.tm.cancel, a.dlg.dup.cancel} {
+		if cancel != nil {
+			cancel()
+		}
+	}
+}
+
+// post runs fn on the UI thread and redraws. Safe from any goroutine.
+func (a *App) post(fn func()) {
+	if a.win == nil {
+		a.queue <- fn // drained by the next frame of a windowless view
+		return
+	}
+	a.win.Update(func() {
+		if !a.closed {
+			fn()
+		}
+	})
+}
+
+// drain runs queued results; only windowless views (tests) queue them.
+func (a *App) drain() bool {
+	ran := false
 	for {
 		select {
-		case e := <-a.events:
-			switch e.kind {
-			case "duplicates":
-				if e.generation == a.duplicateGeneration && e.snapshot == a.snapshot {
-					a.duplicateBusy = false
-					a.duplicateResult = e.duplicates
-					if e.err != nil {
-						a.notice = "Duplicate check: " + e.err.Error()
-					}
-				}
-			case "history":
-				a.historyBusy = false
-				a.historyLoaded = true
-				a.savedScans = e.savedScans
-				a.savedRow = -1
-				if e.err != nil {
-					a.notice = e.err.Error()
-				}
-			case "saved":
-				a.historyBusy = false
-				a.historyLoaded = false
-				if e.err != nil {
-					a.notice = "Snapshot save failed: " + e.err.Error()
-				} else {
-					a.notice = "Snapshot saved"
-				}
-			case "compare":
-				a.historyBusy = false
-				if e.snapshot == a.snapshot {
-					if e.err != nil {
-						a.notice = e.err.Error()
-					} else {
-						a.changes = e.changes
-						a.comparisonLabel = e.path
-					}
-				}
-			case "restore-error":
-				a.historyBusy = false
-				a.notice = "Snapshot restore failed: " + e.err.Error()
-			case "analysis":
-				if e.generation == a.analysisGeneration && e.snapshot == a.snapshot {
-					a.analysisBusy = false
-					if e.err != nil {
-						a.notice = e.err.Error()
-					} else {
-						a.analysis = e.analysis
-						a.filterTypes()
-					}
-				}
-			case "scan", "restore":
-				if e.kind == "restore" {
-					a.historyOpen = false
-				}
-				a.historyBusy = false
-				a.busy = false
-				a.cancel = nil
-				if e.err != nil {
-					var mft *scan.MFTError
-					a.mftBlocked = errors.As(e.err, &mft)
-					a.notice = e.err.Error()
-					continue
-				}
-				// Commit the replacement together; a failed scan preserves the
-				// previous immutable result and its usable table/map state.
-				a.rows = nil
-				a.branches = nil
-				a.cells = nil
-				a.mapWidth = 0
-				a.selectedRow = -1
-				a.query = ""
-				a.open = make(map[index.ID]bool)
-				a.snapshot = e.snapshot
-				if e.kind == "scan" {
-					a.drives = e.drives
-				}
-				a.changes = nil
-				a.comparisonLabel = ""
-				if a.duplicateCancel != nil {
-					a.duplicateCancel()
-				}
-				a.duplicateGeneration++
-				a.duplicateBusy = false
-				a.duplicateSource = nil
-				a.duplicateResult = index.DuplicateResult{}
-				a.summary = e.summary
-				a.path = e.snapshot.Root
-				a.address = a.path
-				a.rememberLocation(a.path)
-				a.selected = 0
-				a.focus = 0
-				a.open[0] = true
-				a.history = []index.ID{0}
-				a.historyPos = 0
-				a.requestRows()
-				a.requestMap(0)
-				a.mapHistory = []index.ID{0}
-				a.mapHistoryPos = 0
-				if e.snapshot.Cancelled {
-					a.notice = "Scan stopped. Results show only the files visited before cancellation."
-				}
-			case "path":
-				if e.err != nil {
-					a.notice = e.err.Error()
-				} else if e.path != "" {
-					a.path = e.path
-					a.start()
-				}
-			case "query":
-				if e.generation == a.generation {
-					a.queryBusy = false
-					if e.err != nil {
-						a.notice = e.err.Error()
-					} else {
-						if a.selected != a.listSelection {
-							a.list = ui.ListState{Columns: a.list.Columns}
-							a.listSelection = a.selected
-						}
-						a.rows = e.query.Rows
-						a.matches = e.query.Matches
-						a.selectedRow = e.selectedIndex
-						if e.selected != a.selected {
-							a.selectedRow = -1
-						}
-						if a.selectedRow >= 0 {
-							a.list.ScrollIntoView(a.selectedRow)
-						}
-					}
-				}
-			case "map":
-				if e.generation == a.mapGeneration {
-					a.mapBusy = false
-					a.branches = e.branches
-					a.mapTotal = 0
-					for _, branch := range e.branches {
-						a.mapTotal += branch.Item.Bytes
-					}
-					a.sectors = treemap.Sunburst(e.branches, 4)
-					a.mapTypes = e.mapTypes
-					a.sunPaths = nil
-					a.mapWidth = 0
-				}
-			case "export":
-				a.exporting = false
-				if e.err != nil {
-					a.notice = "Export failed: " + e.err.Error()
-				} else if e.path != "" {
-					a.notice = "Export complete: " + e.path
-				}
-			case "elevate":
-				if e.err != nil {
-					a.notice = e.err.Error()
-				} else if a.window != nil {
-					a.window.Close()
-				}
-			}
+		case fn := <-a.queue:
+			fn()
+			ran = true
 		default:
+			return ran
+		}
+	}
+}
+
+func (a *App) notify(format string, args ...any) {
+	a.message, a.messageAt, a.errorMsg = fmt.Sprintf(format, args...), time.Now(), false
+}
+
+func (a *App) fail(format string, args ...any) {
+	a.message, a.messageAt, a.errorMsg = fmt.Sprintf(format, args...), time.Now(), true
+}
+
+func (a *App) metricAllocated() bool { return a.prefs.Metric == "Allocated" }
+
+func (a *App) metric(n index.Node) uint64 {
+	if a.metricAllocated() {
+		return n.Allocated
+	}
+	return n.Size
+}
+
+// Scanning.
+
+func (a *App) startScan() {
+	if a.scanning {
+		return
+	}
+	target := strings.Trim(strings.TrimSpace(a.target), `"`)
+	if target == "" {
+		a.fail("Choose a drive or folder to scan.")
+		return
+	}
+	if len(target) == 2 && target[1] == ':' {
+		target += `\`
+	}
+	if info, err := os.Stat(target); err != nil || !info.IsDir() {
+		a.fail("Cannot scan %s: the folder does not exist or is not accessible.", target)
+		return
+	}
+	a.target = target
+	a.scanGen++
+	gen := a.scanGen
+	ctx, cancel := context.WithCancel(context.Background())
+	a.cancelScan = cancel
+	a.scanning, a.progress, a.scanStart = true, &scan.Progress{}, time.Now()
+	a.message = ""
+	opts := scan.Options{ForceWalk: a.prefs.ScanMode == "Enumerate", AllowFallback: true}
+	if a.prefs.UseExclusions {
+		opts.Exclude = append([]string(nil), a.prefs.Exclusions...)
+	}
+	progress := a.progress
+	go func() {
+		s, err := scan.Run(ctx, target, opts, progress)
+		runtime.GC() // release scan buffers off the UI thread
+		drives := platform.Drives()
+		a.post(func() {
+			if gen != a.scanGen {
+				return
+			}
+			a.scanning, a.cancelScan = false, nil
+			a.drives = drives
+			if a.win != nil {
+				a.win.SetProgressBar(mygo.ProgressBar{})
+			}
+			if err != nil {
+				if errors.Is(err, context.Canceled) {
+					a.notify("Scan stopped. The previous results are unchanged.")
+				} else {
+					a.fail("Scan failed: %v", err)
+				}
+				return
+			}
+			a.prefs.Recent = remember(a.prefs.Recent, s.Root, 12)
+			a.menu.recentChanged = true
+			a.setBase(s, "")
+			switch {
+			case s.Cancelled:
+				a.notify("Scan stopped after %s. Results are partial.", duration(s.Elapsed))
+			default:
+				a.notify("Scan completed in %s.", duration(s.Elapsed))
+			}
+		})
+	}()
+}
+
+func (a *App) stopScan() {
+	if a.cancelScan != nil {
+		a.cancelScan()
+	}
+}
+
+func (a *App) rescan() {
+	if a.base != nil && a.source == "" {
+		a.target = a.base.Root
+	}
+	a.startScan()
+}
+
+func (a *App) scanPath(path string) {
+	if a.scanning {
+		return
+	}
+	a.target = path
+	a.startScan()
+}
+
+func (a *App) chooseFolder() {
+	go func() {
+		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: a.win, Title: "Choose a folder to analyze", Directory: true, DefaultPath: a.target})
+		if err != nil || len(paths) == 0 {
+			return
+		}
+		a.post(func() { a.scanPath(paths[0]) })
+	}()
+}
+
+func (a *App) newWindow(path string) {
+	exe, err := os.Executable()
+	if err != nil {
+		a.fail("Cannot start a new window: %v", err)
+		return
+	}
+	args := []string{}
+	if path != "" {
+		args = append(args, path)
+	}
+	if err := exec.Command(exe, args...).Start(); err != nil {
+		a.fail("Cannot start a new window: %v", err)
+	}
+}
+
+func (a *App) restartElevated() {
+	path := a.target
+	if a.base != nil && a.source == "" {
+		path = a.base.Root
+	}
+	go func() {
+		if err := platform.RelaunchElevated(path); err != nil {
+			a.post(func() { a.fail("Administrator restart was canceled or failed: %v", err) })
+			return
+		}
+		a.post(func() { a.win.Close() })
+	}()
+}
+
+// Data ownership.
+
+// setBase installs a new scan or loaded snapshot and resets views.
+func (a *App) setBase(s *index.Snapshot, source string) {
+	a.base, a.source, a.stale = s, source, ""
+	a.target = s.Root
+	a.location, a.history, a.histPos = 0, []index.ID{0}, 0
+	a.tree.reset()
+	a.files.reset()
+	a.ext.reset()
+	a.tm.reset()
+	a.dlg.dup.reset()
+	title := s.Root
+	if source != "" {
+		title = filepath.Base(source) + " (saved scan)"
+	}
+	if a.win != nil {
+		a.win.SetTitle(title + " - Quarry")
+	}
+	a.applyFilter()
+}
+
+// replaceBase installs a changed copy of the current scan (after a delete or
+// rename), keeping the location, expansion and selections that still exist.
+func (a *App) replaceBase(s *index.Snapshot) {
+	a.base = s
+	for !s.Reachable(a.location) && a.location != 0 {
+		a.location = s.Nodes[a.location].Parent
+	}
+	a.applyFilter()
+}
+
+// applyFilter derives the view snapshot from base and the analysis filter.
+func (a *App) applyFilter() {
+	a.filterGen++
+	if a.base == nil {
+		return
+	}
+	if !a.filter.active() {
+		a.filter.stats = index.FilterStats{}
+		a.filterBusy = false
+		a.setView(a.base)
+		return
+	}
+	gen, base, f := a.filterGen, a.base, a.filter
+	a.filterBusy = true
+	go func() {
+		view, stats, err := f.apply(context.Background(), base)
+		a.post(func() {
+			if gen != a.filterGen {
+				return
+			}
+			a.filterBusy = false
+			if err != nil {
+				a.fail("Filter: %v", err)
+				a.filter = analysisFilter{}
+				a.setView(a.base)
+				return
+			}
+			a.filter.stats = stats
+			a.setView(view)
+		})
+	}()
+}
+
+// setView installs the snapshot the views read and refreshes them.
+func (a *App) setView(s *index.Snapshot) {
+	a.snap = s
+	if !s.Reachable(a.location) {
+		a.location = 0
+	}
+	a.tree.dataChanged()
+	if a.tree.sel.Len() == 0 {
+		a.tree.selectOnly(a.location)
+		a.focusTable = true
+	}
+	a.files.invalidate()
+	a.ext.invalidate()
+	a.tm.invalidate()
+}
+
+// mapSnapshot is what the treemap draws.
+func (a *App) mapSnapshot() *index.Snapshot {
+	if a.filter.active() && !a.prefs.FilterMap {
+		return a.base
+	}
+	return a.snap
+}
+
+// Navigation.
+
+func (a *App) navigate(id index.ID) { a.navigateTo(id, true) }
+
+func (a *App) navigateTo(id index.ID, record bool) {
+	if a.snap == nil || id == index.None || !a.snap.Reachable(id) {
+		return
+	}
+	if !a.snap.Nodes[id].IsDir() {
+		id = a.snap.Nodes[id].Parent
+	}
+	if id == a.location {
+		return
+	}
+	previous := a.location
+	a.location = id
+	if record {
+		a.history = append(a.history[:a.histPos+1], id)
+		a.histPos = len(a.history) - 1
+	}
+	a.tree.locationChanged(previous)
+	a.tm.invalidate()
+}
+
+func (a *App) canBack() bool    { return a.snap != nil && a.histPos > 0 }
+func (a *App) canForward() bool { return a.snap != nil && a.histPos < len(a.history)-1 }
+func (a *App) canUp() bool      { return a.snap != nil && a.location != 0 }
+
+func (a *App) back() {
+	for a.histPos > 0 {
+		a.histPos--
+		if a.snap.Reachable(a.history[a.histPos]) {
+			a.navigateTo(a.history[a.histPos], false)
 			return
 		}
 	}
 }
-func (a *App) requestRows() {
-	if a.snapshot == nil {
-		return
-	}
-	if a.queryCancel != nil {
-		a.queryCancel()
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	a.queryCancel = cancel
-	a.generation++
-	generation := a.generation
-	a.queryBusy = true
-	a.queryDue = time.Time{}
-	open := make(map[index.ID]bool, len(a.open))
-	for id, v := range a.open {
-		open[id] = v
-	}
-	mode := "tree"
-	if a.tab == 1 {
-		mode = "largest"
-	}
-	root := a.focus
-	if (a.query != "" || a.tab == 1) && a.searchScope == "Scan" {
-		root = 0
-	}
-	q := index.Query{Text: a.query, Mode: mode, Root: root, Open: open, Sort: index.Sort{Column: a.sort.Column, Desc: a.sort.Descending, Allocated: a.metric == 1}}
-	s := a.snapshot
-	selected := a.selected
-	go func() {
-		result, err := s.QueryRows(ctx, q)
-		selectedIndex := -1
-		for i, r := range result.Rows {
-			if r.ID == selected {
-				selectedIndex = i
-				break
-			}
-		}
-		if ctx.Err() == nil {
-			a.post(event{kind: "query", generation: generation, query: result, err: err, selectedIndex: selectedIndex, selected: selected})
-		}
-	}()
-}
-func (a *App) requestMap(id index.ID) {
-	if a.snapshot == nil {
-		return
-	}
-	if !a.snapshot.Nodes[id].IsDir() {
-		id = a.snapshot.Nodes[id].Parent
-	}
-	if id == index.None {
-		id = 0
-	}
-	a.mapFor = id
-	a.mapBusy = true
-	if a.mapCancel != nil {
-		a.mapCancel()
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	a.mapCancel = cancel
-	a.mapGeneration++
-	generation := a.mapGeneration
-	s, allocated, showMetadata := a.snapshot, a.metric == 1, a.showMetadata
-	go func() {
-		branches := treemap.HierarchyFiltered(ctx, s, id, allocated, 4096, showMetadata)
-		analysis, err := s.Analyze(ctx, id, allocated, 0, showMetadata)
-		if ctx.Err() == nil {
-			a.post(event{kind: "map", generation: generation, branches: branches, mapTypes: analysis.Types, err: err})
-		}
-	}()
-}
-func (a *App) chooseFolder() {
-	if a.busy {
-		return
-	}
-	go func() {
-		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: a.window, Title: "Choose a folder to analyze", Directory: true, DefaultPath: a.path})
-		e := event{kind: "path", err: err}
-		if len(paths) > 0 {
-			e.path = paths[0]
-		}
-		a.post(e)
-	}()
-}
-func (a *App) navigate(id index.ID) {
-	a.navigateTo(id, true)
-}
-func (a *App) navigateTo(id index.ID, record bool) {
-	if a.snapshot == nil || id == index.None || !a.snapshot.Nodes[id].IsDir() {
-		return
-	}
-	a.focus = id
-	a.address = a.snapshot.Path(id)
-	a.selected = id
-	a.selectedRow = -1
-	a.open[id] = true
-	a.query = ""
-	a.tab = 0
-	if record {
-		// Truncate any forward history and record the new location.
-		if a.historyPos < len(a.history)-1 {
-			a.history = a.history[:a.historyPos+1]
-		}
-		if len(a.history) == 0 || a.history[len(a.history)-1] != id {
-			a.history = append(a.history, id)
-			a.historyPos = len(a.history) - 1
-		}
-	}
-	a.requestRows()
-	a.focusMap(id)
-}
 
-func (a *App) goBack() {
-	if a.historyPos > 0 {
-		a.historyPos--
-		a.navigateTo(a.history[a.historyPos], false)
+func (a *App) forward() {
+	for a.histPos < len(a.history)-1 {
+		a.histPos++
+		if a.snap.Reachable(a.history[a.histPos]) {
+			a.navigateTo(a.history[a.histPos], false)
+			return
+		}
 	}
 }
 
-func (a *App) goForward() {
-	if a.historyPos < len(a.history)-1 {
-		a.historyPos++
-		a.navigateTo(a.history[a.historyPos], false)
+func (a *App) up() {
+	if a.canUp() {
+		child := a.location
+		a.navigate(a.snap.Nodes[a.location].Parent)
+		a.tree.selectOnly(child)
 	}
 }
 
-func (a *App) safePath(id index.ID) string {
-	if a.snapshot == nil || id == index.None {
+// reveal shows an entry in Tree View: expands its ancestors, selects it and
+// scrolls it into view. It widens the location when the entry lies outside.
+func (a *App) reveal(id index.ID) {
+	if a.snap == nil || !a.snap.Reachable(id) {
+		a.fail("This entry is hidden by the current filter or no longer exists.")
+		return
+	}
+	if !a.snap.Contains(a.location, id) {
+		a.navigate(0)
+	}
+	a.setViewMode(viewTree)
+	a.tree.reveal(id)
+}
+
+func (a *App) setViewMode(v int) {
+	if a.prefs.View == v {
+		return
+	}
+	a.prefs.View = v
+	a.focusTable = true
+	if v == viewFiles {
+		a.files.ensure()
+	}
+	if v == viewExtensions {
+		a.ext.ensure()
+	}
+}
+
+// pathOf returns a filesystem path for an entry, or "" for entries that have
+// no reliable path (unresolved MFT records).
+func (a *App) pathOf(id index.ID) string {
+	if a.snap == nil || id == index.None || int(id) >= len(a.snap.Nodes) {
 		return ""
 	}
-	for n := id; n != index.None; n = a.snapshot.Nodes[n].Parent {
-		if a.snapshot.Nodes[n].Flags&index.Unplaced != 0 {
-			a.notice = "This record has an unresolved metadata path."
+	for n := id; n != index.None; n = a.snap.Nodes[n].Parent {
+		if a.snap.Nodes[n].Flags&index.Unplaced != 0 {
 			return ""
 		}
 	}
-	return a.snapshot.Path(id)
-}
-func (a *App) reveal() {
-	if path := a.safePath(a.selected); path != "" {
-		mygo.Shell.ShowItemInFolder(path)
-	}
-}
-func (a *App) copyPath() {
-	if path := a.safePath(a.selected); path != "" {
-		mygo.Clipboard.WriteText(path)
-		a.notice = "Path copied to clipboard."
-	}
-}
-func (a *App) setQuery(c *ui.Context) {
-	a.queryDue = c.Now().Add(180 * time.Millisecond)
-	c.After(180 * time.Millisecond)
+	return a.snap.Path(id)
 }
 
-func (a *App) elevate() {
-	if a.busy || a.admin {
-		return
+func (a *App) name(id index.ID) string {
+	if id == 0 {
+		return a.snap.Root
 	}
-	path := a.path
-	go func() { a.post(event{kind: "elevate", err: platform.RelaunchElevated(path)}) }()
-}
-
-func (a *App) post(e event) {
-	select {
-	case a.events <- e:
-		if a.window != nil {
-			a.window.Invalidate()
-		}
-	case <-a.done:
-	}
-}
-
-func Bytes(n uint64) string {
-	if n < 1024 {
-		return fmt.Sprintf("%d B", n)
-	}
-	units := []string{"KiB", "MiB", "GiB", "TiB", "PiB", "EiB"}
-	value := float64(n) / 1024
-	u := 0
-	for value >= 1024 && u < len(units)-1 {
-		value /= 1024
-		u++
-	}
-	return fmt.Sprintf("%.2f %s", value, units[u])
-}
-func number(n uint64) string {
-	s := fmt.Sprint(n)
-	for i := len(s) - 3; i > 0; i -= 3 {
-		s = s[:i] + "," + s[i:]
-	}
-	return s
+	return a.snap.NameView(id)
 }

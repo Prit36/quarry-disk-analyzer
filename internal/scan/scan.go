@@ -12,7 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"stratum/internal/index"
+	"quarry/internal/index"
 )
 
 type Options struct {
@@ -21,6 +21,8 @@ type Options struct {
 	// AllowFallback must be explicit: an NTFS request must never silently turn
 	// into a directory traversal that appears to be the fast MFT engine.
 	AllowFallback bool
+	// Exclude lists scan exclusion patterns (see Exclusions).
+	Exclude []string
 }
 
 type MFTError struct{ Cause error }
@@ -71,6 +73,14 @@ func Run(ctx context.Context, root string, opts Options, p *Progress) (*index.Sn
 		p.Phase.Store("Reading NTFS metadata")
 		s, err := scanMFT(ctx, root, p)
 		if err == nil {
+			excl := NewExclusions(opts.Exclude)
+			s.Exclusions = excl.Patterns()
+			if !excl.Empty() {
+				p.Phase.Store("Applying exclusions")
+				if err := excl.apply(ctx, s); err != nil {
+					return nil, err
+				}
+			}
 			return s, nil
 		}
 		if errors.Is(err, context.Canceled) {
@@ -124,6 +134,8 @@ func releaseEntries(entries []entry) { clear(entries); entryBatches.Put(entries[
 func walk(ctx context.Context, root string, opts Options, p *Progress) (*index.Snapshot, error) {
 	s := index.New(root)
 	s.Engine = "Directory scan"
+	excl := NewExclusions(opts.Exclude)
+	s.Exclusions = excl.Patterns()
 	jobs := make(chan task)
 	results := make(chan batch, opts.Workers*2)
 	workerCtx, cancel := context.WithCancel(ctx)
@@ -187,6 +199,16 @@ func walk(ctx context.Context, root string, opts Options, p *Progress) (*index.S
 				continue
 			}
 			for _, e := range b.entries {
+				if !excl.Empty() {
+					full := ""
+					if e.flags&index.Directory != 0 {
+						full = filepath.Join(b.path, e.name)
+					}
+					if excl.Match(e.name, full, e.flags&index.Directory != 0) {
+						s.Excluded++
+						continue
+					}
+				}
 				if e.flags&index.Incomplete != 0 {
 					s.AddIssue(filepath.Join(b.path, e.name), fmt.Errorf("allocation metadata unavailable"))
 					p.Errors.Add(1)

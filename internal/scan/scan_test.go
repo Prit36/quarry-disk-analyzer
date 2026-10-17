@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"stratum/internal/index"
+	"quarry/internal/index"
 )
 
 func TestDirectoryScanHardLinksAndEmptyFiles(t *testing.T) {
@@ -84,5 +84,31 @@ func TestCancellationDoesNotLeaveWorkers(t *testing.T) {
 		case <-time.After(time.Second):
 			t.Fatal("cancelled scan blocked")
 		}
+	}
+}
+
+func TestExclusions(t *testing.T) {
+	root := t.TempDir()
+	for _, p := range []string{"keep/a.txt", "node_modules/x/y.js", "deep/node_modules/z.js", "tmp/b.tmp", "skip/me.txt", "Program Files/c.txt"} {
+		full := filepath.Join(root, filepath.FromSlash(p))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte("data"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err := Run(context.Background(), root, Options{ForceWalk: true, Exclude: []string{"node_modules", "*.tmp", filepath.Join(root, "SKIP"), "Program Files"}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Nodes[0].Files != 1 || s.Excluded != 5 {
+		var names []string
+		_ = s.Visit(context.Background(), 0, func(id index.ID) error { names = append(names, s.Path(id)); return nil })
+		t.Fatalf("files=%d excluded=%d %v", s.Nodes[0].Files, s.Excluded, names)
+	}
+	e := NewExclusions([]string{"node_modules"})
+	if e.Match("node_modules2", "", true) || !e.Match("NODE_MODULES", "", true) {
+		t.Fatal("plain exclusion must match the whole name, case-insensitively")
 	}
 }

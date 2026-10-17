@@ -1,450 +1,724 @@
 package desktop
 
 import (
-	"embed"
 	"fmt"
-	"github.com/egoist/mygo"
-	"github.com/egoist/mygo/ui"
-	"math"
+	"os"
 	"path/filepath"
-	"stratum/internal/index"
 	"strings"
 	"time"
+
+	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/ui"
+	"quarry/internal/index"
 )
 
-//go:embed assets/*
-var iconAssets embed.FS
-var icons = func() map[string]*ui.SVG {
-	m := map[string]*ui.SVG{}
-	entries, _ := iconAssets.ReadDir("assets")
-	for _, e := range entries {
-		if !strings.HasSuffix(e.Name(), ".svg") {
-			continue
-		}
-		b, _ := iconAssets.ReadFile("assets/" + e.Name())
-		m[strings.TrimSuffix(e.Name(), ".svg")] = ui.MustParseSVG(b)
-	}
-	return m
-}()
-
+// view builds the window for every frame.
 func (a *App) view(c *ui.Context) {
-	a.drain()
-	c.SetTheme(designTheme(a.light, a.compact))
-	if !a.queryDue.IsZero() && !c.Now().Before(a.queryDue) {
-		a.requestRows()
+	if a.drain() {
+		c.Invalidate()
 	}
-	if a.busy {
-		c.After(100 * time.Millisecond)
+	t, pal := a.appTheme()
+	c.SetTheme(t)
+	a.tree.selValid, a.files.selValid = false, false
+	a.syncMenu()
+	a.shortcuts(c)
+	if c.Shortcut(0, ui.KeyEscape) && a.scanning {
+		a.stopScan()
 	}
-	if c.Shortcut(ui.Cmd, ui.KeyO) {
-		a.chooseFolder()
+	if c.Shortcut(0, ui.KeyBack) {
+		a.exec("nav.back")
 	}
-	if c.Shortcut(ui.Cmd, ui.KeyF) {
-		if a.tab == 2 {
-			a.tab = 0
+	if c.Shortcut(0, ui.KeyForward) {
+		a.exec("nav.forward")
+	}
+	if a.scanning {
+		a.scanProgress()
+		c.After(150 * time.Millisecond)
+	}
+	if a.prefs.View == viewFiles {
+		a.files.tick(c)
+		a.files.ensure()
+	}
+	if a.prefs.View == viewExtensions {
+		a.ext.ensure()
+	}
+	if !a.messageAt.IsZero() {
+		if age := time.Since(a.messageAt); age > 12*time.Second && !a.errorMsg {
+			a.message, a.messageAt = "", time.Time{}
+		} else {
+			c.After(12*time.Second - age)
 		}
-		a.searchHandle.Focus(c)
 	}
-	if c.Shortcut(ui.Cmd, ui.KeyL) {
-		a.pathHandle.Focus(c)
-		a.selectAddress = true
+
+	root := ui.Column(c).Fill().Gap(0).Background(pal.grid).FontFeatures("tnum")
+	if files := root.DroppedFiles(); len(files) > 0 {
+		a.dropped(files)
 	}
-	editing := a.pathHandle.Focused(c) || a.searchHandle.Focused(c) || a.settingsOpen || a.issuesOpen || a.advancedOpen
-	if !editing && c.Shortcut(0, ui.KeyF5) {
-		a.start()
-	}
-	if c.Shortcut(0, ui.KeyEscape) && !a.settingsOpen && !a.issuesOpen && !a.advancedOpen {
-		if a.query != "" {
-			a.query = ""
-			a.requestRows()
-		} else if a.busy && a.cancel != nil {
-			a.cancel()
+	root.Children(func() {
+		a.toolbar(c, pal)
+		if a.prefs.ShowInfo && (a.snap != nil || a.scanning) {
+			a.infoBar(c, pal)
 		}
-	}
-	if !editing && c.Shortcut(ui.Alt, ui.KeyUp) && a.snapshot != nil && a.focus != 0 {
-		a.navigate(a.snapshot.Nodes[a.focus].Parent)
-	}
-	if !editing && c.Shortcut(ui.Alt, ui.KeyLeft) {
-		a.goBack()
-	}
-	if !editing && c.Shortcut(ui.Alt, ui.KeyRight) {
-		a.goForward()
-	}
-	if c.Shortcut(ui.Cmd, ui.KeyE) {
-		a.export()
-	}
-	ui.Column(c).Fill().Gap(0).FontFeatures("tnum").Children(func() {
-		a.titleBar(c)
-		a.toolbar(c)
-		a.scanStrip(c)
 		ui.Column(c).Grow(1).MinHeight(0).Children(func() {
-			if a.snapshot == nil {
-				a.empty(c)
-			} else {
-				a.results(c)
+			switch {
+			case a.snap == nil && a.scanning:
+				a.scanningPage(c)
+			case a.snap == nil:
+				a.startPage(c, pal)
+			default:
+				a.workspace(c, pal)
 			}
-		}).Padding(6, 12, 8, 12)
-		a.status(c)
+		})
+		a.statusBar(c, pal)
 	})
-	a.dialogs(c)
+	a.dialogs(c, pal)
 }
 
-func (a *App) scanExplanation() string {
-	if a.mftBlocked && !a.admin {
-		return "Administrator access required. Choose Run as administrator, or select Folders."
+func (a *App) scanProgress() {
+	p := a.progress
+	if a.win == nil || p == nil {
+		return
 	}
-	if a.mftBlocked {
-		return a.notice
-	}
-	return ""
-}
-func (a *App) empty(c *ui.Context) {
-	t := c.Theme()
-	ui.Column(c).Fill().Center().Gap(8).Children(func() {
-		icon := icons["folder"]
-		chips := t.TextMuted
-		if a.mftBlocked {
-			icon = icons["shield"]
-			chips = t.Warning
-		}
-		ui.Icon(c, icon).FontSize(40).TextColor(chips)
-		text := "Select a drive or folder."
-		color := t.TextMuted
-		if a.busy {
-			text = a.progress.Status() + "…"
-		}
-		if a.mftBlocked {
-			text = "Direct MFT scan could not start"
-			color = t.Warning
-		}
-		ui.Text(c, text).FontSize(15).TextColor(color)
-		if a.mftBlocked {
-			ui.Text(c, a.scanExplanation()).FontSize(12).TextColor(t.TextMuted)
-			if !a.admin {
-				ui.PrimaryButton(c, "Run as administrator").OnClick(a.elevate)
-			}
-		} else if !a.busy {
-			ui.Text(c, "Choose a drive from the toolbar or browse for a folder.").FontSize(12).TextColor(t.TextMuted)
-		}
-	})
-}
-func (a *App) results(c *ui.Context) {
-	mainPanes := func() {
-		explorer := func() {
-			ui.Column(c).Fill().MinHeight(0).Children(func() {
-				a.resultToolbar(c)
-				ui.Box(c).Height(6).Shrink(0)
-				ui.Column(c).Grow(1).MinHeight(0).Background(c.Theme().Surface).Border(1, c.Theme().Border).Radius(panelRadius).Clip().Children(func() {
-					if a.tab == 2 {
-						a.notes(c)
-					} else {
-						a.table(c)
-					}
-				})
-			})
-		}
-		if a.analyticsCollapsed {
-			explorer()
-		} else {
-			ui.SplitPercent(c, &a.columnSplit, func() { ui.Column(c).Fill().Padding(0, 8, 0, 0).Children(explorer) }, func() {
-				ui.Column(c).Fill().MinHeight(0).Background(c.Theme().Surface).Border(1, c.Theme().Border).Radius(panelRadius).Clip().Children(func() { a.types(c) })
-			}).Fill()
-		}
-	}
-	if a.mapCollapsed {
-		mainPanes()
+	if total := p.TotalRecords.Load(); total > 0 {
+		a.win.SetProgressBar(mygo.ProgressBar{Value: float64(p.Records.Load()) / float64(total)})
 	} else {
-		ui.SplitVerticalPercent(c, &a.divider, mainPanes, func() { ui.Column(c).Fill().Padding(8, 0, 0, 0).Children(func() { a.mapView(c) }) }).Grow(1).MinHeight(0)
+		a.win.SetProgressBar(mygo.ProgressBar{State: mygo.ProgressIndeterminate})
 	}
 }
 
-func (a *App) table(c *ui.Context) {
-	t := c.Theme()
-	s := a.snapshot
-	if !a.queryBusy && len(a.rows) == 0 {
-		ui.Text(c, "No matching entries in the indexed scope.").Padding(12).TextColor(t.TextMuted)
+// dropped handles folders dragged in from Explorer. Replacing an existing
+// scan asks first, offering a separate window instead.
+func (a *App) dropped(files []string) {
+	path := files[0]
+	if isScanFile(path) {
+		a.openSnapshot(path)
+		return
 	}
-	cols, columnIndices := a.resultColumns()
-	a.list.HeaderMenu = func(menu *ui.Menu, column int) { a.columnMenu(menu) }
-	a.list.Selected = &a.selectedRow
-	a.list.Sort = &a.sort
-	a.list.RoundRows = true
-	a.list.Key = func(i int) any { return a.rows[i].ID }
-	a.list.Label = func(i int) string { return s.NameView(a.rows[i].ID) }
-	before := a.sort
-	table := dataTable(c.Key("results-table"), &a.list, cols, len(a.rows), func(row, col int) {
-		col = columnIndices[col]
-		r := a.rows[row]
-		n := s.Nodes[r.ID]
-		muted := t.TextMuted
-		if t.Dark && row == a.selectedRow {
-			muted = t.AccentText
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		a.fail("Drop a folder or drive to analyze it.")
+		return
+	}
+	if a.snap == nil && !a.scanning {
+		a.scanPath(path)
+		return
+	}
+	go func() {
+		res, err := mygo.Dialog.Message(mygo.MessageOptions{Parent: a.win, Type: mygo.MessageQuestion, Title: "Quarry", Message: "Analyze " + path + "?", Detail: "Scanning here replaces the current results. You can open it in a new window instead.", Buttons: []string{"Scan Here", "New Window", "Cancel"}, CancelButton: 2})
+		if err != nil {
+			return
 		}
-		switch col {
-		case 0:
-			height := float32(16)
-			if a.compact {
-				height = 14
+		a.post(func() {
+			switch res.Button {
+			case 0:
+				a.stopScan()
+				a.scanGen++
+				a.scanning = false
+				a.scanPath(path)
+			case 1:
+				a.newWindow(path)
 			}
-			cell := ui.Row(c).Height(height).Gap(8).AlignItems(ui.Center).Tooltip(s.Path(r.ID))
-			cell.ContextMenu(func(m *ui.Menu) {
-				if m.Item("Export subtree as CSV…").Disabled(a.exporting).Chosen() {
-					a.exportAs("csv", r.ID)
-				}
-				if n.IsDir() && m.Item("Rescan selected path").Disabled(a.busy).Chosen() {
-					if path := a.safePath(r.ID); path != "" {
-						a.path = path
-						a.start()
-					}
-				}
-				if m.Item("Copy name").Chosen() {
-					mygo.Clipboard.WriteText(s.NameView(r.ID))
-				}
-				if m.Item("Copy logical size").Chosen() {
-					mygo.Clipboard.WriteText(fmt.Sprint(n.Size))
-				}
-				if m.Item("Focus in treemap").Chosen() {
-					a.focusMap(r.ID)
-				}
-				if m.Item("Analyze selection").Chosen() {
-					a.selected = r.ID
-					a.selectedRow = row
-					a.followSelection = true
-				}
-				if n.IsDir() && m.Item("Collapse subtree").Chosen() {
-					a.open[r.ID] = false
-					a.requestRows()
-				}
-				if m.Item("Show in Explorer").Chosen() {
-					a.selected = r.ID
-					a.reveal()
-				}
-				if m.Item("Copy path").Chosen() {
-					a.selected = r.ID
-					a.copyPath()
-				}
-				if n.IsDir() && m.Item("Focus folder").Chosen() {
-					a.navigate(r.ID)
-				}
-			})
-			cell.Children(func() {
-				if a.tab == 0 && a.query == "" {
-					ui.Box(c).Width(float32(min(r.Depth, 32)) * 22)
-					if n.IsDir() && n.FirstChild != index.None {
-						icon := "chevron_right"
-						if a.open[r.ID] || r.ID == a.focus {
-							icon = "chevron_down"
-						}
-						ui.Button(c.Key(fmt.Sprint("expand", r.ID)), "").Size(16, 16).Padding(2).Background(ui.Transparent).Border(0, ui.Transparent).Label("Expand " + s.NameView(r.ID)).Children(func() { ui.Icon(c, icons[icon]).FontSize(11) }).OnClick(func() {
-							if r.ID != a.focus {
-								a.open[r.ID] = !a.open[r.ID]
-								a.requestRows()
-							}
-						})
-					} else {
-						ui.Box(c).Width(16)
-					}
-				}
-				icon := icons["document"]
-				color := t.TextMuted
-				if n.IsDir() {
-					icon = icons["folder"]
-					color = folderColor
-				}
-				if r.ID == 0 {
-					filesystemGlyph(c, "drive", 20)
-				} else if n.IsDir() {
-					filesystemGlyph(c, "folder", 20)
-				} else {
-					ui.Icon(c, icon).FontSize(18).TextColor(color)
-				}
-				name := s.NameView(r.ID)
-				if r.ID == 0 {
-					name = s.Root
-				}
-				ui.Text(c, name).FontSize(13).SingleLine().MinWidth(0).Grow(1)
-				if n.Flags&index.Shared != 0 {
-					ui.Text(c, "shared").FontSize(10).TextColor(t.TextMuted)
-				}
-				if n.Flags&index.Incomplete != 0 {
-					ui.Icon(c, icons["warning"]).FontSize(15).TextColor(t.Warning).Label("Incomplete metadata").Tooltip(a.issueExplanation(r.ID)).OnClick(func() { a.issuesOpen = true })
-				}
-			})
-		case 1:
-			base := n.Parent
-			if base == index.None {
-				base = 0
-			}
-			value, total := n.Allocated, s.Nodes[base].Allocated
-			if a.metric == 0 {
-				value, total = n.Size, s.Nodes[base].Size
-			}
-			percentage := 0.0
-			if total > 0 {
-				percentage = 100 * float64(value) / float64(total)
-			}
-			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-				proportionBar(c, percentage/100, 44, t.Accent).Height(14)
-				ui.Text(c, fmt.Sprintf("%.1f%%", percentage)).Width(48).FontSize(12).SingleLine().TextColor(muted)
-			})
-		case 2:
-			ui.Text(c, a.formatBytes(n.Size)).FontSize(13).SingleLine()
-		case 3:
-			ui.Text(c, a.formatBytes(n.Allocated)).FontSize(13).SingleLine()
-		case 4:
-			if n.IsDir() {
-				ui.Text(c, number(uint64(n.Files))).FontSize(13).TextColor(muted)
-			}
-		case 5:
-			if n.IsDir() {
-				ui.Text(c, number(uint64(n.Dirs))).FontSize(13).TextColor(muted)
-			}
-		case 6:
-			date := ""
-			if n.Modified != 0 {
-				date = time.Unix(n.Modified, 0).Format("02/01/2006 15:04")
-			}
-			ui.Text(c, date).FontSize(12).TextColor(muted).SingleLine()
-		}
-	}).Grow(1).MinHeight(0)
-	if a.sort != before {
-		a.requestRows()
-	}
-	if a.selectedRow >= 0 && a.selectedRow < len(a.rows) {
-		a.selected = a.rows[a.selectedRow].ID
-		a.listSelection = a.selected
-	}
-	if table.Submitted() && a.selected != index.None {
-		if s.Nodes[a.selected].IsDir() {
-			a.navigate(a.selected)
-		} else {
-			a.tab = 2
-		}
-	}
-	if table.Shortcut(0, ui.KeyRight) && a.selected != index.None && s.Nodes[a.selected].IsDir() {
-		a.open[a.selected] = true
-		a.requestRows()
-	}
-	if table.Shortcut(0, ui.KeyLeft) && a.selected != index.None {
-		if a.open[a.selected] {
-			a.open[a.selected] = false
-		} else if parent := s.Nodes[a.selected].Parent; parent != index.None {
-			a.selected = parent
-			a.selectedRow = -1
-		}
-		a.requestRows()
-	}
-	if table.Shortcut(ui.Cmd, ui.KeyC) {
-		a.copyPath()
-	}
-	if table.Shortcut(0, ui.KeySpace) && a.selected != index.None && s.Nodes[a.selected].IsDir() {
-		a.open[a.selected] = !a.open[a.selected]
-		a.requestRows()
-	}
+		})
+	}()
 }
-func (a *App) notes(c *ui.Context) {
+
+// Toolbar.
+
+func toolButton(c *ui.Context, key string, icon string, tip string, enabled bool) bool {
 	t := c.Theme()
-	s := a.snapshot
-	ui.Scroll(c).Grow(1).Padding(10).Children(func() {
-		ui.Column(c).Gap(8).Children(func() {
-			if a.selected != index.None {
-				node := s.Nodes[a.selected]
-				ui.Text(c, s.Path(a.selected)).Bold().SingleLine().Tooltip(s.Path(a.selected))
-				ui.Text(c, "Logical: "+a.formatBytes(node.Size)+" · allocated: "+a.formatBytes(node.Allocated))
-				ui.Text(c, fmt.Sprintf("%s files · %s folders", number(uint64(node.Files)), number(uint64(node.Dirs))))
-				if node.Modified != 0 {
-					ui.Text(c, "Modified: "+time.Unix(node.Modified, 0).Format("02 Jan 2006 15:04:05"))
+	b := ui.ButtonBase(c.Key(key)).Size(26, 26).Radius(4).Center().Label(tip).Tooltip(tip).Disabled(!enabled)
+	color := t.Text
+	if !enabled {
+		color = t.TextMuted.Alpha(.5)
+	} else if b.Pressed() {
+		b.Background(t.SurfacePressed)
+	} else if b.Hovered() {
+		b.Background(t.SurfaceHover)
+	}
+	b.Children(func() { ui.Icon(c, icons[icon]).FontSize(15).TextColor(color) })
+	return enabled && b.Clicked()
+}
+
+func textButton(c *ui.Context, key, label, tip string, enabled bool) ui.Element {
+	t := c.Theme()
+	b := ui.ButtonBase(c.Key(key)).Height(26).Padding(0, 10).Radius(4).Border(1, t.Border).Center().Label(label).Disabled(!enabled)
+	if tip != "" {
+		b.Tooltip(tip)
+	}
+	color := t.Text
+	switch {
+	case !enabled:
+		color = t.TextMuted.Alpha(.5)
+	case b.Pressed():
+		b.Background(t.SurfacePressed)
+	case b.Hovered():
+		b.Background(t.SurfaceHover)
+	default:
+		b.Background(t.Surface)
+	}
+	b.Children(func() { ui.Text(c, label).TextColor(color).SingleLine() })
+	return b
+}
+
+func vsep(c *ui.Context, pal palette) {
+	ui.Box(c).Size(1, 18).Background(pal.separator).Margin(0, 4)
+}
+
+func (a *App) toolbar(c *ui.Context, pal palette) {
+	t := c.Theme()
+	ui.Row(c).Height(36).Shrink(0).Padding(0, 6).Gap(4).AlignItems(ui.Center).Background(pal.chrome).BorderWidth(0, 0, 1, 0).BorderColor(pal.separator).Children(func() {
+		// Scan target: an editable box with drives, recent folders and Browse.
+		ui.Row(c).Gap(0).AlignItems(ui.Center).Children(func() {
+			in := ui.TextInput(c.Key("target"), &a.target).Bind(&a.targetHandle).Width(220).Height(26).Placeholder("Drive or folder to scan").Label("Scan target").SingleLine()
+			if in.Submitted() {
+				a.startScan()
+			}
+			ui.ButtonBase(c.Key("target-menu")).Size(22, 26).Center().Label("Choose drive or folder").Tooltip("Drives and recent locations").Children(func() {
+				ui.Icon(c, icons["chevron_down"]).FontSize(11).TextColor(t.TextMuted)
+			}).Menu(func(m *ui.Menu) {
+				for _, d := range a.drives {
+					if m.Item(driveLabel(d, a)).Chosen() {
+						a.scanPath(d.Path)
+					}
+				}
+				if len(a.prefs.Recent) > 0 {
+					m.Separator()
+					for _, r := range a.prefs.Recent {
+						if m.Item(r).Chosen() {
+							a.scanPath(r)
+						}
+					}
+				}
+				m.Separator()
+				if m.Item("Browse for Folder…").Shortcut(ui.Ctrl, ui.KeyO).Chosen() {
+					a.chooseFolder()
+				}
+			})
+		})
+		label := "Scan"
+		if a.base != nil && a.source == "" && strings.EqualFold(filepath.Clean(a.target), filepath.Clean(a.base.Root)) {
+			label = "Rescan"
+		}
+		if textButton(c, "scan", label, "Scan the target (F5 rescans)", !a.scanning).Clicked() {
+			a.startScan()
+		}
+		if textButton(c, "stop", "Stop", "Stop scanning (Esc)", a.scanning).Clicked() {
+			a.stopScan()
+		}
+		vsep(c, pal)
+		if toolButton(c, "back", "arrow_left", "Back (Alt+Left)", a.canBack()) {
+			a.back()
+		}
+		if toolButton(c, "forward", "arrow_right", "Forward (Alt+Right)", a.canForward()) {
+			a.forward()
+		}
+		if toolButton(c, "up", "arrow_up", "Up one level (Alt+Up)", a.canUp()) {
+			a.up()
+		}
+		// Location: where Tree View and the treemap are rooted.
+		ui.Row(c).Grow(1).MinWidth(60).Height(26).Padding(0, 6).Radius(4).Border(1, t.Border).Background(pal.grid).AlignItems(ui.Center).Clip().Children(func() {
+			if a.snap == nil {
+				return
+			}
+			var ids []index.ID
+			for id := a.location; id != index.None; id = a.snap.Nodes[id].Parent {
+				ids = append([]index.ID{id}, ids...)
+			}
+			names := make([]string, len(ids))
+			for i, id := range ids {
+				names[i] = strings.TrimSuffix(a.name(id), `\`)
+			}
+			chosen := len(ids) - 1
+			if ui.Breadcrumbs(c.Key("crumbs"), names, &chosen).Label("Location").Changed() && chosen >= 0 && chosen < len(ids) {
+				a.navigate(ids[chosen])
+			}
+		})
+		vsep(c, pal)
+		a.searchBox(c)
+	})
+}
+
+func (a *App) searchBox(c *ui.Context) {
+	t := c.Theme()
+	ext := a.prefs.View == viewExtensions
+	text, placeholder := &a.search, "Search files and folders (Ctrl+F)"
+	if ext {
+		text, placeholder = &a.extFilter, "Filter extensions (Ctrl+F)"
+	}
+	ui.Row(c).Gap(0).AlignItems(ui.Center).Children(func() {
+		var field ui.Element
+		box := ui.Row(c).Width(280).Height(26).Padding(0, 4, 0, 6).Gap(4).Radius(4).Border(1, t.Border).Background(t.Background).AlignItems(ui.Center)
+		box.Children(func() {
+			ui.Icon(c, icons["search"]).FontSize(13).TextColor(t.TextMuted).Shrink(0)
+			field = ui.TextInput(c.Key("search"), text).Bind(&a.searchHandle).Grow(1).MinWidth(0).Background(ui.Transparent).Border(0, ui.Transparent).Padding(0).Placeholder(placeholder).Label("Search").SingleLine().Disabled(a.snap == nil)
+			if *text != "" {
+				clearBtn := ui.ButtonBase(c.Key("search-clear")).Size(18, 18).Center().Radius(3).Label("Clear search").Tooltip("Clear (Esc)")
+				if clearBtn.Hovered() {
+					clearBtn.Background(t.SurfaceHover)
+				}
+				clearBtn.Children(func() { ui.Icon(c, icons["dismiss"]).FontSize(11).TextColor(t.TextMuted) })
+				if clearBtn.Clicked() {
+					*text = ""
+					a.files.queryChanged(c.Now())
 				}
 			}
-			ui.Text(c, "Method: "+engineName(s.Engine)).Bold()
-			ui.Text(c, fmt.Sprintf("%d errors   %d directory links skipped   %d hard-link aliases", s.Errors, s.SkippedLinks, s.HardLinks))
-			if s.Fallback != "" {
-				ui.Text(c, s.Fallback).TextColor(t.Warning)
+		})
+		if field.Focused() {
+			box.Border(1, t.Focus)
+		}
+		if field.Shortcut(0, ui.KeyEscape) {
+			if *text != "" {
+				*text = ""
+				if !ext {
+					a.files.queryChanged(c.Now())
+				}
+			} else {
+				a.focusTable = true
 			}
-			ui.Text(c, "Live scan. Directory links are excluded. Allocated totals exclude filesystem overhead.").TextColor(t.TextMuted)
-			for _, issue := range s.Issues {
-				ui.Text(c, issue.Path+"\n"+issue.Message).FontSize(11).TextColor(t.Warning)
+		}
+		if field.Shortcut(0, ui.KeyDown) {
+			a.focusTable = true // continue into the results
+		}
+		if a.wantSearch && a.snap != nil {
+			// Select the query so typing replaces it, as in Explorer.
+			a.wantSearch, a.focusTable = false, false
+			field.Focus()
+			field.SetTextSelection(0, len([]rune(*text)))
+			c.Invalidate()
+		}
+		if field.Changed() && !ext {
+			if a.prefs.View == viewTree && strings.TrimSpace(a.search) != "" {
+				a.setViewMode(viewFiles)
+				a.focusTable = false
 			}
+			a.files.queryChanged(c.Now())
+			c.After(160 * time.Millisecond)
+		}
+		if field.Submitted() && a.prefs.View == viewFiles {
+			a.files.run()
+			a.focusTable = true
+		}
+		ui.ButtonBase(c.Key("search-menu")).Size(20, 26).Center().Label("Search options").Tooltip("Recent searches and search help").Children(func() {
+			ui.Icon(c, icons["chevron_down"]).FontSize(11).TextColor(t.TextMuted)
+		}).Menu(func(m *ui.Menu) {
+			for _, q := range a.prefs.SearchHistory {
+				if m.Item(q).Chosen() {
+					a.search = q
+					a.setViewMode(viewFiles)
+					a.files.invalidate()
+				}
+			}
+			if len(a.prefs.SearchHistory) > 0 {
+				if m.Item("Clear Search History").Chosen() {
+					a.prefs.SearchHistory = nil
+				}
+				m.Separator()
+			}
+			a.contextItems(m, "tools.search", "tools.filter", "help.syntax")
 		})
 	})
 }
 
-func (a *App) selectMap(id index.ID) {
-	a.selected = id
-	a.selectedRow = -1
-	for parent := a.snapshot.Nodes[id].Parent; parent != index.None; parent = a.snapshot.Nodes[parent].Parent {
-		a.open[parent] = true
-	}
-	within := false
-	for parent := id; parent != index.None; parent = a.snapshot.Nodes[parent].Parent {
-		if parent == a.focus {
-			within = true
-			break
+// Information bar: one line of high-value facts about the scan.
+
+func (a *App) infoBar(c *ui.Context, pal palette) {
+	t := c.Theme()
+	ui.Row(c).Height(24).Shrink(0).Padding(0, 10).Gap(14).AlignItems(ui.Center).Background(pal.chrome).BorderWidth(0, 0, 1, 0).BorderColor(pal.separator).Clip().Children(func() {
+		muted := func(s string) { ui.Text(c, s).TextColor(t.TextMuted).SingleLine() }
+		if a.scanning {
+			p := a.progress
+			ui.Spinner(c).Size(12, 12)
+			text := fmt.Sprintf("Scanning %s — %s files, %s folders · %s", a.target, count(p.Files.Load()), count(p.Folders.Load()), duration(time.Since(a.scanStart)))
+			ui.Text(c, text).SingleLine()
+			phase := p.Status()
+			if total := p.TotalRecords.Load(); total > 0 {
+				phase += fmt.Sprintf(" %.0f%%", 100*float64(p.Records.Load())/float64(total))
+			}
+			muted(phase)
+			if e := p.Errors.Load(); e > 0 {
+				ui.Text(c, plural(e, "inaccessible item", "inaccessible items")).TextColor(t.Warning)
+			}
+			return
 		}
-	}
-	if !within {
-		a.focus = 0
-		a.address = a.snapshot.Root
-	}
-	a.tab = 0
-	a.query = ""
-	a.requestRows()
+		s, root := a.snap, a.snap.Nodes[0]
+		ui.Text(c, "Size "+a.size(root.Size)+"   Allocated "+a.size(root.Allocated)).SingleLine().Tooltip(fmt.Sprintf("Logical: %s bytes\nAllocated on disk: %s bytes\nAllocated excludes filesystem overhead and is not the volume's used space.", count(root.Size), count(root.Allocated)))
+		ui.Text(c, plural(uint64(root.Files), "file", "files")+"   "+plural(uint64(root.Dirs), "folder", "folders")).SingleLine()
+		if d, ok := a.driveOf(s.Root); ok && a.source == "" {
+			muted(fmt.Sprintf("Volume %s %s used, %s free", strings.TrimSuffix(d.Path, `\`), a.size(d.Total-d.Free), a.size(d.Free)))
+		}
+		ui.Spacer(c)
+		if a.source != "" {
+			ui.Text(c, "Saved scan from "+s.Started.Format("2006-01-02 15:04")).TextColor(t.Warning).SingleLine().Tooltip(a.source + "\nHistorical data: files may have changed since.")
+		}
+		if s.Cancelled {
+			ui.Text(c, "Partial scan").TextColor(t.Warning).Tooltip("The scan was stopped before it finished; totals are incomplete.")
+		}
+		if len(s.Exclusions) > 0 {
+			ui.Text(c, plural(s.Excluded, "entry excluded", "entries excluded")).TextColor(t.Warning).Tooltip("Scan exclusions kept these out; totals are incomplete:\n" + strings.Join(s.Exclusions, "\n"))
+		}
+		if a.stale != "" {
+			ui.Text(c, "Results may be outdated").TextColor(t.Warning).Tooltip(a.stale + "\nPress F5 to rescan.")
+		}
+		if a.filter.active() || a.filterBusy {
+			status := "Filtered: " + a.filter.summary()
+			if a.filterBusy {
+				status = "Applying filter…"
+			} else if a.filter.stats.HiddenFiles > 0 {
+				status += " · " + plural(a.filter.stats.HiddenFiles, "file", "files") + " hidden"
+			}
+			ui.Text(c, status).TextColor(t.Focus).SingleLine().MaxWidth(420)
+			b := ui.ButtonBase(c.Key("clear-filter")).Padding(0, 4).Label("Clear filter").Tooltip("Show all entries again")
+			b.Children(func() { ui.Text(c, "Clear").TextColor(t.Focus).Underline() })
+			if b.Clicked() {
+				a.clearFilter()
+			}
+		}
+	})
 }
-func separator(c *ui.Context, height float32) { ui.Box(c).Size(1, height).Background(c.Theme().Border) }
-func engineName(name string) string {
-	if strings.Contains(name, "MFT") {
+
+func engineName(s *index.Snapshot) string {
+	if strings.Contains(s.Engine, "MFT") {
 		return "NTFS MFT"
 	}
-	return "Folders"
+	return "Directory scan"
 }
-func truncate(text string, limit int) string {
-	r := []rune(text)
-	if limit > 1 && len(r) > limit {
-		return string(r[:limit-1]) + "…"
-	}
-	return text
+
+// Workspace.
+
+func (a *App) workspace(c *ui.Context, pal palette) {
+	grid := a.gridTheme(c.Theme())
+	area := ui.Column(c).Grow(1).MinHeight(0)
+	area.HandleInput(func(ev ui.InputEvent) bool {
+		if ev.Kind == ui.InputScroll && ev.Mods&ui.Ctrl != 0 && ev.DY != 0 {
+			if ev.DY < 0 {
+				a.setZoom(a.zoom() + 0.1)
+			} else {
+				a.setZoom(a.zoom() - 0.1)
+			}
+			a.win.Invalidate()
+			return true
+		}
+		return false
+	})
+	area.Children(func() {
+		data := func() {
+			ui.Column(c).Fill().MinHeight(0).Children(func() {
+				a.viewTabs(c, pal)
+				prev := c.Theme()
+				c.SetTheme(grid)
+				switch a.prefs.View {
+				case viewFiles:
+					a.fileTable(c, pal)
+				case viewExtensions:
+					a.extTable(c, pal)
+				default:
+					a.treeTable(c, pal)
+				}
+				c.SetTheme(prev)
+			})
+		}
+		mapPane := func() {
+			ui.Column(c).Fill().MinHeight(0).Children(func() {
+				a.treemapBar(c, pal)
+				a.treemapView(c, pal)
+			})
+		}
+		switch {
+		case a.tm.maximized:
+			mapPane()
+		case a.prefs.ShowTreemap:
+			ui.SplitVerticalPercent(c.Key("split"), &a.prefs.TreemapPct, data, mapPane).Grow(1).MinHeight(0)
+		default:
+			data()
+		}
+	})
 }
-func fileColor(name string) ui.Color {
-	switch strings.ToLower(filepath.Ext(name)) {
-	case ".mp4", ".mkv", ".mov", ".avi", ".webm":
-		return typePalette[0]
-	case ".zip", ".7z", ".rar", ".tar", ".gz", ".iso":
-		return typePalette[1]
-	case ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".heic":
-		return typePalette[2]
-	case ".exe", ".dll", ".msi", ".sys":
-		return typePalette[3]
-	case ".pdf", ".doc", ".docx", ".txt", ".md":
-		return typePalette[4]
-	case ".mp3", ".wav", ".flac", ".ogg":
-		return typePalette[5]
-	case ".go", ".js", ".ts", ".tsx", ".json", ".py", ".rs", ".css":
-		return typePalette[6]
-	default:
-		return typePalette[7]
+
+func (a *App) viewTabs(c *ui.Context, pal palette) {
+	t := c.Theme()
+	ui.Row(c).Height(28).Shrink(0).Padding(0, 6).Gap(2).AlignItems(ui.Stretch).Background(pal.chrome).BorderWidth(0, 0, 1, 0).BorderColor(pal.separator).Children(func() {
+		for i, name := range []string{"Tree", "Files", "Extensions"} {
+			active := a.prefs.View == i
+			tab := ui.ButtonBase(c.Key("tab"+name)).Padding(0, 10).Center().Label(name + " view").Tooltip(fmt.Sprintf("%s (Ctrl+%d)", name, i+1))
+			if active {
+				tab.BorderWidth(0, 0, 2, 0).BorderColor(t.Focus)
+			} else if tab.Hovered() {
+				tab.Background(t.SurfaceHover)
+			}
+			i := i
+			tab.Children(func() {
+				txt := ui.Text(c, name).SingleLine()
+				if !active {
+					txt.TextColor(t.TextMuted)
+				}
+			})
+			if tab.Clicked() {
+				a.setViewMode(i)
+			}
+		}
+		ui.Spacer(c)
+		ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() { a.viewContext(c) })
+	})
+}
+
+// viewContext shows what the active view contains and its scope.
+func (a *App) viewContext(c *ui.Context) {
+	t := c.Theme()
+	muted := func(s string) ui.Element { return ui.Text(c, s).TextColor(t.TextMuted).SingleLine() }
+	switch a.prefs.View {
+	case viewTree:
+		if a.tree.notice != "" {
+			ui.Text(c, "Expansion limited").TextColor(t.Warning).Tooltip(a.tree.notice)
+		}
+	case viewFiles, viewExtensions:
+		if a.prefs.View == viewFiles {
+			f := &a.files
+			switch {
+			case f.err != "":
+				ui.Text(c, f.err).TextColor(t.Danger).SingleLine().MaxWidth(420)
+			case f.busy:
+				muted("Searching…")
+			default:
+				n := uint64(len(f.ids))
+				what := plural(n, "file", "files")
+				if strings.TrimSpace(f.ran) != "" {
+					what = plural(n, "match", "matches")
+				}
+				muted(what + " · " + a.size(f.total))
+			}
+		} else {
+			e := &a.ext
+			if e.busy {
+				muted("Analyzing…")
+			} else {
+				muted(fmt.Sprintf("%s of %s extensions · %% of %s files in scope", count(uint64(len(e.shown))), count(uint64(len(e.types))), strings.ToLower(a.prefs.Metric)))
+			}
+		}
+		scope := a.files.scopeName()
+		b := ui.ButtonBase(c.Key("scope")).Height(22).Padding(0, 6).Radius(4).Border(1, t.Border).AlignItems(ui.Center).Gap(4).Label("Scope").Tooltip("Where File View and Extensions look")
+		b.Children(func() {
+			muted("Scope:")
+			ui.Text(c, truncateMiddle(scope, 48)).SingleLine()
+			ui.Icon(c, icons["chevron_down"]).FontSize(10).TextColor(t.TextMuted)
+		}).Menu(func(m *ui.Menu) {
+			if m.Item("Entire Scan").Checked(a.files.scope == 0).Chosen() {
+				a.files.setScope(0)
+			}
+			if a.location != 0 && m.Item("Current Location: "+a.name(a.location)).Checked(a.files.scope == a.location).Chosen() {
+				a.files.setScope(a.location)
+			}
+			if id := a.tree.cursorID(); id != index.None && id != 0 && id != a.location && a.snap.Nodes[id].IsDir() {
+				if m.Item("Selected Folder: " + a.name(id)).Checked(a.files.scope == id).Chosen() {
+					a.files.setScope(id)
+				}
+			}
+		})
 	}
 }
 
-func quickStat(c *ui.Context, t *ui.Theme, icon *ui.SVG, label, value string) {
-	ui.Column(c).Grow(1).Background(t.SurfaceHover).Radius(6).Padding(6, 8).Gap(3).Children(func() {
-		ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-			ui.Icon(c, icon).FontSize(14).TextColor(t.Accent)
-			ui.Text(c, label).FontSize(10).TextColor(t.TextMuted)
-		})
-		ui.Text(c, value).FontSize(12).Bold()
+func truncateMiddle(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	half := (n - 1) / 2
+	return string(r[:half]) + "…" + string(r[len(r)-half:])
+}
+
+func (a *App) treemapBar(c *ui.Context, pal palette) {
+	t := c.Theme()
+	ui.Row(c).Height(28).Shrink(0).Padding(0, 6, 0, 10).Gap(6).AlignItems(ui.Center).Background(pal.chrome).BorderWidth(1, 0, 1, 0).BorderColor(pal.separator).Children(func() {
+		ui.Text(c, "Treemap").SingleLine()
+		if a.tm.busy {
+			ui.Text(c, "Updating…").TextColor(t.TextMuted)
+		}
+		ui.Spacer(c)
+		metric := a.prefs.Metric
+		if ui.Select(c.Key("tm-metric"), &metric, []string{"Logical", "Allocated"}).Label("Size metric").Tooltip("Size metric for the treemap, percentages and default sorting").Width(100).Changed() {
+			a.setMetric(metric)
+		}
+		colors := map[string]string{"Extension": "Color by extension", "Folder": "Color by folder", "Mono": "Monochrome"}
+		choice := colors[a.prefs.TreemapColors]
+		if ui.Select(c.Key("tm-colors"), &choice, []string{"Color by extension", "Color by folder", "Monochrome"}).Label("Treemap colors").Width(150).Changed() {
+			for k, v := range colors {
+				if v == choice {
+					a.prefs.TreemapColors = k
+				}
+			}
+		}
+		maxTip := "Maximize treemap (Ctrl+Shift+M)"
+		if a.tm.maximized {
+			maxTip = "Restore treemap (Ctrl+Shift+M)"
+		}
+		icon := "arrow_up"
+		if a.tm.maximized {
+			icon = "chevron_down"
+		}
+		if toolButton(c, "tm-max", icon, maxTip, true) {
+			a.exec("view.maxTreemap")
+		}
+		if toolButton(c, "tm-hide", "dismiss", "Hide treemap (Ctrl+T)", true) {
+			a.prefs.ShowTreemap, a.tm.maximized = false, false
+		}
 	})
 }
-func mapTextColor(color ui.Color) ui.Color {
-	linear := func(b uint8) float64 {
-		v := float64(b) / 255
-		if v <= .04045 {
-			return v / 12.92
+
+// Status bar.
+
+func (a *App) statusBar(c *ui.Context, pal palette) {
+	t := c.Theme()
+	ui.Row(c).Height(24).Shrink(0).Padding(0, 10).Gap(16).AlignItems(ui.Center).Background(pal.chrome).BorderWidth(1, 0, 0, 0).BorderColor(pal.separator).Clip().Children(func() {
+		msg := a.message
+		color := t.Text
+		if a.errorMsg {
+			color = t.Danger
 		}
-		return math.Pow((v+.055)/1.055, 2.4)
+		if msg == "" {
+			switch {
+			case a.scanning:
+				msg = "Scanning…"
+			case a.snap == nil:
+				msg = "Ready"
+			default:
+				msg = "Ready"
+			}
+		}
+		m := ui.Text(c, msg).TextColor(color).SingleLine().Shrink(1).MinWidth(0)
+		if a.errorMsg {
+			m.Tooltip(msg)
+		}
+		ui.Spacer(c)
+		if ids := a.selected(); len(ids) > 0 && a.snap != nil {
+			var total uint64
+			for _, id := range a.topLevel(ids) {
+				total += a.metric(a.snap.Nodes[id])
+			}
+			ui.Text(c, fmt.Sprintf("%s selected · %s", count(uint64(len(ids))), a.size(total))).TextColor(t.TextMuted).SingleLine()
+		}
+		if a.snap != nil {
+			s := a.snap
+			engine := ui.Text(c, engineName(s)+" · "+duration(s.Elapsed)).TextColor(t.TextMuted).SingleLine()
+			tip := s.Engine
+			if s.Fallback != "" {
+				tip += "\nDirect MFT reading was not used: " + s.Fallback
+				if !a.admin {
+					tip += "\nOptions → Restart as Administrator enables it for NTFS drives."
+				}
+			}
+			engine.Tooltip(tip)
+			if s.Errors > 0 {
+				b := ui.ButtonBase(c.Key("issues")).Padding(0, 2).Gap(4).AlignItems(ui.Center).Label("Scan issues").Tooltip("Some items could not be read; totals may be incomplete. Click for details.")
+				b.Children(func() {
+					ui.Icon(c, icons["warning"]).FontSize(12).TextColor(t.Warning)
+					ui.Text(c, plural(s.Errors, "issue", "issues")).TextColor(t.Warning)
+				})
+				if b.Clicked() {
+					a.dlg.issues = true
+				}
+			}
+		}
+	})
+}
+
+// Pages without data.
+
+func (a *App) scanningPage(c *ui.Context) {
+	t := c.Theme()
+	ui.Column(c).Fill().Center().Gap(10).Children(func() {
+		ui.Text(c, "Scanning "+a.target+"…").FontSize(14)
+		ui.Progress(c, -1).Width(280)
+		ui.Text(c, "Press Esc or Stop to cancel. Results appear when the scan finishes.").TextColor(t.TextMuted)
+	})
+}
+
+func (a *App) startPage(c *ui.Context, pal palette) {
+	t := c.Theme()
+	ui.Column(c).Fill().Padding(16, 20).Gap(10).Children(func() {
+		ui.Text(c, "Choose a drive or folder to analyze").FontSize(14)
+		ui.Text(c, "Double-click a drive, type a path in the toolbar, or drop a folder onto this window.").TextColor(t.TextMuted)
+		cols := []ui.TableColumn{{Title: "Drive", Width: 70}, {Title: "Label", Width: 180}, {Title: "File system", Width: 90}, {Title: "Capacity", Width: 90, Align: ui.End}, {Title: "Used", Width: 160}, {Title: "Free", Width: 90, Align: ui.End}}
+		a.dlg.driveList.Selected = &a.dlg.driveRow
+		table := ui.Table(c.Key("drives"), &a.dlg.driveList, cols, len(a.drives), func(row, col int) {
+			d := a.drives[row]
+			switch col {
+			case 0:
+				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+					if b := shellIcons["drive"]; b != nil {
+						ui.Image(c, b).Size(16, 16)
+					}
+					ui.Text(c, d.Path).SingleLine()
+				})
+			case 1:
+				ui.Text(c, d.Name).SingleLine()
+			case 2:
+				ui.Text(c, d.FileSystem).TextColor(t.TextMuted)
+			case 3:
+				ui.Text(c, a.size(d.Total))
+			case 4:
+				used := percent(d.Total-d.Free, d.Total)
+				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+					shareBar(c, used/100, 90, pal)
+					ui.Text(c, percentText(used)).TextColor(t.TextMuted)
+				})
+			case 5:
+				ui.Text(c, a.size(d.Free))
+			}
+		}).Height(float32(28 + 26*max(1, len(a.drives)))).MaxHeight(260)
+		if table.Submitted() && a.dlg.driveRow >= 0 && a.dlg.driveRow < len(a.drives) {
+			a.scanPath(a.drives[a.dlg.driveRow].Path)
+		}
+		ui.Row(c).Gap(8).Children(func() {
+			if textButton(c, "start-scan", "Scan Selected Drive", "", a.dlg.driveRow >= 0).Clicked() && a.dlg.driveRow < len(a.drives) {
+				a.scanPath(a.drives[a.dlg.driveRow].Path)
+			}
+			if textButton(c, "start-folder", "Scan Folder…", "Ctrl+O", true).Clicked() {
+				a.chooseFolder()
+			}
+			if textButton(c, "start-open", "Open Saved Scan…", "", true).Clicked() {
+				a.openSnapshotDialog()
+			}
+		})
+		if !a.admin {
+			ui.Text(c, "Quarry is not running as administrator, so it enumerates folders. Restarting as administrator lets it read the NTFS master file table directly, which is much faster on large drives.").TextColor(t.TextMuted).MaxWidth(720)
+			ui.Row(c).Children(func() {
+				if textButton(c, "start-admin", "Restart as Administrator", "", true).Clicked() {
+					a.restartElevated()
+				}
+			})
+		}
+		if len(a.prefs.Recent) > 0 {
+			ui.Text(c, "Recent locations").Margin(8, 0, 0, 0)
+			ui.Column(c).Gap(0).Children(func() {
+				for _, r := range a.prefs.Recent {
+					r := r
+					b := ui.ButtonBase(c.Key("recent"+r)).Height(24).Padding(0, 6).Radius(3).AlignItems(ui.Center).Justify(ui.Start).AlignSelf(ui.Start).MinWidth(320).Gap(6).Label("Scan " + r)
+					if b.Hovered() {
+						b.Background(t.SurfaceHover)
+					}
+					b.Children(func() {
+						if bm := shellIcons["folder"]; bm != nil {
+							ui.Image(c, bm).Size(16, 16)
+						}
+						ui.Text(c, r).SingleLine()
+					})
+					if b.Clicked() {
+						a.scanPath(r)
+					}
+				}
+			})
+		}
+	})
+}
+
+func (a *App) driveOf(path string) (d struct {
+	Path        string
+	Total, Free uint64
+}, ok bool) {
+	for _, dr := range a.drives {
+		if len(path) >= len(dr.Path) && strings.EqualFold(path[:len(dr.Path)], dr.Path) && dr.Total > 0 {
+			d.Path, d.Total, d.Free = dr.Path, dr.Total, dr.Free
+			return d, true
+		}
 	}
-	l := .2126*linear(color.R) + .7152*linear(color.G) + .0722*linear(color.B)
-	if l > .179 {
-		return ui.Hex("#000000")
-	}
-	return ui.Hex("#ffffff")
+	return d, false
 }

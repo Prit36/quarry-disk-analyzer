@@ -12,7 +12,7 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
-	"stratum/internal/index"
+	"quarry/internal/index"
 )
 
 var testLE = binary.LittleEndian

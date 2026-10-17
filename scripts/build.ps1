@@ -15,7 +15,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Go vet failed' }
 if ($LASTEXITCODE -ne 0) { throw 'MyGO UI lifetime checks failed' }
 if ($Portable) {
     New-Item -ItemType Directory -Force -Path 'build\portable' | Out-Null
-    & $goExecutable build -trimpath -ldflags '-s -w -H=windowsgui' -o 'build\portable\Stratum.exe' .
+    & $goExecutable build -trimpath -ldflags '-s -w -H=windowsgui' -o 'build\portable\Quarry.exe' .
     if ($LASTEXITCODE -ne 0) { throw 'Compilation failed' }
     New-Item -ItemType Directory -Force -Path 'build\portable\licenses' | Out-Null
     Copy-Item -Path 'resources\licenses\*' -Destination 'build\portable\licenses' -Force

@@ -26,6 +26,8 @@ type SnapshotInfo struct {
 	Cancelled                                   bool
 	Errors, SkippedLinks, HardLinks, Unresolved uint64
 	Issues                                      []Issue
+	Exclusions                                  []string
+	Excluded                                    uint64
 	Total                                       Node
 }
 type snapshotHeader struct {
@@ -34,10 +36,13 @@ type snapshotHeader struct {
 }
 
 func (s *Snapshot) Save(ctx context.Context, path string) error {
+	if s.hasRemoved() {
+		s = s.Compact()
+	}
 	if len(s.Nodes) == 0 || uint64(len(s.Nodes))*52+uint64(len(s.Names)) > SnapshotLimit {
 		return fmt.Errorf("snapshot exceeds the 128 MiB uncompressed history limit")
 	}
-	info := SnapshotInfo{Root: s.Root, Engine: s.Engine, Fallback: s.Fallback, Started: s.Started, Elapsed: s.Elapsed, Cancelled: s.Cancelled, Errors: s.Errors, SkippedLinks: s.SkippedLinks, HardLinks: s.HardLinks, Unresolved: s.Unresolved, Issues: s.Issues, Total: s.Nodes[0]}
+	info := SnapshotInfo{Root: s.Root, Engine: s.Engine, Fallback: s.Fallback, Started: s.Started, Elapsed: s.Elapsed, Cancelled: s.Cancelled, Errors: s.Errors, SkippedLinks: s.SkippedLinks, HardLinks: s.HardLinks, Unresolved: s.Unresolved, Issues: s.Issues, Exclusions: s.Exclusions, Excluded: s.Excluded, Total: s.Nodes[0]}
 	metadata, err := json.Marshal(info)
 	if err != nil {
 		return err
@@ -87,7 +92,7 @@ func readSnapshotHeader(reader io.Reader) (snapshotHeader, SnapshotInfo, error) 
 		return header, info, err
 	}
 	if header.Magic != snapshotMagic || header.Records == 0 || uint64(header.Records)*52+uint64(header.Names) > SnapshotLimit || header.Metadata > 1<<20 {
-		return header, info, fmt.Errorf("unsupported or oversized Stratum snapshot")
+		return header, info, fmt.Errorf("unsupported or oversized Quarry snapshot")
 	}
 	metadata := make([]byte, header.Metadata)
 	if _, err := io.ReadFull(reader, metadata); err != nil {
@@ -112,7 +117,7 @@ func LoadSnapshot(ctx context.Context, path string) (*Snapshot, error) {
 	if err != nil {
 		return nil, err
 	}
-	snapshot := &Snapshot{Root: info.Root, Engine: info.Engine, Fallback: info.Fallback, Started: info.Started, Elapsed: info.Elapsed, Cancelled: info.Cancelled, Errors: info.Errors, SkippedLinks: info.SkippedLinks, HardLinks: info.HardLinks, Unresolved: info.Unresolved, Issues: info.Issues, Nodes: make([]Node, header.Records), Names: make([]byte, header.Names)}
+	snapshot := &Snapshot{Root: info.Root, Engine: info.Engine, Fallback: info.Fallback, Started: info.Started, Elapsed: info.Elapsed, Cancelled: info.Cancelled, Errors: info.Errors, SkippedLinks: info.SkippedLinks, HardLinks: info.HardLinks, Unresolved: info.Unresolved, Issues: info.Issues, Exclusions: info.Exclusions, Excluded: info.Excluded, Nodes: make([]Node, header.Records), Names: make([]byte, header.Names)}
 	for start := 0; start < len(snapshot.Nodes); start += 1024 {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -198,7 +203,7 @@ func ListSnapshots(directory string) ([]SnapshotInfo, error) {
 	}
 	var result []SnapshotInfo
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "scan-") || !strings.HasSuffix(entry.Name(), ".stratum") {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "scan-") || !strings.HasSuffix(entry.Name(), ".quarry") {
 			continue
 		}
 		path := filepath.Join(directory, entry.Name())
