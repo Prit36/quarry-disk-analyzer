@@ -7,6 +7,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 	"quarry/internal/index"
+	"quarry/internal/platform"
 	"quarry/internal/treemap"
 )
 
@@ -28,6 +29,11 @@ type treemapModel struct {
 	dirty     bool
 	maximized bool
 	highlight index.ID
+
+	// menu is the tile the context menu was opened on, recorded as the
+	// secondary button goes down: the menu outlives the hover.
+	menu    tileKey
+	menuSet bool
 
 	ranks   map[string]int // extension → color slot, by size across the scan
 	rankFor *index.Snapshot
@@ -254,37 +260,66 @@ func (m *treemapModel) color(s *index.Snapshot, cell treemap.Cell, dark bool) ui
 	return m.a.extColor(ext)
 }
 
-func (a *App) treemapTooltip(s *index.Snapshot, cell treemap.Cell) string {
+// cellExt is the extension a tile stands for: a file's own, or the largest
+// inside an aggregated block. Folders subdivided further have none.
+func (m *treemapModel) cellExt(s *index.Snapshot, cell treemap.Cell) string {
+	if ext, ok := m.dominant[tileKey{cell.Tile.ID, cell.Tile.Other}]; ok {
+		return ext
+	}
+	if cell.Tile.Other || cell.Group || s.Nodes[cell.Tile.ID].IsDir() {
+		return ""
+	}
+	ext := strings.ToLower(filepath.Ext(s.NameView(cell.Tile.ID)))
+	if ext == "" {
+		ext = "(no extension)"
+	}
+	return ext
+}
+
+// hoverLines describes a tile for the pointer tip: a title and details.
+func (a *App) hoverLines(s *index.Snapshot, cell treemap.Cell) (string, []string) {
 	m := &a.tm
 	if cell.Tile.Other {
-		tip := "Smaller items in " + a.name(cell.Tile.ID) + ": " + a.size(cell.Tile.Bytes)
+		lines := []string{a.size(cell.Tile.Bytes) + " · " + percentText(percent(cell.Tile.Bytes, m.total)) + " of " + a.shortName(m.root)}
 		if ext, ok := m.dominant[tileKey{cell.Tile.ID, true}]; ok {
-			tip += "\nMostly " + ext
+			lines = append(lines, "Mostly "+ext)
 		}
-		return tip + "\nDouble-click to open the folder."
+		lines = append(lines, "Too small to draw one by one. Double-click to open the folder.")
+		return "Smaller items in " + a.name(cell.Tile.ID), lines
 	}
 	id := cell.Tile.ID
 	n := s.Nodes[id]
-	lines := []string{a.name(id), a.pathOf(id), "Size: " + a.size(n.Size) + "    Allocated: " + a.size(n.Allocated), percentText(percent(a.metric(n), m.total)) + " of " + a.name(m.root)}
-	if !n.IsDir() {
-		if ext := filepath.Ext(s.NameView(id)); ext != "" {
-			lines = append(lines, "Type: "+strings.ToLower(ext))
-		}
-	} else {
-		line := plural(uint64(n.Files), "file", "files")
+	lines := []string{truncateMiddle(a.pathOf(id), 90)}
+	size := a.size(n.Size)
+	if a.size(n.Allocated) != a.size(n.Size) {
+		size += "  (" + a.size(n.Allocated) + " on disk)"
+	}
+	lines = append(lines, size+" · "+percentText(percent(a.metric(n), m.total))+" of "+a.shortName(m.root))
+	if n.IsDir() {
+		line := plural(uint64(n.Files), "file", "files") + ", " + plural(uint64(n.Dirs), "folder", "folders")
 		if ext, ok := m.dominant[tileKey{id, false}]; ok {
-			line += ", mostly " + ext
+			line += " · mostly " + ext
 		}
 		lines = append(lines, line)
+	} else if ext := m.cellExt(s, cell); ext != "" {
+		if tn := platform.FileTypeName(ext); tn != "" {
+			ext += " (" + tn + ")"
+		}
+		lines = append(lines, ext)
+	}
+	if d := dateText(n.Modified); d != "" {
+		lines = append(lines, "Modified "+d)
 	}
 	if s.IsMetadata(id) {
-		lines = append(lines, "NTFS metadata. Its logical size can describe reserved space rather than data; it is not reclaimable.")
+		lines = append(lines, "NTFS metadata: reserved by the filesystem, not reclaimable.")
 	}
-	return strings.Join(lines, "\n")
+	return a.name(id), lines
 }
 
 // treemapView draws the map. Click selects the item in Tree View, a double
 // click on a folder goes into it, right-click offers the item commands.
+// The tile under the pointer is outlined and described in a tip that
+// follows the pointer, without the delay of an ordinary tooltip.
 func (a *App) treemapView(c *ui.Context, pal palette) {
 	m := &a.tm
 	m.ensure()
@@ -292,11 +327,26 @@ func (a *App) treemapView(c *ui.Context, pal palette) {
 	s := m.forSnap
 	box := ui.Box(c.Key("treemap")).Grow(1).MinHeight(0).Clip().Focusable().Label("Treemap").Background(pal.grid)
 	bounds := box.Bounds()
-	if bounds.W <= 0 || s == nil {
-		c.Invalidate()
+	if s == nil {
+		return
+	}
+	if bounds.W <= 0 {
+		c.Invalidate() // laid out in the next frame
 		return
 	}
 	m.layout(bounds.W, bounds.H)
+	// The context menu's tile is the one under the pointer as the
+	// secondary button goes down: its item is chosen later, with the
+	// pointer elsewhere.
+	box.HandleInput(func(ev ui.InputEvent) bool {
+		if ev.Kind == ui.InputPointerDown && ev.Button == 1 {
+			m.menuSet = false
+			if i := m.hit(ev.X, ev.Y); i >= 0 && !m.busy {
+				m.menu, m.menuSet = tileKey{m.cells[i].Tile.ID, m.cells[i].Tile.Other}, true
+			}
+		}
+		return false
+	})
 	px, py, over := box.PointerPosition()
 	hover := -1
 	if over && !m.busy {
@@ -304,32 +354,42 @@ func (a *App) treemapView(c *ui.Context, pal palette) {
 	}
 	if hover >= 0 {
 		cell := m.cells[hover]
-		box.Tooltip(a.treemapTooltip(s, cell))
+		a.hover, a.hoverOther = cell.Tile.ID, cell.Tile.Other
 		if box.Clicked() {
-			if cell.Tile.Other {
-				a.reveal(cell.Tile.ID)
-			} else {
-				m.highlight = cell.Tile.ID
-				a.reveal(cell.Tile.ID)
-			}
+			m.highlight = cell.Tile.ID
+			a.reveal(cell.Tile.ID)
 		}
 		if box.DoubleClicked() {
-			id := cell.Tile.ID
-			if s.Nodes[id].IsDir() {
+			if id := cell.Tile.ID; s.Nodes[id].IsDir() {
 				a.navigate(id)
 			}
 		}
-		box.ContextMenu(func(menu *ui.Menu) {
-			if !cell.Tile.Other {
-				a.tree.selectOnly(cell.Tile.ID)
-			}
-			if s.Nodes[cell.Tile.ID].IsDir() && menu.Item("Go Into Folder").Chosen() {
-				id := cell.Tile.ID
-				a.post(func() { a.navigate(id) })
-			}
-			a.contextItems(menu, "-", "item.open", "item.explorer", "-", "edit.copy", "edit.copyPath", "-", "item.scanHere", "-", "edit.delete", "-", "item.properties")
-		})
 	}
+	box.ContextMenu(func(menu *ui.Menu) {
+		if !m.menuSet || int(m.menu.id) >= len(s.Nodes) {
+			return
+		}
+		id, other := m.menu.id, m.menu.other
+		title := a.name(id)
+		if other {
+			title = "Smaller items in " + title
+		}
+		menu.Item(truncateMiddle(title, 60)).Disabled(true)
+		menu.Separator()
+		if a.snap == nil || !a.snap.Reachable(id) {
+			menu.Item("Hidden by the analysis filter").Disabled(true)
+			return
+		}
+		// Commands act on the selection: make it this tile, once.
+		if a.prefs.View != viewTree || a.tree.cursorID() != id || a.tree.sel.Len() != 1 || !a.tree.sel.Has(id) {
+			m.highlight = id
+			a.reveal(id)
+		}
+		if s.Nodes[id].IsDir() && id != a.location && menu.Item("Go Into Folder").Chosen() {
+			a.post(func() { a.navigate(id) })
+		}
+		a.contextItems(menu, "-", "item.open", "item.explorer", "-", "edit.copy", "edit.copyPath", "edit.copyName", "-", "nav.up", "item.searchHere", "item.scanHere", "-", "edit.delete", "-", "item.properties")
+	})
 	if box.Shortcut(0, ui.KeyBackspace) {
 		a.up()
 	}
@@ -347,16 +407,27 @@ func (a *App) treemapView(c *ui.Context, pal palette) {
 			break
 		}
 	}
+	// In Extensions view the chosen extension stands out; the rest dims.
+	focusExt := ""
+	if a.prefs.View == viewExtensions {
+		focusExt, _ = a.ext.currentExt()
+	}
+	var tipTitle string
+	var tipLines []string
+	if hover >= 0 {
+		tipTitle, tipLines = a.hoverLines(s, m.cells[hover])
+	}
 	cells := m.cells
 	dark := t.Dark
 	busy := m.busy
+	metric := strings.ToLower(a.prefs.Metric)
 	box.Draw(func(p *ui.Painter, origin ui.Rect) {
 		if busy && len(cells) == 0 {
 			p.Text(origin.X+8, origin.Y+6, "Building treemap…", 12, t.TextMuted)
 			return
 		}
 		if len(cells) == 0 {
-			p.Text(origin.X+8, origin.Y+6, "Nothing to show: this folder has no data for the "+strings.ToLower(a.prefs.Metric)+" size metric.", 12, t.TextMuted)
+			p.Text(origin.X+8, origin.Y+6, "Nothing to show: this folder has no data for the "+metric+" size metric.", 12, t.TextMuted)
 			return
 		}
 		edge := ui.Hex("#000000").Alpha(.35)
@@ -380,7 +451,7 @@ func (a *App) treemapView(c *ui.Context, pal palette) {
 					}
 				}
 				if i == hover {
-					frame = frame.Mix(ui.Hex("#FFFFFF"), .12)
+					frame = frame.Mix(ui.Hex("#FFFFFF"), .15)
 				}
 				p.Fill(rect, frame, 0)
 				if cell.Header >= 14 && rect.W > 40 {
@@ -391,8 +462,11 @@ func (a *App) treemapView(c *ui.Context, pal palette) {
 				}
 				continue
 			}
+			if focusExt != "" && m.cellExt(s, cell) != focusExt {
+				col = col.Mix(pal.grid, .75)
+			}
 			if i == hover {
-				col = col.Mix(ui.Hex("#FFFFFF"), .22)
+				col = col.Mix(ui.Hex("#FFFFFF"), .18)
 			}
 			p.FillGradient(rect, ui.LinearGradient{From: col.Mix(ui.Hex("#FFFFFF"), .10), To: col.Mix(ui.Hex("#000000"), .18), Angle: 135}, 0)
 			if rect.W > 2 && rect.H > 2 {
@@ -418,5 +492,48 @@ func (a *App) treemapView(c *ui.Context, pal palette) {
 			p.Stroke(rect, ui.Hex("#000000"), 0, 3)
 			p.Stroke(rect, ui.Hex("#FFFFFF"), 0, 1.5)
 		}
+		if hover < 0 {
+			return
+		}
+		// Outline the tile under the pointer, then the tip beside the pointer.
+		r := cells[hover].Tile.Rect
+		rect := ui.Rect{X: origin.X + r.X + 1, Y: origin.Y + r.Y + 1, W: max(1, r.W-2), H: max(1, r.H-2)}
+		p.Stroke(rect, t.Focus, 0, 2)
+		const pad, line = 8, 16
+		titleSpan := ui.Span{Text: tipTitle, Size: 12, Weight: 600, Color: t.Text}
+		w, _ := p.MeasureText(0, titleSpan)
+		for _, l := range tipLines {
+			lw, _ := p.MeasureText(0, ui.Span{Text: l, Size: 11.5})
+			w = max(w, lw)
+		}
+		w = min(w+2*pad, max(120, origin.W-8))
+		h := float32(pad*2 + line*(1+len(tipLines)))
+		x, y := origin.X+px+16, origin.Y+py+18
+		if x+w > origin.X+origin.W-4 {
+			x = origin.X + px - w - 12
+		}
+		if y+h > origin.Y+origin.H-4 {
+			y = origin.Y + py - h - 10
+		}
+		x = max(origin.X+4, x)
+		y = max(origin.Y+4, y)
+		tip := ui.Rect{X: x, Y: y, W: w, H: h}
+		bg, border := ui.Hex("#2B2B2B"), ui.Hex("#454545")
+		if !dark {
+			bg, border = ui.Hex("#FFFFFF"), ui.Hex("#C8C8C8")
+		}
+		p.Shadow(tip, 6, 0, 3, 12, 0, ui.RGBA(0, 0, 0, 0.35))
+		p.Fill(tip, bg, 6)
+		p.Stroke(tip, border, 6, 1)
+		p.Clip(ui.Rect{X: x + pad, Y: y, W: w - 2*pad, H: h}, 0, func() {
+			p.RichText(x+pad, y+pad-1, 0, titleSpan)
+			for i, l := range tipLines {
+				color := t.TextMuted
+				if i == 1 {
+					color = t.Text // the size line
+				}
+				p.Text(x+pad, y+pad+float32(line*(i+1)), l, 11.5, color)
+			}
+		})
 	})
 }

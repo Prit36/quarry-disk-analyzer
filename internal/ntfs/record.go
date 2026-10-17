@@ -164,7 +164,7 @@ func Parse(b []byte, number uint64) (Record, bool, error) {
 			if le.Uint64(a.Data[16:]) != 0 {
 				return nil
 			} // continuation of a stream
-			r.Size += le.Uint64(a.Data[48:])
+			size := le.Uint64(a.Data[48:])
 			allocated := le.Uint64(a.Data[40:])
 			if a.Flags&0x8001 != 0 {
 				if len(a.Data) < 72 {
@@ -172,6 +172,14 @@ func Parse(b []byte, number uint64) (Record, bool, error) {
 				}
 				allocated = le.Uint64(a.Data[64:])
 			}
+			// A sparse named stream's length describes address space, not
+			// data: $BadClus:$Bad spans the whole volume and $UsnJrnl:$J
+			// tens of gigabytes. Count what it occupies, as Explorer and
+			// WizTree do; sparse main streams keep their logical length.
+			if a.NameLength > 0 && a.Flags&0x8000 != 0 {
+				size = min(size, allocated)
+			}
+			r.Size += size
 			r.Allocated += allocated
 		}
 		return nil

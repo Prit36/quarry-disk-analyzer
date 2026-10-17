@@ -89,3 +89,24 @@ func (f analysisFilter) summary() string {
 	}
 	return strings.Join(parts, "; ")
 }
+
+// hasMetadata reports whether a scan can contain NTFS metadata entries:
+// direct MFT scans list $MFT, $BadClus, $Extend… and unresolved records.
+func hasMetadata(s *index.Snapshot) bool {
+	return strings.Contains(s.Engine, "MFT") || s.Unresolved > 0
+}
+
+// withoutMetadata returns s without its NTFS metadata, with totals
+// recomputed, or s itself when hide is false or there is none. Metadata
+// only sits directly below the scan root, so only those entries are tested.
+func withoutMetadata(ctx context.Context, s *index.Snapshot, hide bool) *index.Snapshot {
+	if !hide || !hasMetadata(s) {
+		return s
+	}
+	meta := func(id index.ID) bool { return s.Nodes[id].Parent == 0 && s.IsMetadata(id) }
+	view, _, err := s.Filtered(ctx, func(id index.ID) bool { return !meta(id) }, meta, false)
+	if err != nil {
+		return s
+	}
+	return view
+}

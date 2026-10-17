@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.1 — 2026-10-17
+
+- **NTFS sizes.** Sparse named streams count the space they occupy, not their length: `$BadClus` no longer shows the size of the whole volume and `$Extend` (the USN journal) no longer tens of gigabytes, so drive totals are no longer inflated past the disk size. Sparse files keep their logical size.
+- **Treemap context menu.** Commands act on the tile that was right-clicked. Before, the menu followed the pointer, so Open, Show in Explorer, Copy, Delete or Go Into could do nothing or act on the previous selection. The menu names its tile and adds Copy Name, Up One Level and Search in This Folder.
+- **Treemap hover.** A tip beside the pointer, without delay, names the tile with its path, size, share, type and date; the tile is outlined. Previously one delayed tooltip sat at the top of the map. The treemap bar names the folder shown.
+- **Explorer.** Show in Explorer and Open on folders start File Explorer as its own process when Quarry runs as administrator, where the shell call opened nothing. A drive root opens the drive. Show in Explorer is limited to 8 folders at once.
+- **NTFS metadata is hidden by default.** `$MFT`, `$LogFile`, `$BadClus`, `$Extend` and the other filesystem records of MFT scans, plus records whose folder could not be resolved, are no longer listed or counted in totals, searches, extensions or the treemap. The information bar says "NTFS metadata hidden" (its tooltip gives the size); Options → Show NTFS Metadata Files lists them again. When shown, they no longer offer Open, Show in Explorer or Properties, which failed and wrongly marked the results as outdated.
+- **Status bar** shows the full path and size of the row or tile under the pointer, or of the focused entry, instead of "Ready". Notifications give way after 5 seconds; errors stay.
+- **Extensions view** highlights the chosen extension's tiles in the treemap and dims the rest.
+- Rows under the pointer are easier to follow; Advanced Search's scope also updates Extensions.
+
 ## 0.1.0 — 2026-10-17
 
 A rebuild of the interface as a compact Windows utility, released under a new name: **Stratum is now Quarry**, with a new logo. The scan engines and index format are unchanged.

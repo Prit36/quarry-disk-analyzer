@@ -49,13 +49,16 @@ type App struct {
 
 	// Data. base is the authoritative index (updated by file operations);
 	// snap is what the views show: base, or a filtered copy with the same IDs.
-	base       *index.Snapshot
-	snap       *index.Snapshot
-	source     string // snapshot file the data came from, "" for a live scan
-	stale      string // why on-disk state may differ from the index
-	filter     analysisFilter
-	filterBusy bool
-	filterGen  uint64
+	base        *index.Snapshot
+	snap        *index.Snapshot
+	source      string          // snapshot file the data came from, "" for a live scan
+	stale       string          // why on-disk state may differ from the index
+	plain       *index.Snapshot // base without NTFS metadata (or base), for plainFor
+	plainFor    *index.Snapshot
+	plainHidden bool // plain was made with metadata hidden
+	filter      analysisFilter
+	filterBusy  bool
+	filterGen   uint64
 
 	// Navigation: one history shared by the tree and the treemap.
 	location index.ID
@@ -74,6 +77,9 @@ type App struct {
 	wantSearch   bool
 	extFilter    string
 	focused      map[string]bool
+
+	hover      index.ID // entry under the pointer in a list or the treemap, this frame
+	hoverOther bool     // hover is the "Smaller items" block of that folder
 
 	message   string // transient status-bar message
 	messageAt time.Time
@@ -217,9 +223,13 @@ func (a *App) startScan() {
 	if a.prefs.UseExclusions {
 		opts.Exclude = append([]string(nil), a.prefs.Exclusions...)
 	}
-	progress := a.progress
+	progress, hide := a.progress, !a.prefs.ShowMetadata
 	go func() {
 		s, err := scan.Run(ctx, target, opts, progress)
+		var plain *index.Snapshot
+		if err == nil {
+			plain = withoutMetadata(ctx, s, hide) // off the UI thread
+		}
 		runtime.GC() // release scan buffers off the UI thread
 		drives := platform.Drives()
 		a.post(func() {
@@ -241,6 +251,7 @@ func (a *App) startScan() {
 			}
 			a.prefs.Recent = remember(a.prefs.Recent, s.Root, 12)
 			a.menu.recentChanged = true
+			a.plain, a.plainFor, a.plainHidden = plain, s, hide
 			a.setBase(s, "")
 			switch {
 			case s.Cancelled:
@@ -350,31 +361,54 @@ func (a *App) applyFilter() {
 	if a.base == nil {
 		return
 	}
-	if !a.filter.active() {
+	// plain is base without NTFS metadata, unless it is shown; the analysis
+	// filter applies on top of it.
+	hide := !a.prefs.ShowMetadata
+	ready := a.plainFor == a.base && a.plainHidden == hide && a.plain != nil
+	if !ready && (!hide || !hasMetadata(a.base)) {
+		a.plain, a.plainFor, a.plainHidden, ready = a.base, a.base, hide, true
+	}
+	if ready && !a.filter.active() {
 		a.filter.stats = index.FilterStats{}
 		a.filterBusy = false
-		a.setView(a.base)
+		a.setView(a.plain)
 		return
 	}
-	gen, base, f := a.filterGen, a.base, a.filter
+	gen, base, f, plain := a.filterGen, a.base, a.filter, a.plain
 	a.filterBusy = true
 	go func() {
-		view, stats, err := f.apply(context.Background(), base)
+		ctx := context.Background()
+		if !ready {
+			plain = withoutMetadata(ctx, base, hide)
+		}
+		view, stats, err := plain, index.FilterStats{}, error(nil)
+		if f.active() {
+			view, stats, err = f.apply(ctx, plain)
+		}
 		a.post(func() {
 			if gen != a.filterGen {
 				return
 			}
 			a.filterBusy = false
+			a.plain, a.plainFor, a.plainHidden = plain, base, hide
 			if err != nil {
 				a.fail("Filter: %v", err)
 				a.filter = analysisFilter{}
-				a.setView(a.base)
+				a.setView(plain)
 				return
 			}
 			a.filter.stats = stats
 			a.setView(view)
 		})
 	}()
+}
+
+// metadataBytes is the size of the NTFS metadata hidden from the views.
+func (a *App) metadataBytes() (uint64, bool) {
+	if a.base == nil || a.plain == nil || a.plainFor != a.base || a.plain == a.base {
+		return 0, false
+	}
+	return a.metric(a.base.Nodes[0]) - a.metric(a.plain.Nodes[0]), true
 }
 
 // setView installs the snapshot the views read and refreshes them.
@@ -396,6 +430,9 @@ func (a *App) setView(s *index.Snapshot) {
 // mapSnapshot is what the treemap draws.
 func (a *App) mapSnapshot() *index.Snapshot {
 	if a.filter.active() && !a.prefs.FilterMap {
+		if a.plainFor == a.base && a.plain != nil {
+			return a.plain
+		}
 		return a.base
 	}
 	return a.snap
@@ -497,6 +534,17 @@ func (a *App) pathOf(id index.ID) string {
 		}
 	}
 	return a.snap.Path(id)
+}
+
+// shortName is a name for running text: the scan root's last folder (or
+// its drive) instead of its full path.
+func (a *App) shortName(id index.ID) string {
+	if id == 0 {
+		if base := filepath.Base(a.snap.Root); base != "" && base != `\` && base != "." && len(a.snap.Root) > 3 {
+			return base
+		}
+	}
+	return a.name(id)
 }
 
 func (a *App) name(id index.ID) string {

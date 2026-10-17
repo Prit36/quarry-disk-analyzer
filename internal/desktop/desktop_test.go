@@ -161,6 +161,7 @@ func TestMetadataIsProtected(t *testing.T) {
 	s.Finalize()
 	a := newApp()
 	a.prefs.Theme = "Dark"
+	a.prefs.ShowMetadata = true
 	a.setBase(s, "")
 	if reason := a.blocked(bad); !strings.Contains(reason, "metadata") {
 		t.Fatalf("$BadClus: %q", reason)
@@ -171,6 +172,9 @@ func TestMetadataIsProtected(t *testing.T) {
 	a.tree.selectOnly(bad)
 	if a.mutable() {
 		t.Fatal("metadata selection must hide file-management commands")
+	}
+	if a.can("item.explorer") || a.can("item.open") || a.can("item.properties") {
+		t.Fatal("metadata has no shell path: Open, Show in Explorer and Properties must be unavailable")
 	}
 }
 
@@ -271,5 +275,74 @@ func TestStartPageListsDrives(t *testing.T) {
 	}
 	if len(a.drives) > 0 && !tt.HasText(a.drives[0].Path) {
 		t.Fatalf("drive %s not listed", a.drives[0].Path)
+	}
+}
+
+// The treemap's context menu acts on the tile it was opened on, even after
+// the pointer moves elsewhere to choose an item; hovering describes a tile.
+func TestTreemapHoverAndContextMenu(t *testing.T) {
+	a := testApp(t)
+	tt := ui.NewTester(a.view, 1280, 800)
+	settle(tt, func() bool { return !a.tm.busy && a.tm.cells != nil })
+	i, ok := a.tm.cellOf[7] // docs/report.pdf
+	if !ok {
+		t.Fatal("report.pdf has no tile")
+	}
+	// Tile rectangles are relative to the treemap box: find its height by
+	// moving down the tile's column until the hover reports it.
+	r := a.tm.cells[i].Tile.Rect
+	var bx, by float32 = -1, -1
+	for y := float32(0); y < 800 && bx < 0; y += 2 {
+		tt.Move(r.X+r.W/2, y)
+		tt.Frame()
+		if a.hover == 7 {
+			bx, by = r.X+r.W/2, y
+		}
+	}
+	if bx < 0 {
+		t.Fatal("hovering the report.pdf tile never reported it")
+	}
+	if !tt.HasText(`C:\data\docs\report.pdf`) {
+		t.Fatalf("status bar should show the hovered path: %q", tt.Texts())
+	}
+	a.tree.selectOnly(0)
+	tt.RightClickAt(bx, by)
+	tt.Frame()
+	if menu := tt.Menu(); len(menu) == 0 || menu[0] != "report.pdf" {
+		t.Fatalf("treemap menu %q", menu)
+	}
+	tt.Move(5, 5)
+	tt.Frame()
+	tt.CloseMenu()
+	if a.current() != 7 || !a.can("edit.copyPath") {
+		t.Fatalf("menu commands must target the right-clicked tile, current %d", a.current())
+	}
+}
+
+// NTFS metadata is hidden by default, totals exclude it, and the option
+// lists it again.
+func TestMetadataHiddenByDefault(t *testing.T) {
+	t.Setenv("QUARRY_CONFIG_DIR", t.TempDir())
+	s := index.New(`C:\`)
+	s.Engine = "NTFS · direct MFT"
+	bad := s.Add(0, "$BadClus", 1<<30, 1<<30, 0, 0)
+	users := s.Add(0, "Users", 0, 0, 0, index.Directory)
+	s.Add(users, "$notmeta.txt", 100, 100, 0, 0)
+	s.Finalize()
+	a := newApp()
+	a.prefs.Theme = "Dark"
+	tt := ui.NewTester(a.view, 1000, 700)
+	a.setBase(s, "")
+	settle(tt, func() bool { return !a.filterBusy && a.snap != nil })
+	if a.snap.Reachable(bad) || a.snap.Nodes[0].Size != 100 || !a.snap.Reachable(3) {
+		t.Fatalf("metadata should be hidden: size %d", a.snap.Nodes[0].Size)
+	}
+	if !tt.HasText("NTFS metadata hidden") {
+		t.Fatalf("the information bar should say metadata is hidden: %q", tt.Texts())
+	}
+	a.exec("opt.showMeta")
+	settle(tt, func() bool { return !a.filterBusy && a.snap.Reachable(bad) })
+	if !a.snap.Reachable(bad) || a.snap.Nodes[0].Size != 1<<30+100 {
+		t.Fatalf("Show NTFS Metadata Files: size %d", a.snap.Nodes[0].Size)
 	}
 }

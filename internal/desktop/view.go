@@ -20,6 +20,7 @@ func (a *App) view(c *ui.Context) {
 	t, pal := a.appTheme()
 	c.SetTheme(t)
 	a.tree.selValid, a.files.selValid = false, false
+	a.hover, a.hoverOther = index.None, false
 	a.syncMenu()
 	a.shortcuts(c)
 	if c.Shortcut(0, ui.KeyEscape) && a.scanning {
@@ -45,6 +46,8 @@ func (a *App) view(c *ui.Context) {
 	if !a.messageAt.IsZero() {
 		if age := time.Since(a.messageAt); age > 12*time.Second && !a.errorMsg {
 			a.message, a.messageAt = "", time.Time{}
+		} else if age < 5*time.Second && !a.errorMsg {
+			c.After(5*time.Second - age) // the status bar stops showing it then
 		} else {
 			c.After(12*time.Second - age)
 		}
@@ -324,7 +327,7 @@ func (a *App) searchBox(c *ui.Context) {
 func (a *App) infoBar(c *ui.Context, pal palette) {
 	t := c.Theme()
 	ui.Row(c).Height(24).Shrink(0).Padding(0, 10).Gap(14).AlignItems(ui.Center).Background(pal.chrome).BorderWidth(0, 0, 1, 0).BorderColor(pal.separator).Clip().Children(func() {
-		muted := func(s string) { ui.Text(c, s).TextColor(t.TextMuted).SingleLine() }
+		muted := func(s string) ui.Element { return ui.Text(c, s).TextColor(t.TextMuted).SingleLine() }
 		if a.scanning {
 			p := a.progress
 			ui.Spinner(c).Size(12, 12)
@@ -347,6 +350,9 @@ func (a *App) infoBar(c *ui.Context, pal palette) {
 			muted(fmt.Sprintf("Volume %s %s used, %s free", strings.TrimSuffix(d.Path, `\`), a.size(d.Total-d.Free), a.size(d.Free)))
 		}
 		ui.Spacer(c)
+		if bytes, ok := a.metadataBytes(); ok {
+			muted("NTFS metadata hidden").Tooltip(fmt.Sprintf("$MFT, $LogFile, $BadClus, $Extend and other filesystem records (%s) are not listed or counted.\nOptions → Show NTFS Metadata Files lists them.", a.size(bytes)))
+		}
 		if a.source != "" {
 			ui.Text(c, "Saved scan from "+s.Started.Format("2006-01-02 15:04")).TextColor(t.Warning).SingleLine().Tooltip(a.source + "\nHistorical data: files may have changed since.")
 		}
@@ -359,7 +365,7 @@ func (a *App) infoBar(c *ui.Context, pal palette) {
 		if a.stale != "" {
 			ui.Text(c, "Results may be outdated").TextColor(t.Warning).Tooltip(a.stale + "\nPress F5 to rescan.")
 		}
-		if a.filter.active() || a.filterBusy {
+		if a.filter.active() {
 			status := "Filtered: " + a.filter.summary()
 			if a.filterBusy {
 				status = "Applying filter…"
@@ -529,6 +535,10 @@ func (a *App) treemapBar(c *ui.Context, pal palette) {
 	t := c.Theme()
 	ui.Row(c).Height(28).Shrink(0).Padding(0, 6, 0, 10).Gap(6).AlignItems(ui.Center).Background(pal.chrome).BorderWidth(1, 0, 1, 0).BorderColor(pal.separator).Children(func() {
 		ui.Text(c, "Treemap").SingleLine()
+		if a.snap != nil {
+			loc := a.location
+			ui.Text(c, a.shortName(loc)+" · "+a.size(a.metric(a.snap.Nodes[loc]))).TextColor(t.TextMuted).SingleLine().MinWidth(0).Shrink(1).Tooltip(a.pathOf(loc) + "\nDouble-click a folder to go into it; Backspace or Alt+Up goes back up.")
+		}
 		if a.tm.busy {
 			ui.Text(c, "Updating…").TextColor(t.TextMuted)
 		}
@@ -568,17 +578,26 @@ func (a *App) treemapBar(c *ui.Context, pal palette) {
 func (a *App) statusBar(c *ui.Context, pal palette) {
 	t := c.Theme()
 	ui.Row(c).Height(24).Shrink(0).Padding(0, 10).Gap(16).AlignItems(ui.Center).Background(pal.chrome).BorderWidth(1, 0, 0, 0).BorderColor(pal.separator).Clip().Children(func() {
+		// A fresh message or an error first, then what the pointer is over,
+		// then the focused entry: the full path the columns cannot show.
 		msg := a.message
 		color := t.Text
 		if a.errorMsg {
 			color = t.Danger
+		} else if !a.messageAt.IsZero() && time.Since(a.messageAt) > 5*time.Second {
+			msg = ""
 		}
 		if msg == "" {
+			color = t.TextMuted
 			switch {
 			case a.scanning:
 				msg = "Scanning…"
 			case a.snap == nil:
 				msg = "Ready"
+			case a.hover != index.None && int(a.hover) < len(a.snap.Nodes):
+				msg = a.itemStatus(a.hover, a.hoverOther)
+			case a.current() != index.None:
+				msg = a.itemStatus(a.current(), false)
 			default:
 				msg = "Ready"
 			}
@@ -618,6 +637,23 @@ func (a *App) statusBar(c *ui.Context, pal palette) {
 			}
 		}
 	})
+}
+
+// itemStatus is the status-bar line for an entry: its full path and size.
+func (a *App) itemStatus(id index.ID, other bool) string {
+	n := a.snap.Nodes[id]
+	path := a.pathOf(id)
+	if path == "" {
+		path = a.name(id)
+	}
+	if other {
+		return "Smaller items in " + path
+	}
+	line := path + "  ·  " + a.size(a.metric(n))
+	if n.IsDir() {
+		line += "  ·  " + plural(uint64(n.Files), "file", "files")
+	}
+	return line
 }
 
 // Pages without data.

@@ -11,7 +11,6 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	"quarry/internal/index"
-	"quarry/internal/platform"
 )
 
 const (
@@ -258,12 +257,13 @@ func (a *App) dialogs(c *ui.Context, pal palette) {
 					}
 					s.open = false
 					a.search = query
+					scope := index.ID(0)
 					if s.scope == "Current location" {
-						a.files.scope = a.location
-					} else {
-						a.files.scope = 0
+						scope = a.location
 					}
-					a.prefs.View = viewFiles
+					a.files.scope = scope
+					a.ext.dirty = true
+					a.setViewMode(viewFiles)
 					a.files.invalidate()
 					a.focusTable = true
 				}
@@ -451,7 +451,7 @@ func (a *App) dialogs(c *ui.Context, pal palette) {
 }
 
 // Version is set by main.
-var Version = "0.1.0"
+var Version = "0.1.1"
 
 func (s *searchDialog) query() string {
 	var parts []string
@@ -700,7 +700,7 @@ func (a *App) duplicatesDialog(c *ui.Context, pal palette) {
 					}
 					if m.Item("Show in Explorer").Chosen() {
 						if p := s.Path(id); p != "" {
-							go platform.ShowInExplorer([]string{p})
+							a.revealPaths([]string{p})
 						}
 					}
 					if m.Item("Copy Full Path").Chosen() {

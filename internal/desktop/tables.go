@@ -284,7 +284,6 @@ func (a *App) treeTable(c *ui.Context, pal palette) {
 	tr.list.HeaderMenu = func(m *ui.Menu, col int) {
 		a.headerMenu(c, m, col, treeColumns, ids, a.prefs.TreeHidden, &tr.list, text, len(tr.rows))
 	}
-	scanTotal := a.metric(s.Nodes[0])
 	indent := 14 * a.zoom()
 	restore := tableTheme(c, &tr.list, a.focused["tree"], pal)
 	table := ui.Table(c.Key("tree"), &tr.list, cols, len(tr.rows), func(row, col int) {
@@ -295,6 +294,9 @@ func (a *App) treeTable(c *ui.Context, pal palette) {
 		id := r.id
 		n := s.Nodes[id]
 		cell := cellBox(c, cols[col].Align)
+		if cell.Hovered() {
+			a.hover = id
+		}
 		cell.ContextMenu(func(m *ui.Menu) {
 			if !tr.sel.Has(id) {
 				tr.selectOnly(id)
@@ -352,7 +354,6 @@ func (a *App) treeTable(c *ui.Context, pal palette) {
 				}
 			})
 		}
-		_ = scanTotal
 	}).Grow(1).MinHeight(0).Background(pal.grid)
 	restore()
 	a.trackFocus(c, "tree", &tr.list)
@@ -477,6 +478,9 @@ func (a *App) fileTable(c *ui.Context, pal palette) {
 		}
 		id := f.ids[row]
 		cell := cellBox(c, cols[col].Align)
+		if cell.Hovered() {
+			a.hover = id
+		}
 		cell.ContextMenu(func(m *ui.Menu) {
 			if !f.sel.Has(id) {
 				f.selectOnly(id)

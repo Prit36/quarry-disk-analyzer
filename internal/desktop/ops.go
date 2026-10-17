@@ -56,9 +56,12 @@ func (a *App) currentIsDir() bool {
 	return id != index.None && a.snap.Nodes[id].IsDir()
 }
 
+// allPaths reports whether every selected entry is an ordinary file or
+// folder that Windows can open. NTFS metadata ($MFT, $BadClus, …) has a
+// name in the index but no path the shell accepts.
 func (a *App) allPaths() bool {
 	for _, id := range a.selected() {
-		if a.pathOf(id) == "" {
+		if a.pathOf(id) == "" || a.snap.IsMetadata(id) {
 			return false
 		}
 	}
@@ -192,8 +195,14 @@ func (a *App) openItems() {
 		a.fail("%v", err)
 		return
 	}
-	for _, p := range paths {
-		if err := mygo.Shell.OpenPath(p); err != nil {
+	for i, p := range paths {
+		var err error
+		if a.snap.Nodes[ids[i]].IsDir() {
+			err = platform.OpenFolder(p)
+		} else {
+			err = mygo.Shell.OpenPath(p)
+		}
+		if err != nil {
 			a.fail("Windows could not open %s.", p)
 			return
 		}
@@ -201,9 +210,23 @@ func (a *App) openItems() {
 }
 
 func (a *App) showInExplorer() {
-	paths, err := a.verifyAll(a.selected())
+	paths, err := a.verifyAll(a.topLevel(a.selected()))
 	if err != nil {
 		a.fail("%v", err)
+		return
+	}
+	a.revealPaths(paths)
+}
+
+// revealPaths opens Explorer windows selecting paths, at most a few folders
+// at once so a large selection cannot flood the desktop with windows.
+func (a *App) revealPaths(paths []string) {
+	folders := map[string]bool{}
+	for _, p := range paths {
+		folders[strings.ToLower(filepath.Dir(p))] = true
+	}
+	if len(folders) > 8 {
+		a.fail("The selection is spread over %d folders. Select items in at most 8 folders to show them in Explorer.", len(folders))
 		return
 	}
 	go func() {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -50,25 +51,70 @@ func pidl(path string) (uintptr, error) {
 }
 
 // ShowInExplorer opens the folder containing the paths and selects them.
-// Paths in different folders open one window per folder.
+// Paths in different folders open one window per folder; a drive root opens
+// the drive itself.
+//
+// An elevated process cannot hand SHOpenFolderAndSelectItems to the user's
+// (unelevated) Explorer, so the shell opens the window inside this process,
+// on a thread without a message loop, where it never appears. There, and
+// whenever the shell call fails, Explorer is started as its own process.
 func ShowInExplorer(paths []string) error {
 	coInit()
 	groups := map[string][]string{}
 	var order []string
 	for _, p := range paths {
 		dir := filepath.Dir(p)
+		if dir == p {
+			// A drive root has no parent folder to select it in.
+			if err := explorerProcess(p, false); err != nil {
+				return err
+			}
+			continue
+		}
 		if _, ok := groups[dir]; !ok {
 			order = append(order, dir)
 		}
 		groups[dir] = append(groups[dir], p)
 	}
+	elevated := Elevated()
 	var firstErr error
 	for _, dir := range order {
-		if err := selectIn(dir, groups[dir]); err != nil && firstErr == nil {
+		var err error
+		if !elevated {
+			err = selectIn(dir, groups[dir])
+		}
+		if elevated || err != nil {
+			err = explorerProcess(groups[dir][0], true)
+		}
+		if err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
 	return firstErr
+}
+
+// OpenFolder opens a folder in a File Explorer window of its own process, so
+// the window belongs to the user's shell even when Quarry is elevated.
+func OpenFolder(path string) error { return explorerProcess(path, false) }
+
+// explorerProcess starts explorer.exe on path, selecting it in its folder.
+// Explorer passes the request to the running shell, at the user's level.
+func explorerProcess(path string, sel bool) error {
+	exe := filepath.Join(os.Getenv("SystemRoot"), "explorer.exe")
+	if os.Getenv("SystemRoot") == "" {
+		exe = "explorer.exe"
+	}
+	args := `"` + path + `"`
+	if sel {
+		args = `/select,"` + path + `"`
+	}
+	cmd := exec.Command(exe)
+	cmd.SysProcAttr = &syscall.SysProcAttr{CmdLine: `"` + exe + `" ` + args}
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("Explorer could not be started: %w", err)
+	}
+	go cmd.Wait() // explorer.exe exits at once with code 1; reap it
+	return nil
 }
 
 func selectIn(dir string, items []string) error {

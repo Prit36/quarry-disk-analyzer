@@ -28,6 +28,7 @@ type prefs struct {
 	TreemapPct    float32 // height share of the table above the treemap
 	TreemapColors string  // "Extension", "Folder", "Mono"
 	FilterMap     bool    // analysis filter also applies to the treemap
+	ShowMetadata  bool    // list NTFS metadata ($MFT, $BadClus, …) of MFT scans
 
 	TreeColumns, FileColumns, ExtColumns ui.TableLayout
 	TreeHidden, FileHidden               map[string]bool

@@ -186,8 +186,13 @@ func (a *App) openSnapshotDialog() {
 
 func (a *App) openSnapshot(path string) {
 	a.notify("Opening %s…", filepath.Base(path))
+	hide := !a.prefs.ShowMetadata
 	go func() {
 		s, err := index.LoadSnapshot(context.Background(), path)
+		var plain *index.Snapshot
+		if err == nil {
+			plain = withoutMetadata(context.Background(), s, hide)
+		}
 		a.post(func() {
 			if err != nil {
 				a.fail("Could not open %s: %v", filepath.Base(path), err)
@@ -198,6 +203,7 @@ func (a *App) openSnapshot(path string) {
 				a.scanGen++
 				a.scanning = false
 			}
+			a.plain, a.plainFor, a.plainHidden = plain, s, hide
 			a.setBase(s, path)
 			a.notify("Opened saved scan of %s from %s. This is historical data.", s.Root, s.Started.Format("2006-01-02 15:04"))
 		})
@@ -206,7 +212,7 @@ func (a *App) openSnapshot(path string) {
 
 // compareDialog compares the current scan with a saved scan of the same root.
 func (a *App) compareDialog() {
-	current := a.base
+	current, allocated := a.base, a.metricAllocated()
 	go func() {
 		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: a.win, Title: "Compare with Saved Scan", Filters: scanFilters})
 		if err != nil || len(paths) == 0 {
@@ -215,7 +221,7 @@ func (a *App) compareDialog() {
 		previous, err := index.LoadSnapshot(context.Background(), paths[0])
 		var changes []index.Change
 		if err == nil {
-			changes, err = index.CompareSnapshots(previous, current, a.metricAllocated())
+			changes, err = index.CompareSnapshots(previous, current, allocated)
 		}
 		a.post(func() {
 			if err != nil {

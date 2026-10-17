@@ -117,6 +117,12 @@ func (a *App) gridTheme(base *ui.Theme) *ui.Theme {
 	z := a.zoom()
 	t.FontSize = base.FontSize * z
 	t.Spacing = base.Spacing * z
+	// A row under the pointer must be easy to follow across wide rows.
+	if base.Dark {
+		t.SurfaceHover = ui.Hex("#2F353D")
+	} else {
+		t.SurfaceHover = ui.Hex("#E8F2FC")
+	}
 	return &t
 }
 

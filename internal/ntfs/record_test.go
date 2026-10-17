@@ -58,6 +58,51 @@ func TestResidentAndNamePreference(t *testing.T) {
 		t.Fatalf("%+v %v", r, err)
 	}
 }
+
+// nonResident builds a $DATA attribute header with no runs, enough for Parse.
+func nonResident(name string, flags uint16, size, allocated, compressed uint64) []byte {
+	u := utf16.Encode([]rune(name))
+	nameOff := 72
+	length := (nameOff + 2*len(u) + 8 + 7) &^ 7
+	a := make([]byte, length)
+	le.PutUint32(a, 0x80)
+	le.PutUint32(a[4:], uint32(length))
+	a[8] = 1
+	a[9] = byte(len(u))
+	le.PutUint16(a[10:], uint16(nameOff))
+	le.PutUint16(a[12:], flags)
+	le.PutUint16(a[32:], uint16(nameOff+2*len(u)))
+	le.PutUint64(a[40:], allocated)
+	le.PutUint64(a[48:], size)
+	le.PutUint64(a[56:], size)
+	le.PutUint64(a[64:], compressed)
+	for i, w := range u {
+		le.PutUint16(a[nameOff+2*i:], w)
+	}
+	return a
+}
+
+func TestSparseNamedStreamCountsAllocation(t *testing.T) {
+	// $BadClus: an empty main stream and a sparse $Bad stream as long as the volume.
+	b := record(fileName("$BadClus", 3, 5), resident(0x80, nil), nonResident("$Bad", 0x8000, 1<<40, 1<<40, 4096))
+	if err := Fixup(b, 512); err != nil {
+		t.Fatal(err)
+	}
+	r, _, err := Parse(b, 8)
+	if err != nil || r.Size != 4096 || r.Allocated != 4096 {
+		t.Fatalf("$BadClus: %+v %v", r, err)
+	}
+	// A sparse main stream (a VM disk) keeps its logical length.
+	b = record(fileName("disk.vhdx", 1, 5), nonResident("", 0x8000, 1<<34, 1<<34, 1<<20))
+	if err := Fixup(b, 512); err != nil {
+		t.Fatal(err)
+	}
+	r, _, err = Parse(b, 9)
+	if err != nil || r.Size != 1<<34 || r.Allocated != 1<<20 {
+		t.Fatalf("sparse file: %+v %v", r, err)
+	}
+}
+
 func TestTornAndMalformedRecords(t *testing.T) {
 	b := record(fileName("file", 1, 5))
 	b[510] = 0

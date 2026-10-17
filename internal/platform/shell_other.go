@@ -12,6 +12,7 @@ import (
 var errUnsupported = errors.New("only supported on Windows")
 
 func ShowInExplorer(paths []string) error                { return errUnsupported }
+func OpenFolder(path string) error                       { return errUnsupported }
 func ShowProperties(owner uintptr, paths []string) error { return errUnsupported }
 func DeleteItems(owner uintptr, paths []string, recycle bool) (bool, error) {
 	if recycle {

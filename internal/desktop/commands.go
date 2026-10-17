@@ -121,6 +121,7 @@ func newCommands() map[string]*command {
 		"opt.scanEnum":   {label: "Directory Enumeration Only", checked: func(a *App) bool { return a.prefs.ScanMode == "Enumerate" }, radio: true, run: func(a *App) { a.prefs.ScanMode = "Enumerate" }},
 		"opt.admin":      {label: "Restart as Administrator", enabled: func(a *App) bool { return !a.admin && !a.scanning }, run: (*App).restartElevated},
 		"opt.explorer":   {label: "Add “Analyze with Quarry” to Explorer", checked: func(a *App) bool { return a.dlg.explorerVerb }, run: (*App).toggleExplorerVerb},
+		"opt.showMeta":   {label: "Show NTFS Metadata Files", checked: func(a *App) bool { return a.prefs.ShowMetadata }, run: func(a *App) { a.prefs.ShowMetadata = !a.prefs.ShowMetadata; a.applyFilter() }},
 		"opt.confirm":    {label: "Confirm Before Moving to Recycle Bin", checked: func(a *App) bool { return a.prefs.ConfirmRecycle }, run: func(a *App) { a.prefs.ConfirmRecycle = !a.prefs.ConfirmRecycle }},
 
 		// Help
@@ -274,7 +275,7 @@ func (a *App) buildMenu() *menuBar {
 		sub("&Edit", list("edit.cut", "edit.copy", "edit.copyPath", "edit.copyName", "edit.copySize", "edit.copyRows", "-", "edit.selectAll", "-", "edit.rename", "edit.delete", "edit.deletePerm", "-", "edit.find")),
 		sub("&View", view),
 		sub("&Tools", list("tools.search", "tools.filter", "tools.clearFilter", "-", "tools.dups", "tools.compare", "-", "tools.issues", "tools.info")),
-		sub("&Options", append(list("opt.exclusions", "opt.useExcl", "-"), append([]*mygo.MenuItem{sub("Scan Method", list("opt.scanAuto", "opt.scanEnum"))}, list("opt.admin", "-", "opt.explorer", "opt.confirm")...)...)),
+		sub("&Options", append(list("opt.exclusions", "opt.useExcl", "-"), append([]*mygo.MenuItem{sub("Scan Method", list("opt.scanAuto", "opt.scanEnum"))}, list("opt.admin", "-", "opt.showMeta", "opt.explorer", "opt.confirm")...)...)),
 		sub("&Help", list("help.keys", "help.syntax", "help.cli", "-", "help.about")),
 	})
 	return mb
