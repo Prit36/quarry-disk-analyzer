@@ -1,6 +1,6 @@
 {
   "name": "Stratum",
   "identifier": "dev.stratum.disk",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "out": "build"
 }

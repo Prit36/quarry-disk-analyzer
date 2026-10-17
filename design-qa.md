@@ -49,7 +49,7 @@ No remaining P0/P1/P2 findings in the inspected views. The final comparison pass
 
 - `scripts/build.ps1`: full `go test ./...`, `go vet ./...`, `go tool mygo vet`, executable and NSIS packaging pass.
 - Three repeated runs pass for quick-stat bounds, zoom/pan, million-entry virtualization, preference migration and keyboard editing; explicit Size/allocation sort regression also passes three runs.
-- Latest versioned artifacts: `build/releases/0.0.2/windows-amd64/Stratum.exe` and `build/releases/0.0.2/windows-amd64/Stratum Setup 0.0.2 amd64.exe`. The prior `build/windows-amd64` and `build/reference-release` packages are retained. The version bump changes package metadata, not the verified interface.
+- Versioned artifacts: `build/releases/0.0.3/windows-amd64/Stratum.exe` and `Stratum Setup 0.0.3 amd64.exe` (current), with `build/releases/0.0.2` retained. The prior `build/windows-amd64` and `build/reference-release` packages are retained. The version bump changes package metadata, not the verified interface.
 - Final non-interactive gate: `go test ./...`, `go vet ./...`, `go tool mygo vet`, `go tool mygo build -o build/reference-release` and `git diff --check` pass. The original packaging script passed before the final palette-only refinement.
 - Release 0.0.2 repeats tests and both static checks, then successfully packages with `go tool mygo build -o build/releases/0.0.2`.
 - A final packaged-window recheck was interrupted by physical Escape; it is not represented as a successful new live check. Current visual verification uses the actual native renderer, current controls are interaction-tested, and earlier packaged-window evidence confirms native caption/file-scan integration. No further desktop automation is required or performed for this visual handoff.
@@ -72,4 +72,16 @@ No remaining P0/P1/P2 findings in the inspected views. The final comparison pass
 - [x] Preserve functional controls and accurate indexed data.
 - [x] Run regressions, static checks and Windows packaging.
 
-final result: passed
+## Nested-visibility follow-up
+
+The user's follow-up identified a genuine issue in the earlier acceptance: nested tiles blended into their parent because their gaps revealed the same parent fill, and depth-first budgeting could exhaust detail before later root folders received children. This supersedes the previous visual pass for the current work.
+
+- Fixed P1: hierarchy detail is now distributed with a shared budget across folders, so one large directory cannot monopolize the entire branch; compact deep-level headers preserve space for their children.
+- Fixed P2: nested tiles render explicit depth-aware borders over a stable within-family shade, and nested selections stay visible; verified in the live map, zoomed views and the PNG export (`TestExportedNestedTileEdges`).
+- Fixed P2: matching visibility polish applied to the sunburst, file-type bar chart, table metadata and statistics separators.
+- Regression coverage: `TestNestedTileEdgesAndSelection`, `TestZoomedTilesDoNotPaintOverToolbar`, `TestTreemapViewportZoomAndPan`, `TestExportedNestedTileEdges` and `TestNestedVisibilityEvidence`; full `go test ./...`, `go vet ./...` and `go tool mygo vet` pass on the frozen tree.
+- Pre-fix evidence retained at `build/polish/before/`.
+- Post-fix evidence (2026-10-17): `build/polish/final/comparison-treemap.png`, `comparison-nested-detail.png` and `comparison-full.png` (source left, implementation right) plus `nested-synthetic.png`, `nested-zoomed.png`, `nested-light.png`, `nested-sunburst.png`, `file-type-bars.png`, `nested-export.png`, `minimum-settings.png` and `minimum-filters.png`; full design-state recapture in `build/polish/states/`. Comparisons regenerated with `scripts/reference-qa.py` against the unchanged source reference.
+- v0.0.3 artifacts: `build/releases/0.0.3/`; refreshed test build in `build/polish-snapshot/`. Packaged verification remains non-interactive native rendering; the exe is provided for user testing.
+
+final result: passed — no remaining P0/P1/P2 findings in the inspected views.

@@ -100,8 +100,11 @@ func (a *App) referenceQuickStats(c *ui.Context) {
 			columns = 2
 		}
 		for start := 0; start < len(metrics); start += columns {
-			ui.Row(c).Gap(16).AlignItems(ui.Center).Children(func() {
-				for _, metric := range metrics[start:min(start+columns, len(metrics))] {
+			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+				for position, metric := range metrics[start:min(start+columns, len(metrics))] {
+					if position > 0 {
+						separator(c, 32)
+					}
 					ui.Row(c).Grow(1).MinWidth(0).Gap(10).AlignItems(ui.Center).Children(func() {
 						if metric.icon == "folder_filled" {
 							filesystemGlyph(c, "folder", iconSize)

@@ -176,6 +176,10 @@ func (a *App) table(c *ui.Context) {
 		col = columnIndices[col]
 		r := a.rows[row]
 		n := s.Nodes[r.ID]
+		muted := t.TextMuted
+		if t.Dark && row == a.selectedRow {
+			muted = t.AccentText
+		}
 		switch col {
 		case 0:
 			height := float32(16)
@@ -281,7 +285,7 @@ func (a *App) table(c *ui.Context) {
 			}
 			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
 				proportionBar(c, percentage/100, 44, t.Accent).Height(14)
-				ui.Text(c, fmt.Sprintf("%.1f%%", percentage)).Width(48).FontSize(12).SingleLine().TextColor(t.TextMuted)
+				ui.Text(c, fmt.Sprintf("%.1f%%", percentage)).Width(48).FontSize(12).SingleLine().TextColor(muted)
 			})
 		case 2:
 			ui.Text(c, a.formatBytes(n.Size)).FontSize(13).SingleLine()
@@ -289,18 +293,18 @@ func (a *App) table(c *ui.Context) {
 			ui.Text(c, a.formatBytes(n.Allocated)).FontSize(13).SingleLine()
 		case 4:
 			if n.IsDir() {
-				ui.Text(c, number(uint64(n.Files))).FontSize(13).TextColor(t.TextMuted)
+				ui.Text(c, number(uint64(n.Files))).FontSize(13).TextColor(muted)
 			}
 		case 5:
 			if n.IsDir() {
-				ui.Text(c, number(uint64(n.Dirs))).FontSize(13).TextColor(t.TextMuted)
+				ui.Text(c, number(uint64(n.Dirs))).FontSize(13).TextColor(muted)
 			}
 		case 6:
 			date := ""
 			if n.Modified != 0 {
 				date = time.Unix(n.Modified, 0).Format("02/01/2006 15:04")
 			}
-			ui.Text(c, date).FontSize(12).TextColor(t.TextMuted).SingleLine()
+			ui.Text(c, date).FontSize(12).TextColor(muted).SingleLine()
 		}
 	}).Grow(1).MinHeight(0)
 	if a.sort != before {

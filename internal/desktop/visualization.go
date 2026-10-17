@@ -67,6 +67,27 @@ func (a *App) tileColor(id index.ID) ui.Color {
 	return typePalette[hash.Sum32()%uint32(len(typePalette))]
 }
 
+func (a *App) tileShade(id index.ID, other bool) ui.Color {
+	color := a.tileColor(id)
+	if other {
+		color = typePalette[7]
+	}
+	if a.snapshot.Nodes[id].Parent == 0 || a.snapshot.Nodes[id].Parent == index.None {
+		return color
+	}
+	hash := fnv.New32a()
+	_, _ = hash.Write([]byte(a.snapshot.NameView(id)))
+	tone := hash.Sum32() % 7
+	if tone < 3 {
+		return color.Mix(ui.Hex("#000000"), .09+float32(2-tone)*.055)
+	}
+	return color.Mix(ui.Hex("#FFFFFF"), .06+float32(tone-3)*.045)
+}
+
+func tileBorder(color ui.Color) ui.Color {
+	return color.Mix(ui.Hex("#000000"), .48)
+}
+
 func (a *App) mapTooltip(tile treemap.Tile) string {
 	if tile.Other {
 		return "Other items: " + a.formatBytes(tile.Bytes) + ". Double-click to inspect every indexed file in this directory."
@@ -176,53 +197,66 @@ func (a *App) mapView(c *ui.Context) {
 		}
 		cells := a.cells
 		box.Draw(func(painter *ui.Painter, origin ui.Rect) {
-			if len(cells) == 0 {
-				painter.Text(origin.X+12, origin.Y+12, "No nonzero data for this metric.", 12, theme.TextMuted)
-			}
-			for position, cell := range cells {
-				tile := cell.Tile
-				bounds := tile.Rect
-				if bounds.W*bounds.H < 1 {
-					continue
+			painter.Clip(origin, 0, func() {
+				if len(cells) == 0 {
+					painter.Text(origin.X+12, origin.Y+12, "No nonzero data for this metric.", 12, theme.TextMuted)
 				}
-				rect := ui.Rect{X: origin.X + offsetX + bounds.X, Y: origin.Y + offsetY + bounds.Y, W: max(0, bounds.W-1), H: max(0, bounds.H-1)}
-				name := a.snapshot.NameView(tile.ID)
-				color := a.tileColor(tile.ID)
-				if tile.Other {
-					name, color = "Other items", typePalette[7]
-				}
-				if cell.Depth > 0 {
-					color = color.Mix(theme.Surface, min(.32, float32(cell.Depth)*.045))
-				}
-				if position == hit {
-					color = color.Mix(theme.Text, .14)
-				}
-				painter.FillGradient(rect, ui.LinearGradient{From: color.Mix(ui.Hex("#FFFFFF"), .045), To: color.Mix(ui.Hex("#000000"), .12), Angle: 180}, 1)
-				if tile.ID == a.selected && !tile.Other {
-					painter.Stroke(rect, theme.Text, 0, 2)
-				}
-				textColor := ui.Hex("#FFFFFF")
-				painter.Clip(rect, 0, func() {
-					if cell.Group && rect.W > 60 {
-						header := treemap.LabelHeight(bounds)
-						painter.Text(rect.X+10, rect.Y+7, truncate(name, int((rect.W-20)/7)), 13, textColor)
-						if header >= 48 {
-							painter.Text(rect.X+10, rect.Y+27, a.formatBytes(tile.Bytes), 13, textColor)
-						}
-						if header >= 68 {
-							painter.Text(rect.X+10, rect.Y+47, fmt.Sprintf("%.1f%%", 100*fraction(tile.Bytes, a.mapTotal)), 13, textColor)
-						}
-					} else if rect.W > 85 && rect.H > 26 {
-						painter.Text(rect.X+12, rect.Y+8, truncate(name, int((rect.W-24)/7)), 14, textColor)
-						if rect.H > 44 {
-							painter.Text(rect.X+12, rect.Y+29, a.formatBytes(tile.Bytes), 14, textColor)
-						}
-						if rect.H > 62 {
-							painter.Text(rect.X+12, rect.Y+50, fmt.Sprintf("%.1f%%", 100*fraction(tile.Bytes, a.mapTotal)), 13, textColor)
-						}
+				for position, cell := range cells {
+					tile := cell.Tile
+					bounds := tile.Rect
+					if bounds.W*bounds.H < 1 {
+						continue
 					}
-				})
-			}
+					gap := float32(1)
+					rect := ui.Rect{X: origin.X + offsetX + bounds.X, Y: origin.Y + offsetY + bounds.Y, W: max(0, bounds.W-gap), H: max(0, bounds.H-gap)}
+					name := a.snapshot.NameView(tile.ID)
+					color := a.tileShade(tile.ID, tile.Other)
+					if tile.Other {
+						name = "Other items"
+					}
+					if position == hit {
+						color = color.Mix(theme.Text, .14)
+					}
+					painter.FillGradient(rect, ui.LinearGradient{From: color.Mix(ui.Hex("#FFFFFF"), .045), To: color.Mix(ui.Hex("#000000"), .12), Angle: 180}, 1)
+					if rect.W >= 3 && rect.H >= 3 {
+						border := tileBorder(color)
+						painter.Fill(ui.Rect{X: rect.X, Y: rect.Y, W: 1, H: rect.H}, border, 0)
+						painter.Fill(ui.Rect{X: rect.X, Y: rect.Y, W: rect.W, H: 1}, border, 0)
+						painter.Fill(ui.Rect{X: rect.X + rect.W, Y: rect.Y, W: gap, H: rect.H}, border, 0)
+						painter.Fill(ui.Rect{X: rect.X, Y: rect.Y + rect.H, W: rect.W, H: gap}, border, 0)
+					}
+					if cell.Group {
+						painter.Fill(ui.Rect{X: rect.X + 1, Y: rect.Y + cell.Header - 1, W: max(0, rect.W-2), H: 1}, color.Mix(ui.Hex("#000000"), .55), 0)
+					}
+					if tile.ID == a.selected && !tile.Other {
+						painter.Stroke(rect, theme.Text, 0, 2)
+					}
+					textColor := mapTextColor(color)
+					painter.Clip(rect, 0, func() {
+						if cell.Group && rect.W > 60 && cell.Header >= 14 {
+							padding, firstLine, lineHeight := float32(8), float32(5), float32(18)
+							if cell.Depth > 0 {
+								padding, firstLine, lineHeight = 5, 2, 15
+							}
+							painter.Text(rect.X+padding, rect.Y+firstLine, truncate(name, int((rect.W-2*padding)/7)), 13, textColor)
+							if cell.Header >= firstLine+lineHeight+14 {
+								painter.Text(rect.X+padding, rect.Y+firstLine+lineHeight, a.formatBytes(tile.Bytes), 12, textColor)
+							}
+							if cell.Header >= firstLine+2*lineHeight+14 {
+								painter.Text(rect.X+padding, rect.Y+firstLine+2*lineHeight, fmt.Sprintf("%.1f%%", 100*fraction(tile.Bytes, a.mapTotal)), 12, textColor)
+							}
+						} else if rect.W > 85 && rect.H > 26 {
+							painter.Text(rect.X+12, rect.Y+8, truncate(name, int((rect.W-24)/7)), 14, textColor)
+							if rect.H > 44 {
+								painter.Text(rect.X+12, rect.Y+29, a.formatBytes(tile.Bytes), 14, textColor)
+							}
+							if rect.H > 62 {
+								painter.Text(rect.X+12, rect.Y+50, fmt.Sprintf("%.1f%%", 100*fraction(tile.Bytes, a.mapTotal)), 13, textColor)
+							}
+						}
+					})
+				}
+			})
 		})
 	})
 }

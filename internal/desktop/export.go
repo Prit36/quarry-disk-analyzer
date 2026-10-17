@@ -101,15 +101,23 @@ func (a *App) exportTreemapPNG(writer io.Writer) error {
 	for _, cell := range cells {
 		tile := cell.Tile
 		bounds := tile.Rect
-		rectangle := image.Rect(int(bounds.X), int(bounds.Y), int(bounds.X+bounds.W)-1, int(bounds.Y+bounds.H)-1)
-		shade := a.tileColor(tile.ID)
-		if tile.Other {
-			shade = typePalette[7]
+		rectangle := image.Rectangle{Min: image.Pt(int(bounds.X), int(bounds.Y)), Max: image.Pt(int(bounds.X+bounds.W)-1, int(bounds.Y+bounds.H)-1)}
+		if rectangle.Empty() {
+			continue
 		}
+		shade := a.tileShade(tile.ID, tile.Other)
 		draw.Draw(bitmap, rectangle, image.NewUniform(color.RGBA{R: shade.R, G: shade.G, B: shade.B, A: 255}), image.Point{}, draw.Src)
+		border := tileBorder(shade)
+		outline := image.NewUniform(color.RGBA{R: border.R, G: border.G, B: border.B, A: 255})
+		if rectangle.Dx() >= 3 && rectangle.Dy() >= 3 {
+			for _, edge := range []image.Rectangle{image.Rect(rectangle.Min.X, rectangle.Min.Y, rectangle.Max.X, rectangle.Min.Y+1), image.Rect(rectangle.Min.X, rectangle.Max.Y-1, rectangle.Max.X, rectangle.Max.Y), image.Rect(rectangle.Min.X, rectangle.Min.Y, rectangle.Min.X+1, rectangle.Max.Y), image.Rect(rectangle.Max.X-1, rectangle.Min.Y, rectangle.Max.X, rectangle.Max.Y)} {
+				draw.Draw(bitmap, edge, outline, image.Point{}, draw.Src)
+			}
+		}
 		foreground := mapTextColor(shade)
 		text.Src = image.NewUniform(color.RGBA{R: foreground.R, G: foreground.G, B: foreground.B, A: 255})
 		if rectangle.Dx() > 80 && rectangle.Dy() > 16 {
+			text.Dst = bitmap.SubImage(rectangle.Inset(2)).(*image.RGBA)
 			name := a.snapshot.NameView(tile.ID)
 			if tile.Other {
 				name = "Other items"

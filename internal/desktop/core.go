@@ -72,7 +72,12 @@ func (a *App) dialogs(c *ui.Context) {
 		})
 	})
 	ui.Modal(c.Key("settings"), &a.settingsOpen, func() {
-		ui.Column(c).Width(380).Padding(16).Gap(12).Children(func() {
+		_, height := c.Size()
+		padding, gap := float32(16), float32(12)
+		if height < 700 {
+			padding, gap = 12, 6
+		}
+		ui.Column(c).Width(380).Padding(padding).Gap(gap).Children(func() {
 			ui.Text(c, "Settings").Bold().FontSize(14)
 			if ui.Checkbox(c, &a.light, "Light theme").Label("Toggle theme").Changed() && a.window != nil {
 				source := mygo.ThemeDark

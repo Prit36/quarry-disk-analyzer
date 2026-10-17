@@ -1,4 +1,4 @@
-# Stratum 0.0.2
+# Stratum 0.0.3
 
 A Windows disk analyzer written in Go with **MyGO v0.5.5 native UI**. Direct3D 11 renders the interface. There is no webview, browser frontend, HTML, JavaScript, or Node build step.
 
@@ -20,7 +20,7 @@ Shortcuts: Ctrl+L selects the address, Ctrl+F focuses indexed filtering, Alt+Lef
 
 ## Run
 
-After building, open `build/windows-amd64/Stratum.exe`, or install `Stratum Setup 0.0.2 amd64.exe`. The packaged output includes dependency licenses. Go is not needed to run the application. See [CHANGELOG.md](CHANGELOG.md) for version history.
+After building, open `build/windows-amd64/Stratum.exe`, or install `Stratum Setup 0.0.3 amd64.exe`. The packaged output includes dependency licenses. Go is not needed to run the application. See [CHANGELOG.md](CHANGELOG.md) for version history.
 
 For **whole NTFS drives**, use **Run as administrator**, accept Windows' UAC prompt yourself, and click **Scan**. The scan strip must say **NTFS MFT**. This reads filesystem metadata directly rather than opening each folder.
 
@@ -35,6 +35,7 @@ Without elevation, the app reports **MFT unavailable** immediately. It does **no
 - **Filter** supports case-insensitive name terms, `ext:mp4`, `ext:none`, and `min:100MB`. For example: `backup ext:zip min:1GiB`. Select Subtree or Scan to set the indexed search scope.
 - **File types** shows extension groups for the explicit analytics scope. Click a row to filter files; click a header to sort.
 - The nested **Treemap** shows files within directories. Click a tile to select its table row; double-click to focus its directory. **Root** restores the scan root. Switch between logical size and allocated size.
+- Nested tiles use visible boundaries and stable shades within each folder's color family. Detail is allocated across folders before descending further, so one large directory cannot consume the whole visualization budget. Smaller directory headers preserve space for their children; use zoom or drilldown for dense sections.
 - Drag splitters to resize panes. Table columns can be resized, reordered and sorted.
 - Right-click a file or directory to copy its path or reveal it in Explorer.
 - **Export** offers scoped CSV, JSON, text summaries and treemap PNG. **Details** inspects selection metadata; the issue indicator opens the scan issue table.

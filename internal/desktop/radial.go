@@ -90,10 +90,7 @@ func (a *App) sunburstView(c *ui.Context) {
 	box.Draw(func(painter *ui.Painter, origin ui.Rect) {
 		painter.Transform(ui.Translation(origin.X, origin.Y), 0, 0, func() {
 			for position, sector := range a.sectors {
-				color := a.tileColor(sector.ID)
-				if sector.Other {
-					color = typePalette[7]
-				}
+				color := a.tileShade(sector.ID, sector.Other)
 				if position == hit {
 					color = color.Mix(c.Theme().Text, .18)
 				}
@@ -124,8 +121,8 @@ func (a *App) fileTypesChart(c *ui.Context) {
 		case 0:
 			ui.Text(c, group.Extension).FontSize(12).SingleLine().Tooltip(group.Extension)
 		case 1:
-			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-				proportionBar(c, fraction(value, a.mapTotal), 0, accent)
+			ui.Row(c).Grow(1).MinWidth(0).Gap(8).AlignItems(ui.Center).Children(func() {
+				proportionBar(c, fraction(value, a.mapTotal), 0, accent).Height(10).Label("Visualization share: " + group.Extension)
 				ui.Text(c, fmt.Sprintf("%.1f%%", 100*fraction(value, a.mapTotal))).Width(60).FontSize(12)
 			})
 		case 2:

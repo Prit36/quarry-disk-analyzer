@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.0.3 — 2026-10-17
+
+- Nested treemap tiles are now clearly distinct: depth-aware borders and stable within-family shading replace gaps that blended into the parent fill, in both the live map and the PNG export.
+- Distribute hierarchy detail with a shared budget across folders so one large directory cannot consume the entire visualization; compact deep-level headers preserve space for their children.
+- Extend nested-selection visibility and app-wide detail polish: sunburst rings, file-type bars, selected-row metadata and statistics separators.
+- Add regression coverage for nested tile edges and selection, zoom clamping, viewport zoom/pan and exported nested tiles; refresh the reference-comparison QA evidence.
+
 ## 0.0.2 — 2026-10-17
 
 - Rebuild the native interface around the supplied visual reference: compact title/toolbar/summary, resizable explorer and analytics panes, Segoe UI typography, Fluent and Windows Shell icons, dark/light themes and responsive statistics.

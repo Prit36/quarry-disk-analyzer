@@ -82,6 +82,83 @@ func TestEmptyMap(t *testing.T) {
 	}
 }
 
+func TestHierarchySharesDetailBudgetAcrossRootFolders(t *testing.T) {
+	snapshot := index.New(`C:\nested`)
+	large := snapshot.Add(0, "Large", 0, 0, 0, index.Directory)
+	for folder := range 30 {
+		parent := snapshot.Add(large, "nested", 0, 0, 0, index.Directory)
+		for file := range 30 {
+			snapshot.Add(parent, "file", uint64(10000+folder+file), uint64(10000+folder+file), 0, 0)
+		}
+	}
+	for _, name := range []string{"Second", "Third"} {
+		parent := snapshot.Add(0, name, 0, 0, 0, index.Directory)
+		snapshot.Add(parent, "data", 100, 100, 0, 0)
+	}
+	snapshot.Finalize()
+	branches := Hierarchy(context.Background(), snapshot, 0, false, 48)
+	count := 0
+	var verify func([]Branch)
+	verify = func(nodes []Branch) {
+		for _, branch := range nodes {
+			count++
+			if len(branch.Children) > 0 {
+				var total uint64
+				for _, child := range branch.Children {
+					total += child.Item.Bytes
+				}
+				if total != branch.Item.Bytes {
+					t.Fatal("detail budget lost bytes", total, branch.Item.Bytes)
+				}
+				verify(branch.Children)
+			}
+		}
+	}
+	verify(branches)
+	if count > 48 {
+		t.Fatal("detail budget exceeded", count)
+	}
+	for _, branch := range branches {
+		if len(branch.Children) == 0 {
+			t.Fatal("a root folder was starved by a larger sibling", snapshot.NameView(branch.Item.ID))
+		}
+	}
+}
+
+func TestNestedHeadersPreserveChildSpace(t *testing.T) {
+	branches := []Branch{{Item: Item{ID: 1, Bytes: 100}, Children: []Branch{{Item: Item{ID: 2, Bytes: 100}, Children: []Branch{{Item: Item{ID: 3, Bytes: 60}}, {Item: Item{ID: 4, Bytes: 40}}}}}}}
+	for _, height := range []float32{70, 145, 400} {
+		cells := NestedLayout(branches, Rect{W: 300, H: height})
+		if len(cells) != 4 {
+			t.Fatal("visible nested folder lost descendants", height, cells)
+		}
+		for position, cell := range cells {
+			if !cell.Group {
+				continue
+			}
+			if cell.Header > cell.Tile.Rect.H*.45 || (cell.Depth > 0 && cell.Header > 34) {
+				t.Fatal("directory label consumes child detail", cell)
+			}
+			child := cells[position+1].Tile.Rect
+			parent := cell.Tile.Rect
+			if child.X < parent.X+2 || child.Y < parent.Y+cell.Header || child.X+child.W > parent.X+parent.W-1.99 || child.Y+child.H > parent.Y+parent.H-1.99 {
+				t.Fatal("child outside directory body", parent, child)
+			}
+		}
+	}
+}
+
+func TestHierarchyHonorsCancellationForSmallDirectories(t *testing.T) {
+	snapshot := index.New(`C:\cancelled`)
+	snapshot.Add(0, "file", 100, 100, 0, 0)
+	snapshot.Finalize()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if branches := Hierarchy(ctx, snapshot, 0, false, 4096); len(branches) != 0 {
+		t.Fatal("cancelled hierarchy still enumerated a small directory")
+	}
+}
+
 func TestMetadataVisibilityPreservesSnapshot(t *testing.T) {
 	snapshot := index.New(`C:\`)
 	snapshot.Engine = "NTFS MFT"
