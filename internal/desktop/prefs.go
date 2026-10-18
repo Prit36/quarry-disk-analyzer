@@ -27,6 +27,8 @@ type prefs struct {
 	ShowTreemap   bool
 	TreemapPct    float32 // height share of the table above the treemap
 	TreemapColors string  // "Extension", "Folder", "Mono"
+	ShowTypes     bool    // file types panel beside Tree View
+	TypesPct      float32 // width share of the tree beside it
 	FilterMap     bool    // analysis filter also applies to the treemap
 	ShowMetadata  bool    // list NTFS metadata ($MFT, $BadClus, …) of MFT scans
 
@@ -42,16 +44,17 @@ type prefs struct {
 	UseExclusions  bool
 	ConfirmRecycle bool
 	FileLimit      int
+	LayoutRev      int // bumped when the default column order changes
 }
 
 func defaultPrefs() prefs {
 	return prefs{
 		Version: 3, Metric: "Logical", Units: "Binary", Theme: "System", Compact: true, Zoom: 1,
-		ShowInfo: true, ShowTreemap: true, TreemapPct: 62, TreemapColors: "Extension", FilterMap: true,
+		ShowInfo: true, ShowTreemap: true, TreemapPct: 62, TreemapColors: "Extension", FilterMap: true, ShowTypes: true, TypesPct: 74,
 		TreeHidden: map[string]bool{"% of Scan": true, "Folders": true}, FileHidden: map[string]bool{"Allocated": true},
 		TreeSort: ui.SortOrder{Column: "Size", Descending: true}, FileSort: ui.SortOrder{Column: "Size", Descending: true},
 		ExtSort: ui.SortOrder{Column: "Size", Descending: true}, ScanMode: "Automatic", ConfirmRecycle: true,
-		Exclusions: []string{}, UseExclusions: true,
+		Exclusions: []string{}, UseExclusions: true, LayoutRev: 1,
 	}
 }
 
@@ -78,10 +81,15 @@ func loadPrefs() prefs {
 	}
 	data = bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF}) // a UTF-8 BOM, as Notepad may write
 	saved := defaultPrefs()
+	saved.LayoutRev = 0 // absent in settings written before it existed
 	if json.Unmarshal(data, &saved) != nil || saved.Version != 3 {
 		return p
 	}
 	p = saved
+	if p.LayoutRev < 1 {
+		// % of Parent moved beside Name; a saved order would keep it apart.
+		p.TreeColumns.Order, p.LayoutRev = nil, 1
+	}
 	// Defend against hand-edited or corrupt values.
 	if p.View < 0 || p.View > 2 {
 		p.View = 0
@@ -97,6 +105,9 @@ func loadPrefs() prefs {
 	}
 	if !slices.Contains([]string{"Extension", "Folder", "Mono"}, p.TreemapColors) {
 		p.TreemapColors = "Extension"
+	}
+	if bad(p.TypesPct) || p.TypesPct < 30 || p.TypesPct > 90 {
+		p.TypesPct = 74
 	}
 	if bad(p.TreemapPct) || p.TreemapPct < 15 || p.TreemapPct > 90 {
 		p.TreemapPct = 62

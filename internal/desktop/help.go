@@ -193,7 +193,7 @@ func wrapWords(s string, width int) []string {
 // shortcutHelp lists the keyboard shortcuts from the command registry, so the
 // dialog always shows the keys that work.
 func (a *App) shortcutHelp() []helpSection {
-	order := []string{"edit.find", "tools.search", "scan.folder", "scan.rescan", "scan.stop", "view.tree", "view.files", "view.ext", "nav.back", "nav.forward", "nav.up", "nav.root", "item.open", "item.goInto", "item.explorer", "item.properties", "item.reveal", "edit.copy", "edit.cut", "edit.copyPath", "edit.copyRows", "edit.selectAll", "edit.rename", "edit.delete", "edit.deletePerm", "export.view", "file.saveScan", "tools.filter", "tree.expandAll", "tree.collapseSub", "tree.expandLevel", "tree.collapseLvl", "tree.collapseAll", "view.treemap", "view.maxTreemap", "zoom.in", "zoom.out", "zoom.reset", "file.newWindow", "help.keys"}
+	order := []string{"edit.find", "tools.search", "scan.folder", "scan.rescan", "scan.stop", "view.tree", "view.files", "view.ext", "nav.back", "nav.forward", "nav.up", "nav.root", "item.open", "item.goInto", "item.explorer", "item.properties", "item.reveal", "edit.copy", "edit.cut", "edit.copyPath", "edit.copyRows", "edit.selectAll", "edit.rename", "edit.delete", "edit.deletePerm", "export.view", "file.saveScan", "tools.filter", "tree.expandAll", "tree.collapseSub", "tree.expandLevel", "tree.collapseLvl", "tree.collapseAll", "view.treemap", "view.maxTreemap", "view.types", "zoom.in", "zoom.out", "zoom.reset", "file.newWindow", "help.keys"}
 	keys := helpSection{}
 	for _, id := range order {
 		cmd := a.cmds[id]

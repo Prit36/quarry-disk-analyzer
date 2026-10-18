@@ -458,3 +458,43 @@ func TestScopeFollowsLocation(t *testing.T) {
 		t.Fatalf("scope %d after going up, want 0", a.files.scope)
 	}
 }
+
+// Tree View shows the drive header and the file types panel beside the tree.
+func TestDriveHeaderAndTypesPanel(t *testing.T) {
+	a := testApp(t)
+	drives := []platform.Drive{{Path: `C:\`, Name: "Windows", FileSystem: "NTFS", Total: 100 << 30, Free: 5 << 30}}
+	a.drives = drives
+	tt := ui.NewTester(a.view, 1280, 800)
+	settle(tt, func() bool { return !a.ext.busy && len(a.ext.bySize) > 0 })
+	a.drives = drives
+	tt.Frame()
+	for _, want := range []string{"Windows (C:)", "NTFS · 95 % full", "5.0 GiB", "free of 100.0 GiB", "Rest of drive", "Scanned with", "File Type", ".mp4", ".pdf"} {
+		if !tt.HasText(want) {
+			t.Fatalf("missing %q in %q", want, tt.Texts())
+		}
+	}
+	if got := a.ext.types[a.ext.bySize[0]].Extension; got != ".mp4" {
+		t.Fatalf("largest type %q", got)
+	}
+	a.exec("view.types")
+	tt.Frame()
+	if a.prefs.ShowTypes || tt.HasText("File Type") {
+		t.Fatal("F8 should hide the panel")
+	}
+}
+
+// The size metric has no control on screen; it is named only when it is
+// not the default, and the treemap bar carries no instructions.
+func TestMetricNamedOnlyWhenAllocated(t *testing.T) {
+	a := testApp(t)
+	tt := ui.NewTester(a.view, 1280, 800)
+	tt.Frame()
+	if tt.HasText("Allocated size") || tt.HasText("Logical size") || tt.HasText("Click to select") {
+		t.Fatalf("unexpected text in %q", tt.Texts())
+	}
+	a.exec("metric.allocated")
+	tt.Frame()
+	if !tt.HasText("Allocated size") {
+		t.Fatalf("allocated metric not named: %q", tt.Texts())
+	}
+}

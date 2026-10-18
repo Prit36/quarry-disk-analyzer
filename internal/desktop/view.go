@@ -40,7 +40,7 @@ func (a *App) view(c *ui.Context) {
 		a.files.tick(c)
 		a.files.ensure()
 	}
-	if a.prefs.View == viewExtensions {
+	if a.prefs.View == viewExtensions || a.prefs.View == viewTree && a.prefs.ShowTypes && a.snap != nil {
 		a.ext.ensure()
 	}
 	if !a.messageAt.IsZero() {
@@ -59,6 +59,9 @@ func (a *App) view(c *ui.Context) {
 	}
 	root.Children(func() {
 		a.toolbar(c, pal)
+		if a.snap != nil {
+			a.driveHeader(c, pal)
+		}
 		ui.Column(c).Grow(1).MinHeight(0).Children(func() {
 			switch {
 			case a.snap == nil && a.scanning:
@@ -556,11 +559,14 @@ func (a *App) workspace(c *ui.Context, pal palette) {
 				a.viewTabs(c, pal)
 				prev := c.Theme()
 				c.SetTheme(grid)
-				switch a.prefs.View {
-				case viewFiles:
+				switch {
+				case a.prefs.View == viewFiles:
 					a.fileTable(c, pal)
-				case viewExtensions:
+				case a.prefs.View == viewExtensions:
 					a.extTable(c, pal)
+				case a.prefs.ShowTypes:
+					// WizTree's layout: what is big beside what kind it is.
+					ui.SplitPercent(c.Key("types-split"), &a.prefs.TypesPct, func() { a.treeTable(c, pal) }, func() { a.typesPanel(c, pal) }).Grow(1).MinHeight(0)
 				default:
 					a.treeTable(c, pal)
 				}
@@ -610,11 +616,10 @@ func (a *App) viewTabs(c *ui.Context, pal palette) {
 		ui.Row(c).Gap(10).AlignItems(ui.Center).MinWidth(0).Shrink(1).Clip().Children(func() {
 			a.scanFlags(c)
 			a.viewContext(c)
-			// The metric drives the columns' percentages and sorting as well
-			// as the treemap, so it stays here when the treemap is hidden.
-			metric := a.prefs.Metric + " size"
-			if ui.Select(c.Key("metric"), &metric, []string{"Logical size", "Allocated size"}).Label("Size metric").Tooltip("Size used for percentages, default sorting and the treemap.\nAllocated is the disk space taken, smaller for compressed or sparse files.").Height(22).Width(124).Shrink(0).Changed() {
-				a.setMetric(strings.TrimSuffix(metric, " size"))
+			// The metric is set in View → Size Metric or a column header's
+			// menu; it is named here only when it is not the default.
+			if a.metricAllocated() {
+				ui.Text(c, "Allocated size").TextColor(t.Focus).SingleLine().Shrink(0).Tooltip("Percentages, default sorting and the treemap use the disk space files take.\nView → Size Metric → Logical Size goes back to file lengths.")
 			}
 		})
 	})
@@ -692,12 +697,10 @@ func (a *App) treemapBar(c *ui.Context, pal palette) {
 	t := c.Theme()
 	ui.Row(c).Height(28).Shrink(0).Padding(0, 6, 0, 10).Gap(6).AlignItems(ui.Center).Background(pal.chrome).BorderWidth(1, 0, 1, 0).BorderColor(pal.separator).Children(func() {
 		// The location and its size are in the toolbar and the tree already.
-		ui.Text(c, "Treemap").SingleLine().Shrink(0)
+		// How to use it is a tooltip, not text that stays on screen.
+		ui.Text(c, "Treemap").SingleLine().Shrink(0).Tooltip("Click selects in Tree View · double-click opens a folder · Backspace or the mouse back button goes up")
 		if a.tm.busy {
 			ui.Text(c, "Updating…").TextColor(t.TextMuted).Shrink(0)
-		} else {
-			// How to use it, where the user looks, until space runs out.
-			ui.Text(c, "Click to select · double-click to open a folder · Backspace goes up").FontSize(11).TextColor(t.TextMuted).SingleLine().MinWidth(0).Shrink(1).Clip()
 		}
 		ui.Spacer(c)
 		colors := map[string]string{"Extension": "Color by extension", "Folder": "Color by folder", "Mono": "Monochrome"}
@@ -723,6 +726,140 @@ func (a *App) treemapBar(c *ui.Context, pal palette) {
 		if toolButton(c, "tm-hide", "dismiss", "Hide treemap (Ctrl+T)", true) {
 			a.prefs.ShowTreemap, a.tm.maximized = false, false
 		}
+	})
+}
+
+// Drive header.
+
+// driveHeader answers the question Quarry is opened with, "how full is the
+// drive", before any detail. It is ranked like a dashboard: the drive on
+// the left, its use as a bar whose segments the legend below names (the
+// scan, the rest of the used space, free space), free space as the one
+// large number, then the scan's counts as small labeled values.
+func (a *App) driveHeader(c *ui.Context, pal palette) {
+	t := c.Theme()
+	s := a.snap
+	d, live := a.driveOf(s.Root)
+	live = live && a.source == ""
+	root := s.Nodes[0]
+	caption := func(text string) ui.Element {
+		return ui.Text(c, text).FontSize(t.FontSize - 1).TextColor(t.TextMuted).SingleLine()
+	}
+	// stat is a small labeled value: the label above, the value below.
+	stat := func(label, value, tip string) {
+		ui.Column(c).Gap(2).Shrink(0).Tooltip(tip).Children(func() {
+			caption(label)
+			ui.Text(c, value).SingleLine()
+		})
+	}
+	ui.Row(c).Height(58).Shrink(0).Padding(0, 16).Gap(20).AlignItems(ui.Center).Background(pal.chrome).BorderWidth(0, 0, 1, 0).BorderColor(pal.separator).Clip().Children(func() {
+		// The drive, or the saved scan's folder.
+		ui.Row(c).Gap(10).AlignItems(ui.Center).Shrink(0).MaxWidth(320).Children(func() {
+			ui.Icon(c, icons["hard_drive"]).FontSize(24).TextColor(t.TextMuted).Shrink(0)
+			ui.Column(c).Gap(2).MinWidth(0).Shrink(1).Children(func() {
+				if !live {
+					ui.Text(c, s.Root).FontSize(t.FontSize + 1).FontWeight(600).SingleLine().MinWidth(0).Shrink(1).Tooltip(s.Root)
+					caption("Saved scan · the drive may have changed since")
+					return
+				}
+				name := strings.TrimSuffix(d.Path, `\`)
+				if d.Name != "" {
+					name = d.Name + " (" + name + ")"
+				}
+				ui.Text(c, name).FontSize(t.FontSize + 1).FontWeight(600).SingleLine()
+				info := fmt.Sprintf("%.0f %% full", percent(d.Total-d.Free, d.Total))
+				if d.FileSystem != "" {
+					info = d.FileSystem + " · " + info
+				}
+				caption(info)
+			})
+		})
+		if live {
+			a.usageBar(c, pal, d, root)
+			// Free space is what a cleanup changes, so it is the large number.
+			used := percent(d.Total-d.Free, d.Total)
+			full := used >= 90
+			color := t.Text
+			if full {
+				color = t.Warning
+			}
+			ui.Column(c).Gap(0).Shrink(0).Tooltip(fmt.Sprintf("%s used of %s (%s)", a.size(d.Total-d.Free), a.size(d.Total), percentText(used))).Children(func() {
+				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+					if full {
+						ui.Icon(c, icons["warning"]).FontSize(12).TextColor(t.Warning)
+					}
+					ui.Text(c, a.size(d.Free)).FontSize(t.FontSize + 2).FontWeight(600).TextColor(color).SingleLine()
+				})
+				caption("free of " + a.size(d.Total))
+			})
+			ui.Spacer(c)
+		} else {
+			ui.Column(c).Gap(0).Shrink(0).Children(func() {
+				ui.Text(c, a.size(a.metric(root))).FontSize(t.FontSize + 2).FontWeight(600).SingleLine()
+				caption("in this scan")
+			})
+			ui.Spacer(c)
+		}
+		ui.Box(c).Size(1, 30).Background(pal.separator).Shrink(0)
+		stat("Files", count(uint64(root.Files)), "")
+		stat("Folders", count(uint64(root.Dirs)), "")
+		tip := s.Engine
+		if s.Fallback != "" {
+			tip += "\nDirect MFT reading was not used: " + s.Fallback
+			if !a.admin {
+				tip += "\nOptions → Restart as Administrator enables it for NTFS drives."
+			}
+		}
+		if bytes, ok := a.metadataBytes(); ok {
+			tip += fmt.Sprintf("\nNTFS metadata ($MFT, $LogFile, $BadClus, $Extend…, %s) is not listed or counted; Options → Show NTFS Metadata Files lists it.", a.size(bytes))
+		}
+		stat("Scanned with", engineName(s)+" · "+duration(s.Elapsed), tip)
+	})
+}
+
+// usageBar is the drive's space in three segments: what the scan holds,
+// the rest of the used space, and free space, named by a legend below it.
+func (a *App) usageBar(c *ui.Context, pal palette, d platform.Drive, root index.Node) {
+	t := c.Theme()
+	used := d.Total - d.Free
+	scanned := min(root.Allocated, used) // disk space, as the volume counts it
+	other := used - scanned
+	otherColor := pal.bar.Mix(pal.barTrack, .55)
+	wholeDrive := strings.EqualFold(strings.TrimSuffix(a.snap.Root, `\`), strings.TrimSuffix(d.Path, `\`))
+	otherLabel, otherTip := "Rest of drive", "Used by everything on "+strings.TrimSuffix(d.Path, `\`)+" outside "+a.snap.Root
+	if wholeDrive {
+		otherLabel = "Not listed"
+		otherTip = "Used space the scan does not list: filesystem structures, shadow copies and anything that could not be read.\nTools → Scan Information compares the two."
+	}
+	key := func(color ui.Color, label, value, tip string) {
+		ui.Row(c).Gap(5).AlignItems(ui.Center).Shrink(0).Tooltip(tip).Children(func() {
+			// An outline keeps the free swatch visible: it is the bar's track color.
+			ui.Box(c).Size(8, 8).Radius(2).Background(color).Border(1, pal.bar.Mix(pal.barTrack, .3)).Shrink(0)
+			ui.Text(c, label).FontSize(t.FontSize - 1).TextColor(t.TextMuted).SingleLine()
+			ui.Text(c, value).FontSize(t.FontSize - 1).SingleLine()
+		})
+	}
+	ui.Column(c).Grow(1).MinWidth(140).MaxWidth(560).Gap(6).Children(func() {
+		ui.Box(c).Height(10).Grow(1).Draw(func(p *ui.Painter, r ui.Rect) {
+			p.Fill(r, pal.barTrack, 3)
+			if d.Total == 0 {
+				return
+			}
+			w := r.W
+			seg := r
+			seg.W = w * float32(float64(used)/float64(d.Total))
+			p.Fill(seg, otherColor, 3)
+			seg.W = w * float32(float64(scanned)/float64(d.Total))
+			if scanned > 0 && seg.W < 2 {
+				seg.W = 2 // a small folder still shows where it is
+			}
+			p.Fill(seg, pal.bar, 3)
+		})
+		ui.Row(c).Gap(14).AlignItems(ui.Center).MinWidth(0).Clip().Children(func() {
+			key(pal.bar, "Scanned", a.size(scanned), "Disk space taken by the files in "+a.snap.Root)
+			key(otherColor, otherLabel, a.size(other), otherTip)
+			key(pal.barTrack, "Free", a.size(d.Free), "")
+		})
 	})
 }
 
@@ -778,20 +915,9 @@ func (a *App) statusBar(c *ui.Context, pal palette) {
 		if ids := a.selected(); len(ids) > 1 && a.snap != nil {
 			ui.Text(c, fmt.Sprintf("%s selected · %s", count(uint64(len(ids))), a.size(a.facts().total))).TextColor(t.TextMuted).SingleLine()
 		}
+		// The volume, the scan method and its time are in the drive header.
 		if a.snap != nil {
 			s := a.snap
-			engine := ui.Text(c, engineName(s)+" · "+duration(s.Elapsed)).TextColor(t.TextMuted).SingleLine()
-			tip := s.Engine
-			if s.Fallback != "" {
-				tip += "\nDirect MFT reading was not used: " + s.Fallback
-				if !a.admin {
-					tip += "\nOptions → Restart as Administrator enables it for NTFS drives."
-				}
-			}
-			if bytes, ok := a.metadataBytes(); ok {
-				tip += fmt.Sprintf("\nNTFS metadata ($MFT, $LogFile, $BadClus, $Extend…, %s) is not listed or counted; Options → Show NTFS Metadata Files lists it.", a.size(bytes))
-			}
-			engine.Tooltip(tip)
 			if s.Errors > 0 {
 				b := ui.ButtonBase(c.Key("issues")).Padding(0, 2).Gap(4).AlignItems(ui.Center).Label("Scan issues").Tooltip("Some items could not be read; totals may be incomplete. Click for details.")
 				b.Children(func() {
@@ -801,10 +927,6 @@ func (a *App) statusBar(c *ui.Context, pal palette) {
 				if b.Clicked() {
 					a.dlg.issues = true
 				}
-			}
-			// Free space is what a cleanup is for; it updates after deletions.
-			if d, ok := a.driveOf(s.Root); ok && a.source == "" {
-				ui.Text(c, fmt.Sprintf("%s %s free", strings.TrimSuffix(d.Path, `\`), a.size(d.Free))).TextColor(t.TextMuted).SingleLine().Tooltip(fmt.Sprintf("Volume %s: %s used of %s (%s)", d.Path, a.size(d.Total-d.Free), a.size(d.Total), percentText(percent(d.Total-d.Free, d.Total))))
 			}
 		}
 	})
@@ -945,15 +1067,11 @@ func (a *App) startPage(c *ui.Context, pal palette) {
 	})
 }
 
-func (a *App) driveOf(path string) (d struct {
-	Path        string
-	Total, Free uint64
-}, ok bool) {
+func (a *App) driveOf(path string) (platform.Drive, bool) {
 	for _, dr := range a.drives {
 		if len(path) >= len(dr.Path) && strings.EqualFold(path[:len(dr.Path)], dr.Path) && dr.Total > 0 {
-			d.Path, d.Total, d.Free = dr.Path, dr.Total, dr.Free
-			return d, true
+			return dr, true
 		}
 	}
-	return d, false
+	return platform.Drive{}, false
 }

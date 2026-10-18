@@ -579,9 +579,19 @@ func (a *App) setTheme(t string) {
 	}
 }
 
+// toggleTypes shows or hides the file types panel; showing it also shows
+// Tree View, the only view it sits beside.
+func (a *App) toggleTypes() {
+	a.prefs.ShowTypes = !a.prefs.ShowTypes
+	if a.prefs.ShowTypes && a.prefs.View != viewTree {
+		a.setViewMode(viewTree)
+	}
+}
+
 func (a *App) resetLayout() {
 	d := defaultPrefs()
 	a.prefs.ShowTreemap, a.prefs.TreemapPct, a.prefs.ShowInfo, a.prefs.Zoom = d.ShowTreemap, d.TreemapPct, d.ShowInfo, d.Zoom
+	a.prefs.ShowTypes, a.prefs.TypesPct = d.ShowTypes, d.TypesPct
 	a.prefs.TreeHidden, a.prefs.FileHidden = d.TreeHidden, d.FileHidden
 	a.tree.list.Columns, a.files.list.Columns, a.ext.list.Columns = d.TreeColumns, d.FileColumns, d.ExtColumns
 	a.tm.maximized = false

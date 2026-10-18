@@ -17,9 +17,9 @@ type column struct {
 
 var treeColumns = []column{
 	{ui.TableColumn{Title: "Name", MinWidth: 160, Sortable: true}, false},
+	{ui.TableColumn{Title: "% of Parent", Width: 150, MinWidth: 80, Sortable: true}, true},
 	{ui.TableColumn{Title: "Size", Width: 84, MinWidth: 50, Align: ui.End, Sortable: true}, true},
 	{ui.TableColumn{Title: "Allocated", Width: 84, MinWidth: 50, Align: ui.End, Sortable: true}, true},
-	{ui.TableColumn{Title: "% of Parent", Width: 116, MinWidth: 60, Sortable: true}, true},
 	{ui.TableColumn{Title: "% of Scan", Width: 72, MinWidth: 50, Align: ui.End, Sortable: true}, true},
 	{ui.TableColumn{Title: "Files", Width: 76, MinWidth: 40, Align: ui.End, Sortable: true}, true},
 	{ui.TableColumn{Title: "Folders", Width: 66, MinWidth: 40, Align: ui.End, Sortable: true}, true},
@@ -59,14 +59,15 @@ func visibleColumns(all []column, hidden map[string]bool) ([]ui.TableColumn, []s
 	return cols, ids
 }
 
-// tableTheme makes selected rows the accent only while the table has focus,
-// as Windows lists do; unfocused selections are a neutral grey.
+// tableTheme makes selected rows a soft tint of the accent while the table
+// has focus, as Windows lists do; unfocused selections are a neutral grey.
+// Row text keeps its normal color either way.
 func tableTheme(c *ui.Context, state *ui.ListState, focused bool, pal palette) func() {
 	prev := c.Theme()
 	t := *prev
+	t.Accent, t.AccentText = pal.selected, prev.Text
 	if !focused {
 		t.Accent = pal.unfocused
-		t.AccentText = prev.Text
 	}
 	c.SetTheme(&t)
 	return func() { c.SetTheme(prev) }
@@ -89,8 +90,16 @@ func cellBox(c *ui.Context, align ui.Align) ui.Element {
 	return ui.Row(c).Grow(1).MinWidth(0).Height(t.Space(8)).Margin(-padY, -padX).Padding(padY, padX).AlignItems(ui.Center).Justify(align).Gap(t.Space(1.5))
 }
 
+// shareBar draws a share as a bar; a width of 0 lets it fill the cell, so
+// widening the column lengthens the bar.
 func shareBar(c *ui.Context, share float64, width float32, pal palette) {
-	ui.Box(c).Width(width).Height(8).Shrink(0).Draw(func(p *ui.Painter, r ui.Rect) {
+	bar := ui.Box(c).Height(10).Shrink(0)
+	if width > 0 {
+		bar.Width(width)
+	} else {
+		bar.Grow(1).MinWidth(24).Shrink(1)
+	}
+	bar.Draw(func(p *ui.Painter, r ui.Rect) {
 		p.Fill(r, pal.barTrack, 1)
 		w := r.W * float32(max(0, min(1, share)))
 		if share > 0 && w < 1 {
@@ -122,6 +131,9 @@ func (a *App) headerMenu(c *ui.Context, m *ui.Menu, col int, all []column, ids [
 			hidden[title] = !hidden[title]
 		}
 	}
+	m.Separator()
+	// The metric sets the percentages and default sorting of these columns.
+	m.Submenu("Size Metric", func(sm *ui.Menu) { a.contextItems(sm, "metric.logical", "metric.allocated") })
 	m.Separator()
 	if m.Item("Reset Columns").Chosen() {
 		clear(hidden)
@@ -350,9 +362,11 @@ func (a *App) treeTable(c *ui.Context, pal palette) {
 				parent = id
 			}
 			share := percent(a.metric(n), a.metric(s.Nodes[parent]))
+			// Beside the name, the bar answers "what is big here" before any
+			// number is read, as WizTree's does.
 			cell.Children(func() {
-				shareBar(c, share/100, 46*a.zoom(), pal)
-				ui.Text(c, percentText(share)).SingleLine().Grow(1).TextAlign(ui.End)
+				shareBar(c, share/100, 0, pal)
+				ui.Text(c, percentText(share)).SingleLine().Width(46 * a.zoom()).Shrink(0).TextAlign(ui.End).TextColor(t.TextMuted)
 			})
 		default:
 			txt := a.treeCellText(id, ids[col])
@@ -708,5 +722,95 @@ func (a *App) extTable(c *ui.Context, pal palette) {
 		if ext, ok := e.currentExt(); ok {
 			a.showExtensionFiles(ext)
 		}
+	}
+}
+
+// File types panel.
+
+var typeColumns = []ui.TableColumn{
+	{Title: "File Type", Width: 120, MinWidth: 70},
+	{Title: "Size", Width: 76, MinWidth: 50, Align: ui.End},
+	{Title: "% of Files", MinWidth: 80},
+}
+
+// typesPanel lists the kinds of files in the scope beside Tree View,
+// largest first. Its swatches are the treemap's colors, so it is also the
+// treemap's legend.
+func (a *App) typesPanel(c *ui.Context, pal palette) {
+	e := &a.ext
+	t := c.Theme()
+	e.panel.Selected = &e.panelCursor
+	e.panel.Sort = nil
+	e.panel.Key = func(i int) any { return e.types[e.bySize[i]].Extension }
+	e.panel.Label = func(i int) string { return e.types[e.bySize[i]].Extension }
+	e.panel.HeaderMenu = func(m *ui.Menu, col int) { a.contextItems(m, "view.types") }
+	total := e.total.Bytes
+	if a.metricAllocated() {
+		total = e.total.Allocated
+	}
+	open := func(row int) {
+		if row >= 0 && row < len(e.bySize) {
+			ext := e.types[e.bySize[row]].Extension
+			a.post(func() { a.showExtensionFiles(ext) })
+		}
+	}
+	restore := tableTheme(c, &e.panel, a.focused["types"], pal)
+	table := ui.Table(c.Key("types"), &e.panel, typeColumns, len(e.bySize), func(row, col int) {
+		if row >= len(e.bySize) {
+			return
+		}
+		ft := e.types[e.bySize[row]]
+		cell := cellBox(c, typeColumns[col].Align)
+		if cell.DoubleClicked() {
+			open(row)
+		}
+		cell.ContextMenu(func(m *ui.Menu) {
+			e.panelCursor = row
+			if m.Item("Show Files").Shortcut(0, ui.KeyEnter).Chosen() {
+				open(row)
+			}
+			if m.Item("Copy Extension").Chosen() {
+				a.copyText([]string{ft.Extension}, "extension")
+			}
+			m.Separator()
+			a.contextItems(m, "view.ext", "view.types")
+		})
+		metric := ft.Bytes
+		if a.metricAllocated() {
+			metric = ft.Allocated
+		}
+		cell.Children(func() {
+			switch col {
+			case 0:
+				ui.Box(c).Size(10, 10).Radius(2).Background(a.extColor(ft.Extension)).Shrink(0)
+				ui.Text(c, ft.Extension).SingleLine().MinWidth(0).Shrink(1)
+				cell.Tooltip(platform.CachedFileTypeName(ft.Extension) + "\n" + plural(ft.Count, "file", "files") + " · double-click to list them")
+			case 1:
+				ui.Text(c, a.size(metric)).SingleLine()
+			case 2:
+				share := percent(metric, total)
+				shareBar(c, share/100, 0, pal)
+				ui.Text(c, percentText(share)).SingleLine().Width(46 * a.zoom()).Shrink(0).TextAlign(ui.End).TextColor(t.TextMuted)
+			}
+		})
+	}).Grow(1).MinHeight(0).Background(pal.grid)
+	table.Children(func() {
+		msg := ""
+		switch {
+		case e.err != "":
+			msg = e.err
+		case len(e.bySize) == 0 && e.busy:
+			msg = "Analyzing…"
+		case len(e.bySize) == 0:
+			msg = "No files here."
+		}
+		if msg != "" {
+			ui.Text(c, msg).TextColor(t.TextMuted).Absolute().Top(t.Space(8) + 8).Left(12)
+		}
+	})
+	restore()
+	a.trackFocus(c, "types", &e.panel)
+	if table.Submitted() {
+		open(e.panelCursor)
 	}
 }

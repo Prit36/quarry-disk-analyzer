@@ -30,6 +30,12 @@ type extModel struct {
 	list   ui.ListState
 	cursor int
 	sort   ui.SortOrder
+
+	// The file types panel beside Tree View: the same types, largest first,
+	// with its own list so it keeps its place when the Extensions tab sorts.
+	bySize      []int
+	panel       ui.ListState
+	panelCursor int
 }
 
 func (e *extModel) init(a *App) {
@@ -50,6 +56,7 @@ func (e *extModel) reset() {
 	e.types, e.shown, e.total, e.busy, e.err, e.forSnap = nil, nil, index.FileType{}, false, "", nil
 	e.cursor = -1
 	e.dirty = true
+	e.bySize, e.panelCursor = nil, -1
 }
 
 func (e *extModel) invalidate() {
@@ -105,6 +112,8 @@ func (e *extModel) run() {
 				return
 			}
 			e.err, e.types, e.total = "", analysis.Types, total
+			e.bySize = typesBySize(analysis.Types, allocated)
+			e.panelCursor = -1
 			e.forText = "\x00"
 			e.cursor = -1
 		})
@@ -213,4 +222,20 @@ func (a *App) sizeColumn() string {
 		return "Allocated"
 	}
 	return "Size"
+}
+
+// typesBySize orders file types by the size metric, largest first.
+func typesBySize(types []index.FileType, allocated bool) []int {
+	order := make([]int, len(types))
+	for i := range order {
+		order[i] = i
+	}
+	slices.SortStableFunc(order, func(x, y int) int {
+		a, b := types[x], types[y]
+		if allocated {
+			return cmp.Compare(b.Allocated, a.Allocated)
+		}
+		return cmp.Compare(b.Bytes, a.Bytes)
+	})
+	return order
 }

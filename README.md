@@ -10,19 +10,23 @@ Quarry shows where the space went and gets you from a storage problem to the fil
 ```
 File  Edit  View  Tools  Options  Help                         (native menu bar)
 [Scan v] [Rescan] | <- -> ^ | C: > Users > me                  | [Search...      v]
-Tree | Files | Extensions                Scope: C:\Users\me v  [Logical size v]
-+--------------------------------------------------------------------------------+
-| Name                       Size   Allocated   % of Parent      Files   Modified |
-| v C:\                    307 GiB    308 GiB   ##### 100 %   1,070,517          |
-|   > Users                152 GiB    153 GiB   ##    49 %       804,863          |
+Windows (C:)  [#######====-----]   120 GiB        | Files      Folders  Scanned with
+NTFS · 75 % full  ■ Scanned ■ Not listed ■ Free   free of 476 GiB  | 1,070,517  98,410   NTFS MFT · 2 s
+Tree | Files | Extensions
++-----------------------------------------------------------+--------------------+
+| Name          % of Parent       Size  Allocated   Files   | File Type    Size  |
+| v C:\         ########## 100 %  307 GiB  308 GiB  1,070,517| ■ .mp4    61 GiB  |
+|   > Users     #####       49 %  152 GiB  153 GiB    804,863| ■ .dll    25 GiB  |
 +------------------------------ splitter -----------------------------------------+
-| Treemap  Click to select · double-click to open    [Color by extension v] ^ x |
+| Treemap                                            [Color by extension v] ^ x |
 |                                  treemap                                       |
 +--------------------------------------------------------------------------------+
-C:\Users  ·  152 GiB  ·  804,863 files          NTFS MFT · 2 s   C: 120 GiB free
+C:\Users  ·  152 GiB  ·  804,863 files
 ```
 
-- **Tree** - the folder hierarchy below the current location, sorted by size. Right/Left expand and collapse (Shift for the whole subtree, bounded at 200,000 rows), Enter or double-click expands folders and opens files, Backspace or Alt+Up goes up.
+- **Drive header** - the drive, its use as a bar in three parts (the scan, used space the scan does not list or the rest of the drive, free space) with a legend, free space as the large number (in the warning color at 90 % or more), and the scan's file and folder counts and method.
+- **Tree** - the folder hierarchy below the current location, sorted by size, with each entry's share of its parent as a bar beside its name. Right/Left expand and collapse (Shift for the whole subtree, bounded at 200,000 rows), Enter or double-click expands folders and opens files, Backspace or Alt+Up goes up.
+- **File types panel** - beside the tree: the kinds of files in the scope, largest first, in the treemap's colors, so it is also its legend. Double-click lists a type's files; F8 shows or hides it.
 - **Files** - every file in the scope, largest first, or every match of the search. Results are complete (no silent limit) and virtualized.
 - **Extensions** - space by file type with Windows' type names. Double-click an extension to list its files.
 - **Treemap** - area proportional to size, colored by extension (aggregated blocks take their dominant type), by top-level folder, or monochrome. Click selects the item in Tree View, double-click a folder goes into it, the mouse back button returns.
@@ -56,7 +60,7 @@ Tools → Advanced Search builds such a query from fields. The scope is shown ne
 
 As administrator, whole NTFS drives are read directly from the master file table (seconds for millions of files). Otherwise - and for folders, FAT/exFAT and network drives - Quarry enumerates directories with `FILE_ID_BOTH_DIR_INFO`. The status bar names the method used and why MFT reading was not possible; Options → Restart as Administrator relaunches through UAC.
 
-Sizes: **Size** is the logical length of files, **Allocated** the disk space they occupy (smaller for compressed or sparse files). Hard links are counted once, junctions and symbolic links are not followed, and unreadable folders are reported (status bar issue count, Tools → Scan Issues). The volume's used space also contains filesystem overhead, so it is shown separately (Tools → Scan Information).
+Sizes: **Size** is the logical length of files, **Allocated** the disk space they occupy (smaller for compressed or sparse files). View → Size Metric, or a column header's right-click menu, chooses which one percentages, default sorting and the treemap use. Hard links are counted once, junctions and symbolic links are not followed, and unreadable folders are reported (status bar issue count, Tools → Scan Issues). The volume's used space also contains filesystem overhead, so it is shown separately (Tools → Scan Information).
 
 ## Saving, exporting, comparing
 

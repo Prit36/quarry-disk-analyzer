@@ -41,6 +41,7 @@ type palette struct {
 	separator ui.Color
 	bar       ui.Color // percentage bars
 	barTrack  ui.Color
+	selected  ui.Color // selected rows of a focused table
 	unfocused ui.Color // selection while the table is not focused
 	folder    ui.Color
 }
@@ -55,8 +56,10 @@ func (a *App) dark() bool {
 	return mygo.Theme.IsDark()
 }
 
-// appTheme is a restrained Windows 11 look: neutral greys, the system accent
-// only for selection and focus, compact metrics (24 DIP rows at 100% zoom).
+// appTheme is a restrained Windows 11 look: neutral greys and one blue, used
+// for selection, focus and share bars; compact metrics (24 DIP rows at 100%
+// zoom). Selected rows are a soft tint of it, as in Explorer, so the eye goes
+// to the data rather than to the selection band.
 func (a *App) appTheme() (*ui.Theme, palette) {
 	var t ui.Theme
 	var p palette
@@ -74,11 +77,11 @@ func (a *App) appTheme() (*ui.Theme, palette) {
 		t.AccentPressed = ui.Hex("#28609C")
 		t.AccentText = ui.Hex("#FFFFFF")
 		t.Selection = ui.Hex("#264F78")
-		t.Focus = ui.Hex("#60A5FA")
+		t.Focus = ui.Hex("#5C9CE6")
 		t.Warning = ui.Hex("#E3B341")
 		t.Danger = ui.Hex("#F07070")
 		t.Scrollbar = ui.Hex("#5A5A5A")
-		p = palette{chrome: ui.Hex("#252526"), grid: ui.Hex("#1C1C1C"), separator: ui.Hex("#333333"), bar: ui.Hex("#5B8DC9"), barTrack: ui.Hex("#2E2E2E"), unfocused: ui.Hex("#37414D"), folder: ui.Hex("#E8B64C")}
+		p = palette{chrome: ui.Hex("#252526"), grid: ui.Hex("#1C1C1C"), separator: ui.Hex("#333333"), bar: ui.Hex("#4F8BD0"), barTrack: ui.Hex("#2E2E2E"), selected: ui.Hex("#24476B"), unfocused: ui.Hex("#343A42"), folder: ui.Hex("#E8B64C")}
 	} else {
 		t = *ui.LightTheme()
 		t.Background = ui.Hex("#FFFFFF")
@@ -97,7 +100,7 @@ func (a *App) appTheme() (*ui.Theme, palette) {
 		t.Warning = ui.Hex("#9D5D00")
 		t.Danger = ui.Hex("#C42B1C")
 		t.Scrollbar = ui.Hex("#B0B0B0")
-		p = palette{chrome: ui.Hex("#F3F3F3"), grid: ui.Hex("#FFFFFF"), separator: ui.Hex("#E0E0E0"), bar: ui.Hex("#4F8BD6"), barTrack: ui.Hex("#E8E8E8"), unfocused: ui.Hex("#E3E3E3"), folder: ui.Hex("#DDA028")}
+		p = palette{chrome: ui.Hex("#F3F3F3"), grid: ui.Hex("#FFFFFF"), separator: ui.Hex("#E0E0E0"), bar: ui.Hex("#4F8BD6"), barTrack: ui.Hex("#E8E8E8"), selected: ui.Hex("#CCE8FF"), unfocused: ui.Hex("#E5E5E5"), folder: ui.Hex("#DDA028")}
 	}
 	t.Font = "Segoe UI"
 	t.FontSize = 12

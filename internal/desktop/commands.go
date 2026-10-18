@@ -112,6 +112,7 @@ func newCommands() map[string]*command {
 		"tree.collapseLvl": {label: "Collapse One Level", keys: "Ctrl+Shift+Left", mods: ui.Ctrl | ui.Shift, key: ui.KeyLeft, enabled: inTree, run: func(a *App) { a.tree.collapseLevel() }},
 		"tree.collapseAll": {label: "Collapse All", keys: "Ctrl+Shift+Up", mods: ui.Ctrl | ui.Shift, key: ui.KeyUp, enabled: inTree, run: func(a *App) { a.tree.collapseAll() }},
 		"view.treemap":     {label: "Treemap", keys: "Ctrl+T", mods: ui.Ctrl, key: ui.KeyT, inText: true, checked: func(a *App) bool { return a.prefs.ShowTreemap }, run: func(a *App) { a.prefs.ShowTreemap = !a.prefs.ShowTreemap; a.tm.maximized = false }},
+		"view.types":       {label: "File Types Panel", keys: "F8", key: ui.KeyF8, inText: true, checked: func(a *App) bool { return a.prefs.ShowTypes }, run: (*App).toggleTypes},
 		"view.maxTreemap":  {label: "Maximize Treemap", keys: "Ctrl+Shift+M", mods: ui.Ctrl | ui.Shift, key: ui.KeyM, inText: true, checked: func(a *App) bool { return a.tm.maximized }, enabled: hasScan, run: func(a *App) { a.tm.maximized = !a.tm.maximized; a.prefs.ShowTreemap = true }},
 		"view.resetLayout": {label: "Restore Default Layout", run: (*App).resetLayout},
 		"metric.logical":   {label: "Logical Size", checked: func(a *App) bool { return !a.metricAllocated() }, radio: true, run: func(a *App) { a.setMetric("Logical") }},
@@ -333,7 +334,7 @@ func (a *App) buildMenu() *menuBar {
 	file = append(file, list("-", "item.open", "item.explorer", "item.properties", "-", "file.openScan", "file.saveScan")...)
 	file = append(file, sub("Export", export))
 	file = append(file, list("-", "file.newWindow", "-", "file.exit")...)
-	view := list("view.tree", "view.files", "view.ext", "-", "nav.back", "nav.forward", "nav.up", "nav.root", "nav.location", "-", "tree.expandLevel", "tree.collapseLvl", "tree.collapseAll", "-", "view.treemap", "view.maxTreemap", "view.resetLayout", "-")
+	view := list("view.tree", "view.files", "view.ext", "-", "nav.back", "nav.forward", "nav.up", "nav.root", "nav.location", "-", "tree.expandLevel", "tree.collapseLvl", "tree.collapseAll", "-", "view.treemap", "view.maxTreemap", "view.types", "view.resetLayout", "-")
 	view = append(view, sub("Size Metric", list("metric.logical", "metric.allocated")), sub("Treemap Colors", list("color.ext", "color.folder", "color.mono")), sub("Size Units", list("units.binary", "units.decimal")))
 	view = append(view, list("-", "zoom.in", "zoom.out", "zoom.reset", "view.compact")...)
 	view = append(view, sub("Theme", list("theme.system", "theme.dark", "theme.light")))
