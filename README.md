@@ -5,24 +5,14 @@
 A disk space analyzer for Windows (formerly Stratum), written in Go with the MyGO native UI toolkit (Direct3D, no webview).
 Quarry shows where the space went and gets you from a storage problem to the file or folder responsible in a few clicks.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/tree-dark.png">
+  <img src="docs/screenshots/tree-light.png" alt="Quarry showing drive C: 85 % full, the folder tree with share-of-parent bars, file types beside it and a treemap colored by extension">
+</picture>
+
 ## Layout
 
-```
-File  Edit  View  Tools  Options  Help                         (native menu bar)
-[Scan v] [Rescan] | <- -> ^ | C: > Users > me                  | [Search...      v]
-Windows (C:)  [#######====-----]   120 GiB        | Files      Folders  Scanned with
-NTFS · 75 % full  ■ Scanned ■ Not listed ■ Free   free of 476 GiB  | 1,070,517  98,410   NTFS MFT · 2 s
-Tree | Files | Extensions
-+-----------------------------------------------------------+--------------------+
-| Name          % of Parent       Size  Allocated   Files   | File Type    Size  |
-| v C:\         ########## 100 %  307 GiB  308 GiB  1,070,517| ■ .mp4    61 GiB  |
-|   > Users     #####       49 %  152 GiB  153 GiB    804,863| ■ .dll    25 GiB  |
-+------------------------------ splitter -----------------------------------------+
-| Treemap                                            [Color by extension v] ^ x |
-|                                  treemap                                       |
-+--------------------------------------------------------------------------------+
-C:\Users  ·  152 GiB  ·  804,863 files
-```
+From top to bottom: the toolbar (Scan, Rescan, back, forward, up, the location and search), the drive header, the view tabs, the table with the file types panel beside it in Tree View, the treemap and the status bar.
 
 - **Drive header** - the drive, its use as a bar in three parts (the scan, used space the scan does not list or the rest of the drive, free space) with a legend, free space as the large number (in the warning color at 90 % or more), and the scan's file and folder counts and method.
 - **Tree** - the folder hierarchy below the current location, sorted by size, with each entry's share of its parent as a bar beside its name. Right/Left expand and collapse (Shift for the whole subtree, bounded at 200,000 rows), Enter or double-click expands folders and opens files, Backspace or Alt+Up goes up.
@@ -54,11 +44,13 @@ type:file  type:folder    regex:^IMG_\d+\.jpe?g$
 
 Tools → Advanced Search builds such a query from fields. The scope is shown next to the results: the current location by default, following navigation, or the entire scan or a selected folder when chosen. Clearing a search started in Tree View returns to it.
 
+<img src="docs/screenshots/search-dark.png" alt="File View listing every .mp4 file of the scan, largest first, with its folder">
+
 **Show/Hide Filter** (Tools → Show/Hide Filter) hides entries that are already scanned - e.g. show only `ext:log`, hide `node_modules` - and recomputes every total. **Skip During Scan** (Options → Skip During Scan) keeps folders or name patterns out of future scans; a warning beside the view tabs then reports how many entries were skipped.
 
 ## Scanning
 
-As administrator, whole NTFS drives are read directly from the master file table (seconds for millions of files). Otherwise - and for folders, FAT/exFAT and network drives - Quarry enumerates directories with `FILE_ID_BOTH_DIR_INFO`. The status bar names the method used and why MFT reading was not possible; Options → Restart as Administrator relaunches through UAC.
+As administrator, whole NTFS drives are read directly from the master file table (seconds for millions of files). Otherwise - and for folders, FAT/exFAT and network drives - Quarry enumerates directories with `FILE_ID_BOTH_DIR_INFO`. The drive header names the method used (Scanned with) and its tooltip why MFT reading was not possible; Options → Restart as Administrator relaunches through UAC.
 
 Sizes: **Size** is the logical length of files, **Allocated** the disk space they occupy (smaller for compressed or sparse files). View → Size Metric, or a column header's right-click menu, chooses which one percentages, default sorting and the treemap use. Hard links are counted once, junctions and symbolic links are not followed, and unreadable folders are reported (status bar issue count, Tools → Scan Issues). The volume's used space also contains filesystem overhead, so it is shown separately (Tools → Scan Information).
 
@@ -77,7 +69,7 @@ Exit codes: 0 success, 1 failure, 2 invalid arguments, 3 completed with unreadab
 
 ## Settings
 
-Window position, columns (right-click a header to show, hide, fit or reset), sort orders, the active view, treemap visibility and split, units, theme, text size (Ctrl+wheel, Ctrl+=/−/0), recent locations, search history and exclusions are kept in `%APPDATA%\Quarry\settings.json`. Options → Add "Analyze with Quarry" to Explorer registers a per-user context-menu verb on folders and drives; choosing it again removes it.
+Window position, columns (right-click a header to show, hide, fit or reset), sort orders, the active view, treemap visibility and split, the file types panel and its width, units, theme, text size (Ctrl+wheel, Ctrl+=/−/0), recent locations, search history and exclusions are kept in `%APPDATA%\Quarry\settings.json`. Options → Add "Analyze with Quarry" to Explorer registers a per-user context-menu verb on folders and drives; choosing it again removes it.
 
 ## Build
 
@@ -86,4 +78,4 @@ powershell -File scripts/build.ps1            # tests, vet, MyGO checks, install
 powershell -File scripts/build.ps1 -Portable  # build/portable/Quarry.exe
 ```
 
-Go 1.27 or later; no cgo. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [CHANGELOG.md](CHANGELOG.md).
+Go 1.27 or later; no cgo. The screenshots are rendered from sample data: `QUARRY_SHOTS=docs/screenshots go test ./internal/desktop -run Showcase`. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [CHANGELOG.md](CHANGELOG.md).
