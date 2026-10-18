@@ -221,8 +221,9 @@ func walk(ctx context.Context, root string, opts Options, p *Progress) (*index.S
 			head++
 			active++
 			if head > 4096 && head*2 >= len(pending) {
-				copy(pending, pending[head:])
-				pending = pending[:len(pending)-head]
+				remaining := copy(pending, pending[head:])
+				clear(pending[remaining:]) // release paths copied out of the live queue
+				pending = pending[:remaining]
 				head = 0
 			}
 		case r := <-results:
@@ -244,7 +245,7 @@ func walk(ctx context.Context, root string, opts Options, p *Progress) (*index.S
 				dir := e.flags&index.Directory != 0
 				if !excl.Empty() {
 					full := ""
-					if dir && excl.needsPaths() {
+					if dir && excl.NeedsPaths() {
 						full = filepath.Join(t.path, name)
 					}
 					if excl.Match(name, full, dir) {

@@ -42,41 +42,39 @@ func (f analysisFilter) apply(ctx context.Context, base *index.Snapshot) (*index
 		include.Kind = index.KindFiles
 	}
 	exclude := scan.NewExclusions(splitPatterns(f.Exclude))
+	hasInclude := strings.TrimSpace(f.Include) != ""
+	var ancestors []bool
+	if include.AncestorTerms() {
+		ancestors = make([]bool, len(base.Nodes))
+		ancestors[0] = include.MatchPathComponent(base.Root)
+	}
 	keep := func(id index.ID) bool {
 		name := base.NameView(id)
 		if exclude.Match(name, "", false) {
 			return false
 		}
-		if strings.TrimSpace(f.Include) == "" {
+		if !hasInclude {
 			return true
 		}
-		return include.MatchNode(name, base.Nodes[id], func() string { return base.Path(id) }, ancestorMatches(base, id, &include))
+		inherited := ancestors != nil && ancestors[base.Nodes[id].Parent]
+		return include.MatchNode(name, base.Nodes[id], func() string { return base.Path(id) }, inherited)
 	}
 	drop := func(id index.ID) bool {
+		name := base.NameView(id)
+		if ancestors != nil {
+			ancestors[id] = ancestors[base.Nodes[id].Parent] || include.MatchPathComponent(name)
+		}
 		if exclude.Empty() {
 			return false
 		}
-		return exclude.Match(base.NameView(id), base.Path(id), true)
+		path := ""
+		if exclude.NeedsPaths() {
+			path = base.Path(id)
+		}
+		return exclude.Match(name, path, true)
 	}
-	isolate := f.Isolate || strings.TrimSpace(f.Include) != ""
+	isolate := f.Isolate || hasInclude
 	return base.Filtered(ctx, keep, drop, isolate)
-}
-
-// ancestorMatches evaluates path: terms for a single entry.
-func ancestorMatches(s *index.Snapshot, id index.ID, f *index.Filter) bool {
-	if !f.AncestorTerms() {
-		return false
-	}
-	for p := s.Nodes[id].Parent; p != index.None; p = s.Nodes[p].Parent {
-		name := s.Root
-		if p != 0 {
-			name = s.NameView(p)
-		}
-		if f.MatchPathComponent(name) {
-			return true
-		}
-	}
-	return false
 }
 
 func (f analysisFilter) summary() string {

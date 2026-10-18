@@ -22,6 +22,7 @@ type treemapModel struct {
 	total     uint64
 	cells     []treemap.Cell
 	cellOf    map[index.ID]int
+	ends      []int32 // exclusive subtree ends in the depth-first cell array
 	w, h      float32
 	busy      bool
 	gen       uint64
@@ -47,6 +48,10 @@ type treemapModel struct {
 	// several files (a folder not subdivided further, or "Smaller items"),
 	// so even aggregated blocks show what fills them.
 	dominant map[tileKey]string
+	tip      tipInfo
+	tipCell  int
+	tipFor   styleKey
+	tipSnap  *index.Snapshot
 }
 
 type tileKey struct {
@@ -80,7 +85,12 @@ func (m *treemapModel) ensureStyles(s *index.Snapshot, dark bool) {
 		return
 	}
 	m.styleFor = key
-	m.styles = make([]cellStyle, len(m.cells))
+	if cap(m.styles) < len(m.cells) {
+		m.styles = make([]cellStyle, len(m.cells))
+	} else {
+		m.styles = m.styles[:len(m.cells)]
+		clear(m.styles)
+	}
 	for i, cell := range m.cells {
 		st := &m.styles[i]
 		col := m.color(s, cell, dark)
@@ -176,7 +186,7 @@ func (m *treemapModel) reset() {
 		m.cancel()
 	}
 	a := m.a
-	*m = treemapModel{dirty: true, highlight: index.None, maximized: m.maximized}
+	*m = treemapModel{dirty: true, highlight: index.None, maximized: m.maximized, gen: m.gen + 1}
 	m.a = a
 }
 
@@ -200,6 +210,7 @@ func (m *treemapModel) ensure() {
 	}
 	m.dirty = false
 	m.forSnap, m.root, m.allocated = s, root, a.metricAllocated()
+	m.tip, m.tipSnap = tipInfo{}, nil
 	m.gen++
 	gen := m.gen
 	ctx, cancel := context.WithCancel(context.Background())
@@ -208,6 +219,7 @@ func (m *treemapModel) ensure() {
 	needRanks := m.rankFor != s
 	allocated := m.allocated
 	go func() {
+		defer cancel()
 		branches := treemap.Hierarchy(ctx, s, root, allocated, 6000)
 		dominant := dominantExtensions(ctx, s, branches, allocated)
 		var ranks map[string]int
@@ -251,21 +263,37 @@ func (m *treemapModel) layout(w, h float32) {
 	m.cells = treemap.NestedLayout(m.branches, treemap.Rect{X: 0, Y: 0, W: max(0, w), H: max(0, h)})
 	m.styleGen++
 	m.cellOf = make(map[index.ID]int, len(m.cells))
+	m.ends = make([]int32, len(m.cells))
+	stack := make([]int, 0, 8)
 	for i, c := range m.cells {
+		for len(stack) > 0 && m.cells[stack[len(stack)-1]].Depth >= c.Depth {
+			m.ends[stack[len(stack)-1]] = int32(i)
+			stack = stack[:len(stack)-1]
+		}
+		stack = append(stack, i)
 		if !c.Tile.Other {
 			m.cellOf[c.Tile.ID] = i
 		}
 	}
+	for _, i := range stack {
+		m.ends[i] = int32(len(m.cells))
+	}
 }
 
 func (m *treemapModel) hit(x, y float32) int {
-	for i := len(m.cells) - 1; i >= 0; i-- {
+	// Sibling tiles do not overlap. Skip a whole subtree when its enclosing
+	// rectangle misses, and only descend inside the one under the pointer.
+	hit, end := -1, len(m.cells)
+	for i := 0; i < end; {
 		r := m.cells[i].Tile.Rect
 		if x >= r.X && x < r.X+r.W && y >= r.Y && y < r.Y+r.H {
-			return i
+			hit, end = i, int(m.ends[i])
+			i++
+		} else {
+			i = int(m.ends[i])
 		}
 	}
-	return -1
+	return hit
 }
 
 // extColor is the color of an extension, shared by the treemap and the
@@ -494,11 +522,15 @@ func (a *App) treemapView(c *ui.Context, pal palette) {
 		focusExt, _ = a.ext.currentExt()
 	}
 	var tip tipInfo
+	m.ensureStyles(s, t.Dark)
 	if hover >= 0 {
-		tip = a.hoverInfo(s, m.cells[hover])
+		if m.tipSnap != s || m.tipCell != hover || m.tipFor != m.styleFor {
+			m.tip = a.hoverInfo(s, m.cells[hover])
+			m.tipSnap, m.tipCell, m.tipFor = s, hover, m.styleFor
+		}
+		tip = m.tip
 	}
 	cells := m.cells
-	m.ensureStyles(s, t.Dark)
 	styles := m.styles
 	dark := t.Dark
 	busy := m.busy

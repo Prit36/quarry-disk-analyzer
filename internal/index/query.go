@@ -137,6 +137,9 @@ func (s *Snapshot) QueryRows(ctx context.Context, q Query) (QueryResult, error) 
 // Search returns every entry below root (excluding root) that matches f, in
 // index order. It reads only the immutable snapshot.
 func (s *Snapshot) Search(ctx context.Context, root ID, f *Filter) ([]ID, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if root == None || int(root) >= len(s.Nodes) {
 		return nil, fmt.Errorf("invalid search scope")
 	}
@@ -200,14 +203,51 @@ func (s *Snapshot) matchEntry(id ID, f *Filter, ancestorOK []bool) bool {
 // of id (walk), or the matched entries already collected in ids.
 type searchPiece struct {
 	id     ID
+	end    ID // exclusive end of a run of sibling subtrees
 	walk   bool
 	weight uint64
 	ids    []ID
 }
 
-func (s *Snapshot) searchPieceOf(id ID) searchPiece {
-	n := s.Nodes[id]
-	return searchPiece{id: id, walk: true, weight: uint64(n.Files) + uint64(n.Dirs)}
+// searchPieces groups small sibling subtrees into a task. A folder with a
+// million files must not create a million tasks and result slices.
+func (s *Snapshot) searchPieces(ctx context.Context, dir ID, target uint64) ([]searchPiece, error) {
+	var pieces []searchPiece
+	p := searchPiece{id: None, walk: true}
+	visited := 0
+	for c := s.Nodes[dir].FirstChild; c != None; c = s.Nodes[c].NextSibling {
+		if visited&4095 == 0 && ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		visited++
+		n := s.Nodes[c]
+		weight := uint64(1)
+		if n.IsDir() {
+			weight += uint64(n.Files) + uint64(n.Dirs)
+		}
+		// Keep substantial subtrees independent for load balancing. Batching
+		// those as well leaves too few tasks on ordinary directory trees.
+		separate := weight >= 256
+		if p.id != None && (p.weight >= target || separate) {
+			p.end = c
+			pieces = append(pieces, p)
+			p = searchPiece{id: None, walk: true}
+		}
+		if p.id == None {
+			p.id = c
+		}
+		p.weight += weight
+		if separate {
+			p.end = n.NextSibling
+			pieces = append(pieces, p)
+			p = searchPiece{id: None, walk: true}
+		}
+	}
+	if p.id != None {
+		p.end = None
+		pieces = append(pieces, p)
+	}
+	return pieces, ctx.Err()
 }
 
 // searchParallel walks the children of root on several goroutines. Folders
@@ -216,14 +256,15 @@ func (s *Snapshot) searchPieceOf(id ID) searchPiece {
 // concatenated in order are exactly the index order of a single walk. Pieces
 // touch disjoint entries of ancestorOK, which keeps the workers race free.
 func (s *Snapshot) searchParallel(ctx context.Context, root ID, f *Filter, ancestorOK []bool, workers int) ([]ID, error) {
-	var pieces []searchPiece
-	for c := s.Nodes[root].FirstChild; c != None; c = s.Nodes[c].NextSibling {
-		pieces = append(pieces, s.searchPieceOf(c))
+	target := max(uint64(1024), (uint64(s.Nodes[root].Files)+uint64(s.Nodes[root].Dirs))/uint64(max(1, 4*workers)))
+	pieces, err := s.searchPieces(ctx, root, target)
+	if err != nil {
+		return nil, err
 	}
 	for len(pieces) < 4*workers {
 		best := -1
 		for i, p := range pieces {
-			if p.walk && s.Nodes[p.id].IsDir() && s.Nodes[p.id].FirstChild != None && (best < 0 || p.weight > pieces[best].weight) {
+			if p.walk && p.end == s.Nodes[p.id].NextSibling && s.Nodes[p.id].IsDir() && s.Nodes[p.id].FirstChild != None && (best < 0 || p.weight > pieces[best].weight) {
 				best = i
 			}
 		}
@@ -235,9 +276,11 @@ func (s *Snapshot) searchParallel(ctx context.Context, root ID, f *Filter, ances
 		if s.matchEntry(id, f, ancestorOK) {
 			split[0].ids = []ID{id}
 		}
-		for c := s.Nodes[id].FirstChild; c != None; c = s.Nodes[c].NextSibling {
-			split = append(split, s.searchPieceOf(c))
+		children, err := s.searchPieces(ctx, id, target)
+		if err != nil {
+			return nil, err
 		}
+		split = append(split, children...)
 		pieces = slices.Replace(pieces, best, best+1, split...)
 	}
 	errs := make([]error, len(pieces))
@@ -253,7 +296,13 @@ func (s *Snapshot) searchParallel(ctx context.Context, root ID, f *Filter, ances
 					return
 				}
 				if pieces[i].walk {
-					pieces[i].ids, errs[i] = s.searchSubtree(ctx, pieces[i].id, root, f, ancestorOK, nil)
+					p := &pieces[i]
+					for c := p.id; c != p.end; c = s.Nodes[c].NextSibling {
+						p.ids, errs[i] = s.searchSubtree(ctx, c, root, f, ancestorOK, p.ids)
+						if errs[i] != nil {
+							break
+						}
+					}
 				}
 			}
 		}()

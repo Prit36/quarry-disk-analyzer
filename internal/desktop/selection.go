@@ -42,6 +42,10 @@ type selectionCache struct {
 // invalidate forces the next question to rebuild the list.
 func (c *selectionCache) invalidate() { c.valid = false }
 
+// reset releases the old scan and large selection buffers, even when this
+// view stays hidden after another scan is installed.
+func (c *selectionCache) reset() { *c = selectionCache{version: c.version + 1} }
+
 // checkpoint makes the next question compare the fingerprint again.
 func (c *selectionCache) checkpoint() { c.checked = false }
 
@@ -55,6 +59,9 @@ func (c *selectionCache) get(sel *ui.Selection[index.ID], rows uint64, s *index.
 	c.checked = true
 	if c.valid && k == c.key {
 		return c.ids
+	}
+	if k.n == 0 || cap(c.ids) > max(4096, 4*k.n) {
+		c.ids = nil
 	}
 	c.ids = build(c.ids[:0])
 	c.key, c.valid = k, true

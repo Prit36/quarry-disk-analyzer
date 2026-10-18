@@ -1,6 +1,7 @@
 package desktop
 
 import (
+	"context"
 	"slices"
 
 	"github.com/egoist/mygo/ui"
@@ -49,10 +50,10 @@ func (t *treeModel) reset() {
 	t.rows, t.kids = nil, nil
 	t.rowsGen++
 	t.open = map[index.ID]bool{0: true}
-	t.sel.Clear()
+	t.sel = ui.Selection[index.ID]{}
 	t.cursor = -1
 	t.notice = ""
-	t.selCache.invalidate()
+	t.selCache.reset()
 	t.cells = cellTextCache{} // drops the old snapshot too
 }
 
@@ -75,7 +76,7 @@ func (t *treeModel) children(id index.ID) []index.ID {
 	}
 	s := t.snap()
 	k := s.Children(id)
-	s.Sort(k, t.order())
+	_ = s.SortContext(context.Background(), k, t.order())
 	t.kids[id] = k
 	return k
 }

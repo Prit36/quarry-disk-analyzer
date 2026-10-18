@@ -43,32 +43,125 @@ func (s *Snapshot) SortContext(ctx context.Context, ids []ID, by Sort) error {
 		ascending := key
 		key = func(id ID) uint64 { return ^ascending(id) }
 	}
-	return s.SortByKeys(ctx, ids, key, nil, nil)
+	return sortNumeric(ctx, ids, key)
+}
+
+// sortNumeric keeps keys and IDs in separate arrays: two uint64 key buffers
+// and one ID buffer use 20 bytes per entry, versus 48 for two padded keyed
+// buffers. The caller's ID slice is the other scatter buffer.
+func sortNumeric(ctx context.Context, ids []ID, key func(ID) uint64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	keys := make([]uint64, len(ids))
+	var diffKey uint64
+	var diffID ID
+	first := key(ids[0])
+	for i, id := range ids {
+		if i&4095 == 0 && ctx.Err() != nil {
+			return ctx.Err()
+		}
+		keys[i] = key(id)
+		diffKey |= keys[i] ^ first
+		diffID |= id ^ ids[0]
+	}
+	var slots [6]int
+	passes := 0
+	for slot := range 6 {
+		diff := uint64(diffID)
+		shift := slot * 16
+		if slot >= 2 {
+			diff, shift = diffKey, (slot-2)*16
+		}
+		if diff>>shift&0xffff != 0 {
+			slots[passes] = slot
+			passes++
+		}
+	}
+	if passes == 0 {
+		return ctx.Err()
+	}
+	digit := func(id ID, k uint64, slot int) int {
+		if slot < 2 {
+			return int(uint32(id) >> (slot * 16) & 0xffff)
+		}
+		return int(k >> ((slot - 2) * 16) & 0xffff)
+	}
+	counts := make([]uint32, passes<<16)
+	for i, id := range ids {
+		if i&4095 == 0 && ctx.Err() != nil {
+			return ctx.Err()
+		}
+		for p, slot := range slots[:passes] {
+			counts[p<<16|digit(id, keys[i], slot)]++
+		}
+	}
+	srcIDs, dstIDs := ids, make([]ID, len(ids))
+	srcKeys, dstKeys := keys, make([]uint64, len(ids))
+	for p, slot := range slots[:passes] {
+		hist := counts[p<<16 : (p+1)<<16]
+		sum := uint32(0)
+		for i, c := range hist {
+			hist[i], sum = sum, sum+c
+		}
+		for i, id := range srcIDs {
+			if i&4095 == 0 && ctx.Err() != nil {
+				return ctx.Err()
+			}
+			d := digit(id, srcKeys[i], slot)
+			j := hist[d]
+			dstIDs[j], dstKeys[j] = id, srcKeys[i]
+			hist[d]++
+		}
+		srcIDs, dstIDs = dstIDs, srcIDs
+		srcKeys, dstKeys = dstKeys, srcKeys
+	}
+	if &srcIDs[0] != &ids[0] {
+		copy(ids, srcIDs)
+	}
+	return ctx.Err()
 }
 
 // SortByKeys orders ids by hi, then lo (nil: none), then ID; with tie,
 // entries with equal keys are ordered by Compare(tie) instead of by ID.
 // It is for orders Compare does not know, such as by extension or folder.
 func (s *Snapshot) SortByKeys(ctx context.Context, ids []ID, hi, lo func(ID) uint64, tie *Sort) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if len(ids) < 2 {
 		return ctx.Err()
 	}
 	items := make([]keyed, len(ids))
-	fillKeys(items, ids, hi, lo)
+	fillKeys(ctx, items, ids, hi, lo)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := radixSort(ctx, items, lo != nil); err != nil {
 		return err
 	}
 	if tie != nil {
+		comparisons := 0
+		canceled := false
 		for start := 0; start < len(items); {
 			end := start + 1
 			for end < len(items) && items[end].hi == items[start].hi && items[end].lo == items[start].lo {
 				end++
 			}
 			if end-start > 1 {
-				slices.SortFunc(items[start:end], func(a, b keyed) int { return s.Compare(a.id, b.id, *tie) })
+				slices.SortFunc(items[start:end], func(a, b keyed) int {
+					comparisons++
+					if comparisons&4095 == 0 && ctx.Err() != nil {
+						canceled = true
+					}
+					if canceled {
+						return 0
+					}
+					return s.Compare(a.id, b.id, *tie)
+				})
 			}
 			start = end
-			if start&0xffff == 0 && ctx.Err() != nil {
+			if ctx.Err() != nil {
 				return ctx.Err()
 			}
 		}
@@ -82,9 +175,12 @@ func (s *Snapshot) SortByKeys(ctx context.Context, ids []ID, hi, lo func(ID) uin
 // fillKeys computes the keys of ids into items, on several goroutines for
 // large lists: name keys read and fold every name, which is the slow part.
 // The key functions only read the snapshot.
-func fillKeys(items []keyed, ids []ID, hi, lo func(ID) uint64) {
+func fillKeys(ctx context.Context, items []keyed, ids []ID, hi, lo func(ID) uint64) {
 	fill := func(items []keyed, ids []ID) {
 		for i, id := range ids {
+			if i&4095 == 0 && ctx.Err() != nil {
+				return
+			}
 			items[i] = keyed{hi: hi(id), id: id}
 			if lo != nil {
 				items[i].lo = lo(id)
@@ -210,6 +306,9 @@ func radixSort(ctx context.Context, items []keyed, useLo bool) error {
 	var diffLo, diffHi uint64
 	var diffID uint32
 	for i := range items {
+		if i&4095 == 0 && ctx.Err() != nil {
+			return ctx.Err()
+		}
 		v := &items[i]
 		diffID |= uint32(v.id ^ first.id)
 		diffHi |= v.hi ^ first.hi
@@ -241,6 +340,9 @@ func radixSort(ctx context.Context, items []keyed, useLo bool) error {
 	}
 	counts := make([]uint32, len(order)<<16)
 	for i := range items {
+		if i&4095 == 0 && ctx.Err() != nil {
+			return ctx.Err()
+		}
 		v := &items[i]
 		for p, slot := range order {
 			counts[p<<16|radixDigit(v, slot)]++
@@ -258,6 +360,9 @@ func radixSort(ctx context.Context, items []keyed, useLo bool) error {
 			sum += c
 		}
 		for i := range src {
+			if i&4095 == 0 && ctx.Err() != nil {
+				return ctx.Err()
+			}
 			d := radixDigit(&src[i], slot)
 			dst[hist[d]] = src[i]
 			hist[d]++

@@ -167,6 +167,9 @@ type FilterStats struct {
 // folders not rejected by dropFolder. With isolate, folders left without any
 // file are removed too. Totals are recomputed so proportions stay meaningful.
 func (s *Snapshot) Filtered(ctx context.Context, keepFile func(ID) bool, dropFolder func(ID) bool, isolate bool) (*Snapshot, FilterStats, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, FilterStats{}, err
+	}
 	c := s.Clone()
 	stats := FilterStats{}
 	drop := make([]bool, len(c.Nodes))
@@ -195,12 +198,16 @@ func (s *Snapshot) Filtered(ctx context.Context, keepFile func(ID) bool, dropFol
 	if err != nil {
 		return nil, stats, err
 	}
-	c.relink(drop)
-	c.Reaggregate()
+	if err := c.relink(ctx, drop); err != nil {
+		return nil, stats, err
+	}
+	if err := c.reaggregate(ctx); err != nil {
+		return nil, stats, err
+	}
 	if isolate {
 		clear(drop)
 		removed := uint64(0)
-		_ = c.walk(context.Background(), 0, func(id ID) (bool, error) {
+		err := c.walk(ctx, 0, func(id ID) (bool, error) {
 			if id != 0 && c.Nodes[id].IsDir() && c.Nodes[id].Files == 0 {
 				drop[id] = true
 				removed += uint64(c.Nodes[id].Dirs) + 1
@@ -208,23 +215,35 @@ func (s *Snapshot) Filtered(ctx context.Context, keepFile func(ID) bool, dropFol
 			}
 			return true, nil
 		})
+		if err != nil {
+			return nil, stats, err
+		}
 		if removed > 0 {
 			stats.HiddenFolders += removed
-			c.relink(drop)
-			c.Reaggregate()
+			if err := c.relink(ctx, drop); err != nil {
+				return nil, stats, err
+			}
+			if err := c.reaggregate(ctx); err != nil {
+				return nil, stats, err
+			}
 		}
 	}
 	return c, stats, ctx.Err()
 }
 
 // relink rebuilds the child lists of reachable folders without dropped entries.
-func (s *Snapshot) relink(drop []bool) {
+func (s *Snapshot) relink(ctx context.Context, drop []bool) error {
 	stack := []ID{0}
+	visited := 0
 	for len(stack) > 0 {
 		dir := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
 		last := None
 		for c := s.Nodes[dir].FirstChild; c != None; {
+			if visited&4095 == 0 && ctx.Err() != nil {
+				return ctx.Err()
+			}
+			visited++
 			next := s.Nodes[c].NextSibling
 			if drop[c] {
 				s.Nodes[c].Flags |= Removed
@@ -247,31 +266,51 @@ func (s *Snapshot) relink(drop []bool) {
 			s.Nodes[last].NextSibling = None
 		}
 	}
+	return ctx.Err()
 }
 
 // Reaggregate recomputes folder totals from the reachable files. Folders own
 // no bytes in either scan engine; their totals are their children's.
 func (s *Snapshot) Reaggregate() {
-	order := make([]ID, 0, len(s.Nodes))
-	_ = s.walk(context.Background(), 0, func(id ID) (bool, error) {
-		order = append(order, id)
-		if s.Nodes[id].IsDir() {
-			n := &s.Nodes[id]
+	_ = s.reaggregate(context.Background())
+}
+
+// reaggregate uses the parent/sibling links for a postorder traversal. It
+// needs no entry-sized order buffer, including for very wide or deep trees.
+func (s *Snapshot) reaggregate(ctx context.Context) error {
+	current, visited := ID(0), 0
+	for {
+		if visited&4095 == 0 && ctx.Err() != nil {
+			return ctx.Err()
+		}
+		visited++
+		n := &s.Nodes[current]
+		if n.IsDir() {
 			n.Size, n.Allocated, n.Files, n.Dirs = 0, 0, 0, 0
 		}
-		return true, nil
-	})
-	for i := len(order) - 1; i > 0; i-- {
-		id := order[i]
-		n := s.Nodes[id]
-		p := &s.Nodes[n.Parent]
-		p.Size += n.Size
-		p.Allocated += n.Allocated
-		if n.IsDir() {
-			p.Files += n.Files
-			p.Dirs += n.Dirs + 1
-		} else {
-			p.Files++
+		if n.FirstChild != None {
+			current = n.FirstChild
+			continue
+		}
+		for {
+			if current == 0 {
+				return ctx.Err()
+			}
+			n := s.Nodes[current]
+			p := &s.Nodes[n.Parent]
+			p.Size += n.Size
+			p.Allocated += n.Allocated
+			if n.IsDir() {
+				p.Files += n.Files
+				p.Dirs += n.Dirs + 1
+			} else {
+				p.Files++
+			}
+			if n.NextSibling != None {
+				current = n.NextSibling
+				break
+			}
+			current = n.Parent
 		}
 	}
 }

@@ -43,6 +43,8 @@ func (e *extModel) reset() {
 	if e.cancel != nil {
 		e.cancel()
 	}
+	e.gen++
+	e.cancel, e.runFor = nil, nil
 	cols := e.list.Columns
 	e.list = ui.ListState{Columns: cols}
 	e.types, e.shown, e.total, e.busy, e.err, e.forSnap = nil, nil, index.FileType{}, false, "", nil
@@ -82,12 +84,16 @@ func (e *extModel) run() {
 		scope = 0
 	}
 	go func() {
+		defer cancel()
 		analysis, err := s.Analyze(ctx, scope, allocated, 0)
 		var total index.FileType
 		for _, t := range analysis.Types {
 			total.Bytes += t.Bytes
 			total.Allocated += t.Allocated
 			total.Count += t.Count
+		}
+		if ctx.Err() != nil {
+			return
 		}
 		a.post(func() {
 			if gen != e.gen {
@@ -112,6 +118,9 @@ func (e *extModel) run() {
 			exts[i] = t.Extension
 		}
 		platform.ResolveFileTypeNames(ctx, exts)
+		if ctx.Err() != nil {
+			return
+		}
 		a.post(func() {
 			if gen == e.gen {
 				e.forText = "\x00" // filter and sort again with the names
@@ -139,6 +148,13 @@ func (e *extModel) refresh(text string) {
 func (e *extModel) sortShown() {
 	allocated := e.a.metricAllocated()
 	by := e.sort
+	var typeNames []string
+	if by.Column == "Type" {
+		typeNames = make([]string, len(e.types))
+		for _, i := range e.shown {
+			typeNames[i] = strings.ToLower(platform.CachedFileTypeName(e.types[i].Extension))
+		}
+	}
 	slices.SortStableFunc(e.shown, func(x, y int) int {
 		a, b := e.types[x], e.types[y]
 		var v int
@@ -146,7 +162,7 @@ func (e *extModel) sortShown() {
 		case "Extension":
 			v = strings.Compare(a.Extension, b.Extension)
 		case "Type":
-			v = strings.Compare(strings.ToLower(platform.CachedFileTypeName(a.Extension)), strings.ToLower(platform.CachedFileTypeName(b.Extension)))
+			v = strings.Compare(typeNames[x], typeNames[y])
 		case "Files":
 			v = cmp.Compare(a.Count, b.Count)
 		case "Allocated":
