@@ -261,13 +261,19 @@ func clickSelect(cell ui.Element, sel *ui.Selection[index.ID], cursor *int, row 
 }
 
 func (a *App) rowMenu(m *ui.Menu) {
+	// Everyday commands first; the rest under More, like Explorer's
+	// extended menu. Every command keeps its shortcut and menu bar entry.
 	a.contextItems(m,
 		"item.open", "item.explorer", "-",
-		"edit.cut", "edit.copy", "edit.copyPath", "edit.copyName", "edit.copySize", "edit.copyRows", "-",
-		"item.reveal", "item.treemap", "item.goInto", "item.searchHere", "item.scanHere", "item.scanWindow", "export.selection", "-",
-		"tree.expandAll", "tree.collapseSub", "-",
-		"edit.rename", "edit.delete", "edit.deletePerm", "-",
+		"edit.cut", "edit.copy", "edit.copyPath", "-",
+		"item.goInto", "item.reveal", "item.searchHere", "item.scanHere", "-",
+		"edit.rename", "edit.delete", "-",
 		"item.properties")
+	a.moreItems(m,
+		"edit.copyName", "edit.copySize", "edit.copyRows", "-",
+		"item.treemap", "item.scanWindow", "export.selection", "-",
+		"tree.expandAll", "tree.collapseSub", "-",
+		"edit.deletePerm")
 }
 
 // Tree View.
@@ -687,7 +693,7 @@ func (a *App) extTable(c *ui.Context, pal palette) {
 				ui.Text(c, percentText(share)).SingleLine()
 			}
 		})
-	}).Grow(1).MinHeight(0).Background(pal.grid)
+	}).Grow(1).MinHeight(0).Background(pal.grid).Tooltip("Double-click an extension or press Enter to list its files")
 	restore()
 	a.trackFocus(c, "ext", &e.list)
 	if a.focusTable && a.prefs.View == viewExtensions {

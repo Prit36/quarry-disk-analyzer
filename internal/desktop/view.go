@@ -374,7 +374,7 @@ func (a *App) searchBox(c *ui.Context) {
 	ext := a.prefs.View == viewExtensions
 	text, placeholder := &a.search, "Search files and folders (Ctrl+F)"
 	if ext {
-		text, placeholder = &a.extFilter, "Filter extensions (Ctrl+F)"
+		text, placeholder = &a.extFilter, "Filter this list by extension or type (Ctrl+F)"
 	}
 	ui.Row(c).Gap(0).AlignItems(ui.Center).Children(func() {
 		var field ui.Element
@@ -390,7 +390,9 @@ func (a *App) searchBox(c *ui.Context) {
 				clearBtn.Children(func() { ui.Icon(c, icons["dismiss"]).FontSize(11).TextColor(t.TextMuted) })
 				if clearBtn.Clicked() {
 					*text = ""
-					a.files.queryChanged(c.Now())
+					if !ext {
+						a.searchCleared(c.Now())
+					}
 				}
 			}
 		})
@@ -401,7 +403,7 @@ func (a *App) searchBox(c *ui.Context) {
 			if *text != "" {
 				*text = ""
 				if !ext {
-					a.files.queryChanged(c.Now())
+					a.searchCleared(c.Now())
 				}
 			} else {
 				a.focusTable = true
@@ -418,8 +420,13 @@ func (a *App) searchBox(c *ui.Context) {
 			c.Invalidate()
 		}
 		if field.Changed() && !ext {
-			if a.prefs.View == viewTree && strings.TrimSpace(a.search) != "" {
+			switch {
+			case a.prefs.View == viewTree && strings.TrimSpace(a.search) != "":
 				a.setViewMode(viewFiles)
+				a.searchLeftTree = true
+				a.focusTable = false
+			case strings.TrimSpace(a.search) == "" && a.searchLeftTree:
+				a.searchCleared(c.Now()) // erased by hand: back to the tree, as Explorer does
 				a.focusTable = false
 			}
 			a.files.queryChanged(c.Now())
@@ -435,7 +442,9 @@ func (a *App) searchBox(c *ui.Context) {
 			for _, q := range a.prefs.SearchHistory {
 				if m.Item(q).Chosen() {
 					a.search = q
+					fromTree := a.prefs.View == viewTree
 					a.setViewMode(viewFiles)
+					a.searchLeftTree = fromTree || a.searchLeftTree
 					a.files.invalidate()
 				}
 			}
@@ -448,6 +457,16 @@ func (a *App) searchBox(c *ui.Context) {
 			a.contextItems(m, "tools.search", "tools.filter", "help.syntax")
 		})
 	})
+}
+
+// searchCleared ends a search. When typing had switched Tree View to File
+// View, Tree View comes back with its location, expansion and selection.
+func (a *App) searchCleared(now time.Time) {
+	a.files.queryChanged(now)
+	if a.searchLeftTree && a.prefs.View == viewFiles {
+		a.setViewMode(viewTree)
+	}
+	a.searchLeftTree = false
 }
 
 // progressText is the live line of a running scan.
@@ -471,8 +490,13 @@ func (a *App) progressText() string {
 func (a *App) scanFlags(c *ui.Context) {
 	t := c.Theme()
 	s := a.snap
+	// The same icon and color as the status bar's issue count, so these read
+	// as conditions of the data rather than labels.
 	warn := func(text, tip string) {
-		ui.Text(c, text).TextColor(t.Warning).SingleLine().Tooltip(tip)
+		ui.Row(c).Gap(4).AlignItems(ui.Center).Shrink(0).Tooltip(tip).Children(func() {
+			ui.Icon(c, icons["warning"]).FontSize(12).TextColor(t.Warning)
+			ui.Text(c, text).TextColor(t.Warning).SingleLine()
+		})
 	}
 	if a.source != "" {
 		warn("Saved scan from "+platform.FormatDateTime(s.Started), a.source+"\nHistorical data: files may have changed since.")
@@ -481,7 +505,7 @@ func (a *App) scanFlags(c *ui.Context) {
 		warn("Partial scan", "The scan was stopped before it finished; totals are incomplete.")
 	}
 	if len(s.Exclusions) > 0 {
-		warn(plural(s.Excluded, "entry excluded", "entries excluded"), "Scan exclusions kept these out; totals are incomplete:\n"+strings.Join(s.Exclusions, "\n"))
+		warn(plural(s.Excluded, "entry skipped", "entries skipped"), "Options → Skip During Scan kept these out; totals are incomplete:\n"+strings.Join(s.Exclusions, "\n"))
 	}
 	if a.stale != "" {
 		warn("Results may be outdated", a.stale+"\nPress F5 to rescan.")
@@ -586,6 +610,12 @@ func (a *App) viewTabs(c *ui.Context, pal palette) {
 		ui.Row(c).Gap(10).AlignItems(ui.Center).MinWidth(0).Shrink(1).Clip().Children(func() {
 			a.scanFlags(c)
 			a.viewContext(c)
+			// The metric drives the columns' percentages and sorting as well
+			// as the treemap, so it stays here when the treemap is hidden.
+			metric := a.prefs.Metric + " size"
+			if ui.Select(c.Key("metric"), &metric, []string{"Logical size", "Allocated size"}).Label("Size metric").Tooltip("Size used for percentages, default sorting and the treemap.\nAllocated is the disk space taken, smaller for compressed or sparse files.").Height(22).Width(124).Shrink(0).Changed() {
+				a.setMetric(strings.TrimSuffix(metric, " size"))
+			}
 		})
 	})
 }
@@ -620,25 +650,29 @@ func (a *App) viewContext(c *ui.Context) {
 			if e.busy {
 				muted("Analyzing…")
 			} else {
-				muted(fmt.Sprintf("%s of %s extensions · %% of %s files in scope", count(uint64(len(e.shown))), count(uint64(len(e.types))), strings.ToLower(a.prefs.Metric)))
+				muted(fmt.Sprintf("%s of %s extensions · double-click to list files", count(uint64(len(e.shown))), count(uint64(len(e.types)))))
 			}
 		}
 		scope := a.files.scopeName()
-		b := ui.ButtonBase(c.Key("scope")).Height(22).Padding(0, 6).Radius(4).Border(1, t.Border).AlignItems(ui.Center).Gap(4).Label("Scope").Tooltip("Where File View and Extensions look")
+		tip := "Where File View and Extensions look: the current location, following navigation"
+		if a.files.pinned {
+			tip = "Where File View and Extensions look: fixed, navigation does not change it"
+		}
+		b := ui.ButtonBase(c.Key("scope")).Height(22).Padding(0, 6).Radius(4).Border(1, t.Border).AlignItems(ui.Center).Gap(4).Label("Scope").Tooltip(tip)
 		b.Children(func() {
 			muted("Scope:")
 			ui.Text(c, truncateMiddle(scope, 48)).SingleLine()
 			ui.Icon(c, icons["chevron_down"]).FontSize(10).TextColor(t.TextMuted)
 		}).Menu(func(m *ui.Menu) {
-			if m.Item("Entire Scan").Checked(a.files.scope == 0).Chosen() {
-				a.files.setScope(0)
+			if m.Item("Current Location").Checked(!a.files.pinned).Chosen() {
+				a.files.followLocation()
 			}
-			if a.location != 0 && m.Item("Current Location: "+a.name(a.location)).Checked(a.files.scope == a.location).Chosen() {
-				a.files.setScope(a.location)
+			if m.Item("Entire Scan").Checked(a.files.pinned && a.files.scope == 0).Chosen() {
+				a.files.pinScope(0)
 			}
 			if id := a.tree.cursorID(); id != index.None && id != 0 && id != a.location && a.snap.Nodes[id].IsDir() {
-				if m.Item("Selected Folder: " + a.name(id)).Checked(a.files.scope == id).Chosen() {
-					a.files.setScope(id)
+				if m.Item("Selected Folder: " + a.name(id)).Checked(a.files.pinned && a.files.scope == id).Chosen() {
+					a.files.pinScope(id)
 				}
 			}
 		})
@@ -658,15 +692,14 @@ func (a *App) treemapBar(c *ui.Context, pal palette) {
 	t := c.Theme()
 	ui.Row(c).Height(28).Shrink(0).Padding(0, 6, 0, 10).Gap(6).AlignItems(ui.Center).Background(pal.chrome).BorderWidth(1, 0, 1, 0).BorderColor(pal.separator).Children(func() {
 		// The location and its size are in the toolbar and the tree already.
-		ui.Text(c, "Treemap").SingleLine().Tooltip("Click selects in the tree; double-click a folder to go into it, Backspace or Alt+Up goes back up.")
+		ui.Text(c, "Treemap").SingleLine().Shrink(0)
 		if a.tm.busy {
-			ui.Text(c, "Updating…").TextColor(t.TextMuted)
+			ui.Text(c, "Updating…").TextColor(t.TextMuted).Shrink(0)
+		} else {
+			// How to use it, where the user looks, until space runs out.
+			ui.Text(c, "Click to select · double-click to open a folder · Backspace goes up").FontSize(11).TextColor(t.TextMuted).SingleLine().MinWidth(0).Shrink(1).Clip()
 		}
 		ui.Spacer(c)
-		metric := a.prefs.Metric + " size"
-		if ui.Select(c.Key("tm-metric"), &metric, []string{"Logical size", "Allocated size"}).Label("Size metric").Tooltip("Size metric for the treemap, percentages and default sorting").Width(124).Changed() {
-			a.setMetric(strings.TrimSuffix(metric, " size"))
-		}
 		colors := map[string]string{"Extension": "Color by extension", "Folder": "Color by folder", "Mono": "Monochrome"}
 		choice := colors[a.prefs.TreemapColors]
 		if ui.Select(c.Key("tm-colors"), &choice, []string{"Color by extension", "Color by folder", "Monochrome"}).Label("Treemap colors").Width(150).Changed() {
@@ -724,9 +757,21 @@ func (a *App) statusBar(c *ui.Context, pal palette) {
 				msg = "Ready"
 			}
 		}
+		if a.errorMsg {
+			ui.Icon(c, icons["warning"]).FontSize(12).TextColor(t.Danger).Shrink(0)
+		}
 		m := ui.Text(c, msg).TextColor(color).SingleLine().Shrink(1).MinWidth(0)
 		if a.errorMsg {
+			// An error stays until it is dismissed or the next command runs.
 			m.Tooltip(msg)
+			x := ui.ButtonBase(c.Key("error-dismiss")).Size(18, 18).Center().Radius(3).Shrink(0).Label("Dismiss").Tooltip("Dismiss")
+			if x.Hovered() {
+				x.Background(t.SurfaceHover)
+			}
+			x.Children(func() { ui.Icon(c, icons["dismiss"]).FontSize(10).TextColor(t.TextMuted) })
+			if x.Clicked() {
+				a.clearError()
+			}
 		}
 		ui.Spacer(c)
 		// One selected item is already on the left; a count helps for more.
@@ -823,11 +868,17 @@ func (a *App) startPage(c *ui.Context, pal palette) {
 		a.dlg.driveList.Selected = &a.dlg.driveRow
 		table := ui.Table(c.Key("drives"), &a.dlg.driveList, cols, len(a.drives), func(row, col int) {
 			d := a.drives[row]
-			// One click scans, like the recent folders below.
+			// A click selects, as in every other table; double-click or
+			// Enter scans. A scan can take a while, so it is never accidental.
 			cell := cellBox(c, cols[col].Align)
 			if cell.Clicked() {
+				a.dlg.driveRow = row
+			}
+			if cell.DoubleClicked() {
 				a.post(func() { a.scanPath(d.Path) })
 			}
+			// Nearly full drives stand out: they are usually why Quarry was opened.
+			full := d.Total > 0 && percent(d.Total-d.Free, d.Total) >= 90
 			cell.Children(func() {
 				switch col {
 				case 0:
@@ -844,12 +895,18 @@ func (a *App) startPage(c *ui.Context, pal palette) {
 				case 4:
 					used := percent(d.Total-d.Free, d.Total)
 					shareBar(c, used/100, 90, pal)
-					ui.Text(c, percentText(used)).TextColor(t.TextMuted)
+					pct := ui.Text(c, percentText(used)).TextColor(t.TextMuted)
+					if full {
+						pct.TextColor(t.Warning)
+					}
 				case 5:
-					ui.Text(c, a.size(d.Free))
+					free := ui.Text(c, a.size(d.Free))
+					if full {
+						free.TextColor(t.Warning)
+					}
 				}
 			})
-		}).Height(float32(28 + 26*max(1, len(a.drives)))).MaxHeight(260).MaxWidth(720).Tooltip("Click or press Enter to scan")
+		}).Height(float32(28 + 26*max(1, len(a.drives)))).MaxHeight(260).MaxWidth(720).Tooltip("Double-click or press Enter to scan")
 		if table.Submitted() && a.dlg.driveRow >= 0 && a.dlg.driveRow < len(a.drives) {
 			a.scanPath(a.drives[a.dlg.driveRow].Path)
 		}

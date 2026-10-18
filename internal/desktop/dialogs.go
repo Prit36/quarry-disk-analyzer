@@ -159,15 +159,18 @@ func (a *App) dialogs(c *ui.Context, pal palette) {
 	ui.Modal(c.Key("filter"), &d.filter.open, func() {
 		f := &d.filter
 		ui.Column(c).Width(560).Padding(8).Gap(8).Children(func() {
-			dialogTitle(c, "Analysis Filter")
-			ui.Text(c, "Hides entries already in the scan; nothing is rescanned. Totals and percentages are recalculated for what remains.").TextColor(t.TextMuted).MaxWidth(520)
-			field(c, "Show only files", &f.include, "e.g. ext:log;txt size:>100MB modified:<2024-01-01")
+			dialogTitle(c, "Show/Hide Filter")
+			ui.Text(c, "Narrows the results already scanned; nothing is rescanned. Totals and percentages are recalculated for what remains.").TextColor(t.TextMuted).MaxWidth(520)
+			field(c, "Show only", &f.include, "e.g. ext:log;txt size:>100MB modified:<2024-01-01")
+			syntaxNote(c, "Files matching a search, written as in the search box.", a)
 			field(c, "Hide", &f.exclude, "e.g. node_modules; *.tmp; C:\\Windows\\WinSxS")
-			ui.Text(c, "“Show only” uses the search syntax. “Hide” takes names, wildcards or folder paths separated by ;").FontSize(11).TextColor(t.TextMuted)
+			ui.Text(c, patternNote).FontSize(11).TextColor(t.TextMuted).MaxWidth(520)
 			ui.Checkbox(c, &f.isolate, "Hide folders that contain no remaining files")
 			ui.Checkbox(c, &f.mapToo, "Apply the filter to the treemap")
-			if f.err != "" {
-				ui.Text(c, f.err).TextColor(t.Danger)
+			// Checked while typing, so a mistake shows before Apply.
+			_, perr := index.ParseFilter(f.include)
+			if perr != nil {
+				ui.Text(c, perr.Error()).TextColor(t.Danger).MaxWidth(520)
 			}
 			buttons(c, func() {
 				if ui.Button(c, "Clear Filter").Disabled(!a.filter.active()).Clicked() {
@@ -177,15 +180,11 @@ func (a *App) dialogs(c *ui.Context, pal palette) {
 				if ui.Button(c, "Cancel").Clicked() {
 					f.open = false
 				}
-				if ui.PrimaryButton(c, "Apply").Clicked() {
-					if _, err := index.ParseFilter(f.include); err != nil {
-						f.err = err.Error()
-					} else {
-						f.open = false
-						a.filter = analysisFilter{Include: f.include, Exclude: f.exclude, Isolate: f.isolate}
-						a.prefs.FilterMap = f.mapToo
-						a.applyFilter()
-					}
+				if ui.PrimaryButton(c, "Apply").Disabled(perr != nil).Clicked() {
+					f.open = false
+					a.filter = analysisFilter{Include: f.include, Exclude: f.exclude, Isolate: f.isolate}
+					a.prefs.FilterMap = f.mapToo
+					a.applyFilter()
 				}
 			})
 		})
@@ -201,8 +200,8 @@ func (a *App) dialogs(c *ui.Context, pal palette) {
 			field(c, "Extensions", &s.ext, "e.g. log;txt")
 			field(c, "Minimum size", &s.minSize, "e.g. 500MB")
 			field(c, "Maximum size", &s.maxSize, "e.g. 4GiB")
-			field(c, "Modified after", &s.after, "YYYY-MM-DD")
-			field(c, "Modified before", &s.before, "YYYY-MM-DD (inclusive)")
+			field(c, "Modified on or after", &s.after, "YYYY-MM-DD")
+			field(c, "Modified on or before", &s.before, "YYYY-MM-DD")
 			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 				ui.Text(c, "Type").Width(130).TextColor(t.TextMuted)
 				ui.Select(c.Key("kind"), &s.kind, []string{"Files and folders", "Files", "Folders"}).Width(170)
@@ -218,25 +217,22 @@ func (a *App) dialogs(c *ui.Context, pal palette) {
 				ui.Text(c, "Query").Width(130).TextColor(t.TextMuted)
 				ui.Text(c, query).Selectable().Font("Consolas").MinWidth(0).Shrink(1)
 			})
-			if s.err != "" {
-				ui.Text(c, s.err).TextColor(t.Danger)
+			_, perr := index.ParseFilter(query)
+			if perr != nil {
+				ui.Text(c, perr.Error()).TextColor(t.Danger).MaxWidth(520)
 			}
 			buttons(c, func() {
 				if ui.Button(c, "Cancel").Clicked() {
 					s.open = false
 				}
-				if ui.PrimaryButton(c, "Search").Clicked() {
-					if _, err := index.ParseFilter(query); err != nil {
-						s.err = err.Error()
-						return
-					}
+				if ui.PrimaryButton(c, "Search").Disabled(perr != nil || query == "").Clicked() {
 					s.open = false
 					a.search = query
-					scope := index.ID(0)
 					if s.scope == "Current location" {
-						scope = a.location
+						a.files.followLocation()
+					} else {
+						a.files.pinScope(0)
 					}
-					a.files.scope = scope
 					a.ext.dirty = true
 					a.setViewMode(viewFiles)
 					a.files.invalidate()
@@ -250,23 +246,35 @@ func (a *App) dialogs(c *ui.Context, pal palette) {
 	ui.Modal(c.Key("exclusions"), &d.exclusions.open, func() {
 		e := &d.exclusions
 		ui.Column(c).Width(560).Padding(8).Gap(8).Children(func() {
-			dialogTitle(c, "Scan Exclusions")
-			ui.Text(c, "Entries matching these patterns are skipped by future scans. Use a full folder path (C:\\Users\\me\\AppData\\Local\\Temp) or a name or wildcard (node_modules, *.tmp), one per line.").TextColor(t.TextMuted).MaxWidth(520)
-			ui.TextArea(c.Key("excl-text"), &e.text).Height(160).Font("Consolas").Label("Exclusion patterns")
-			ui.Checkbox(c, &e.use, "Apply exclusions when scanning")
-			ui.Text(c, "Excluded entries are not counted, so scan totals will be incomplete. Quarry shows how many entries were excluded.").FontSize(11).TextColor(t.Warning).MaxWidth(520)
+			dialogTitle(c, "Skip During Scan")
+			ui.Text(c, "Scans do not read entries matching these patterns. To hide entries from results you already have, use Tools → Show/Hide Filter instead.").TextColor(t.TextMuted).MaxWidth(520)
+			ui.TextArea(c.Key("excl-text"), &e.text).Height(160).Font("Consolas").Label("Patterns to skip")
+			ui.Text(c, patternNote).FontSize(11).TextColor(t.TextMuted).MaxWidth(520)
+			ui.Checkbox(c, &e.use, "Skip these when scanning")
+			ui.Text(c, "Skipped entries are not counted, so scan totals will be incomplete. Quarry shows how many entries were skipped.").FontSize(11).TextColor(t.Warning).MaxWidth(520)
+			save := func() {
+				e.open = false
+				a.prefs.Exclusions = splitPatterns(e.text)
+				a.prefs.UseExclusions = e.use
+				_ = a.savePrefs()
+			}
+			// A live scan can be redone right away; otherwise the list waits for the next scan.
+			canRescan := a.base != nil && a.source == "" && a.can("scan.rescan")
 			buttons(c, func() {
 				if ui.Button(c, "Cancel").Clicked() {
 					e.open = false
 				}
-				if ui.PrimaryButton(c, "Save").Clicked() {
-					e.open = false
-					a.prefs.Exclusions = splitPatterns(e.text)
-					a.prefs.UseExclusions = e.use
-					_ = a.savePrefs()
-					if a.base != nil {
-						a.notify("Exclusions saved. They apply to the next scan (F5).")
+				if canRescan {
+					if ui.Button(c, "Save").Clicked() {
+						save()
+						a.notify("Saved. The list applies to the next scan (F5).")
 					}
+					if ui.PrimaryButton(c, "Save and Rescan").Clicked() {
+						save()
+						a.post(func() { a.exec("scan.rescan") })
+					}
+				} else if ui.PrimaryButton(c, "Save").Clicked() {
+					save()
 				}
 			})
 		})
@@ -472,10 +480,31 @@ func (s *searchDialog) query() string {
 
 func (d *dialogs) openSearch(a *App) {
 	if d.search.kind == "" {
-		d.search.kind, d.search.scope = "Files", "Entire scan"
+		d.search.kind = "Files"
 	}
-	d.search.err = ""
+	// Start from where the user is, as the search box does.
+	d.search.scope = "Entire scan"
+	if a.location != 0 && (!a.files.pinned || a.files.scope == a.location) {
+		d.search.scope = "Current location"
+	}
 	d.search.open = true
+}
+
+// patternNote explains the pattern lists of the Hide field and Skip During
+// Scan, which take the same syntax.
+const patternNote = "Names, wildcards or full folder paths, separated by ; or one per line."
+
+// syntaxNote is a hint under a search-syntax field with a link to the reference.
+func syntaxNote(c *ui.Context, text string, a *App) {
+	t := c.Theme()
+	ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
+		ui.Text(c, text).FontSize(11).TextColor(t.TextMuted).SingleLine().MinWidth(0).Shrink(1)
+		b := ui.ButtonBase(c.Key("syntax-link")).Label("Search syntax").Tooltip("Search Syntax (Help menu)")
+		b.Children(func() { ui.Text(c, "Search syntax").FontSize(11).TextColor(t.Focus).Underline() })
+		if b.Clicked() {
+			a.dlg.help = helpSyntax
+		}
+	})
 }
 
 func (d *dialogs) openFilter(a *App) {

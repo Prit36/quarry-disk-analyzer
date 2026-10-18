@@ -620,7 +620,7 @@ func (a *App) treemapView(c *ui.Context, pal palette) {
 		menu.Item(truncateMiddle(title, 60)).Disabled(true)
 		menu.Separator()
 		if a.snap == nil || !a.snap.Reachable(id) {
-			menu.Item("Hidden by the analysis filter").Disabled(true)
+			menu.Item("Hidden by the Show/Hide filter").Disabled(true)
 			return
 		}
 		// Commands act on the selection: make it this tile, once.
@@ -631,7 +631,9 @@ func (a *App) treemapView(c *ui.Context, pal palette) {
 		if s.Nodes[id].IsDir() && id != a.location && menu.Item("Go Into Folder").Chosen() {
 			a.post(func() { a.navigate(id) })
 		}
-		a.contextItems(menu, "-", "item.open", "item.explorer", "-", "edit.copy", "edit.copyPath", "edit.copyName", "-", "nav.up", "item.searchHere", "item.scanHere", "-", "edit.delete", "-", "item.properties")
+		// The same groups and order as the rows' menu.
+		a.contextItems(menu, "-", "item.open", "item.explorer", "-", "edit.copy", "edit.copyPath", "-", "item.searchHere", "item.scanHere", "nav.up", "-", "edit.delete", "-", "item.properties")
+		a.moreItems(menu, "edit.copyName", "edit.copySize", "item.scanWindow")
 	})
 	if box.Shortcut(0, ui.KeyBackspace) {
 		a.up()

@@ -30,6 +30,7 @@ type fileModel struct {
 	runFor         *index.Snapshot // snapshot of the running query
 	ran            string          // query of the shown results
 	scope          index.ID
+	pinned         bool // scope chosen by the user; otherwise it follows the location
 	shownScope     index.ID
 	shownAllocated bool
 	shownOnDisk    bool
@@ -61,7 +62,7 @@ func (f *fileModel) reset() {
 	f.list = ui.ListState{Columns: cols}
 	f.ids, f.total, f.busy, f.err, f.forSnap, f.ran = nil, 0, false, "", nil, ""
 	f.idsGen++
-	f.scope = 0
+	f.scope, f.pinned = 0, false
 	f.sel = ui.Selection[index.ID]{}
 	f.cursor = -1
 	f.dirty = true
@@ -107,6 +108,29 @@ func (f *fileModel) tick(c *ui.Context) {
 		f.due = time.Time{}
 		f.run()
 	}
+}
+
+// follow moves an unpinned scope along with the location, so File View and
+// Extensions describe the folder the user is looking at.
+func (f *fileModel) follow(location index.ID) {
+	if f.pinned || f.scope == location {
+		return
+	}
+	f.scope = location
+	f.a.ext.dirty = true
+	f.invalidate()
+}
+
+// followLocation unpins the scope and returns it to the current location.
+func (f *fileModel) followLocation() {
+	f.pinned = false
+	f.setScope(f.a.location)
+}
+
+// pinScope sets a scope that stays put while the user navigates.
+func (f *fileModel) pinScope(id index.ID) {
+	f.pinned = true
+	f.setScope(id)
 }
 
 func (f *fileModel) setScope(id index.ID) {

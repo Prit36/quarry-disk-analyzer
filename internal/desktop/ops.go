@@ -379,7 +379,7 @@ func (a *App) searchHere() {
 	if id == index.None {
 		return
 	}
-	a.files.setScope(id)
+	a.files.pinScope(id)
 	a.setViewMode(viewFiles)
 	a.focusSearch()
 }
@@ -493,13 +493,18 @@ func (a *App) deleteItems(permanent bool) {
 		run()
 		return
 	}
-	message, button, kind := "Move "+what+" to the Recycle Bin?", "Move to Recycle Bin", mygo.MessageQuestion
+	// Enter confirms a move to the Recycle Bin, as in Explorer; it can be
+	// restored. Permanent deletion, or a warned location, defaults to Cancel.
+	message, button, kind, def := "Move "+what+" to the Recycle Bin?", "Move to Recycle Bin", mygo.MessageQuestion, 0
+	if warning != "" {
+		def = 1
+	}
 	if permanent {
-		message, button, kind = "Permanently delete "+what+"?", "Delete Permanently", mygo.MessageWarning
+		message, button, kind, def = "Permanently delete "+what+"?", "Delete Permanently", mygo.MessageWarning, 1
 		detail += "\n\nThis bypasses the Recycle Bin and cannot be undone."
 	}
 	go func() {
-		res, err := mygo.Dialog.Message(mygo.MessageOptions{Parent: a.win, Type: kind, Title: "Quarry", Message: message, Detail: detail, Buttons: []string{button, "Cancel"}, DefaultButton: 1, CancelButton: 1})
+		res, err := mygo.Dialog.Message(mygo.MessageOptions{Parent: a.win, Type: kind, Title: "Quarry", Message: message, Detail: detail, Buttons: []string{button, "Cancel"}, DefaultButton: def, CancelButton: 1})
 		if err == nil && res.Button == 0 {
 			a.post(run)
 		}

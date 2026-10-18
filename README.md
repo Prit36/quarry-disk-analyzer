@@ -10,13 +10,13 @@ Quarry shows where the space went and gets you from a storage problem to the fil
 ```
 File  Edit  View  Tools  Options  Help                         (native menu bar)
 [Scan v] [Rescan] | <- -> ^ | C: > Users > me                  | [Search...      v]
-Tree | Files | Extensions                                     Scope: Entire scan
+Tree | Files | Extensions                Scope: C:\Users\me v  [Logical size v]
 +--------------------------------------------------------------------------------+
 | Name                       Size   Allocated   % of Parent      Files   Modified |
 | v C:\                    307 GiB    308 GiB   ##### 100 %   1,070,517          |
 |   > Users                152 GiB    153 GiB   ##    49 %       804,863          |
 +------------------------------ splitter -----------------------------------------+
-| Treemap                             [Logical size v] [Color by extension v] ^ x |
+| Treemap  Click to select · double-click to open    [Color by extension v] ^ x |
 |                                  treemap                                       |
 +--------------------------------------------------------------------------------+
 C:\Users  ·  152 GiB  ·  804,863 files          NTFS MFT · 2 s   C: 120 GiB free
@@ -31,7 +31,7 @@ Selections, the location and the history are shared by the tree and the treemap.
 
 ## Working with files
 
-Right-click any entry: Open, Show in Explorer (selects the items), Cut/Copy as real Explorer clipboard items, Copy Full Path (Ctrl+Alt+C), Copy Rows as Text (tab-separated), Reveal in Tree, Focus in Treemap, Search in This Folder, Scan This Folder, Rename (F2), Delete to the Recycle Bin (Del), Delete Permanently (Shift+Del, always confirmed) and Properties (Alt+Enter). Items can be dragged to Explorer; folders dropped on the window are scanned.
+Right-click any entry: Open, Show in Explorer (selects the items), Cut/Copy as real Explorer clipboard items, Copy Full Path (Ctrl+Alt+C), Go Into Folder, Reveal in Tree, Search in This Folder, Scan This Folder, Rename (F2), Delete to the Recycle Bin (Del) and Properties (Alt+Enter). **More** holds Copy Name, Copy Size, Copy Rows as Text (tab-separated), Focus in Treemap, Scan in New Window, Export Selection, Expand/Collapse Subtree and Delete Permanently (Shift+Del, always confirmed). Items can be dragged to Explorer; folders dropped on the window are scanned.
 
 Before any operation Quarry checks that the path still exists and is still the same kind of entry; after it, the index, totals, extensions and treemap update without a rescan. NTFS metadata (`$MFT`, `$BadClus`, `$Extend`…), `pagefile.sys`, `System Volume Information` and similar are never offered for deletion or renaming, and items inside Windows or Program Files get an extra warning.
 
@@ -48,9 +48,9 @@ path:node_modules         any folder in the path
 type:file  type:folder    regex:^IMG_\d+\.jpe?g$
 ```
 
-Tools → Advanced Search builds such a query from fields. The scope (entire scan, current location or a selected folder) is always shown next to the results.
+Tools → Advanced Search builds such a query from fields. The scope is shown next to the results: the current location by default, following navigation, or the entire scan or a selected folder when chosen. Clearing a search started in Tree View returns to it.
 
-**Analysis filters** (Tools → Analysis Filter) hide entries that are already scanned - e.g. show only `ext:log`, hide `node_modules` - and recompute every total. **Scan exclusions** (Options → Scan Exclusions) keep folders or name patterns out of future scans; the info bar then reports how many entries were excluded.
+**Show/Hide Filter** (Tools → Show/Hide Filter) hides entries that are already scanned - e.g. show only `ext:log`, hide `node_modules` - and recomputes every total. **Skip During Scan** (Options → Skip During Scan) keeps folders or name patterns out of future scans; a warning beside the view tabs then reports how many entries were skipped.
 
 ## Scanning
 

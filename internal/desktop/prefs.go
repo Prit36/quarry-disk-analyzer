@@ -48,7 +48,7 @@ func defaultPrefs() prefs {
 	return prefs{
 		Version: 3, Metric: "Logical", Units: "Binary", Theme: "System", Compact: true, Zoom: 1,
 		ShowInfo: true, ShowTreemap: true, TreemapPct: 62, TreemapColors: "Extension", FilterMap: true,
-		TreeHidden: map[string]bool{"% of Scan": true}, FileHidden: map[string]bool{"Allocated": true},
+		TreeHidden: map[string]bool{"% of Scan": true, "Folders": true}, FileHidden: map[string]bool{"Allocated": true},
 		TreeSort: ui.SortOrder{Column: "Size", Descending: true}, FileSort: ui.SortOrder{Column: "Size", Descending: true},
 		ExtSort: ui.SortOrder{Column: "Size", Descending: true}, ScanMode: "Automatic", ConfirmRecycle: true,
 		Exclusions: []string{}, UseExclusions: true,

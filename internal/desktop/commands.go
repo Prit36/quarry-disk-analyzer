@@ -26,8 +26,8 @@ type command struct {
 
 func always(*App) bool { return true }
 
-func hasScan(a *App) bool     { return a.snap != nil }
-func idle(a *App) bool        { return !a.scanning }
+func hasScan(a *App) bool { return a.snap != nil }
+func idle(a *App) bool    { return !a.scanning }
 func hasItems(a *App) bool {
 	if a.snap == nil {
 		return false
@@ -131,7 +131,7 @@ func newCommands() map[string]*command {
 
 		// Tools
 		"tools.search":      {label: "Advanced Search…", keys: "Ctrl+Shift+F", mods: ui.Ctrl | ui.Shift, key: ui.KeyF, inText: true, enabled: hasScan, run: func(a *App) { a.dlg.openSearch(a) }},
-		"tools.filter":      {label: "Analysis Filter…", keys: "Ctrl+Shift+L", mods: ui.Ctrl | ui.Shift, key: ui.KeyL, inText: true, enabled: hasScan, run: func(a *App) { a.dlg.openFilter(a) }},
+		"tools.filter":      {label: "Show/Hide Filter…", keys: "Ctrl+Shift+L", mods: ui.Ctrl | ui.Shift, key: ui.KeyL, inText: true, enabled: hasScan, run: func(a *App) { a.dlg.openFilter(a) }},
 		"tools.clearFilter": {label: "Clear Filter", enabled: func(a *App) bool { return a.filter.active() }, run: (*App).clearFilter},
 		"tools.dups":        {label: "Find Duplicates…", enabled: hasScan, run: func(a *App) { a.dlg.dup.open(a) }},
 		"tools.compare":     {label: "Compare with Saved Scan…", enabled: hasScan, run: (*App).compareDialog},
@@ -139,8 +139,8 @@ func newCommands() map[string]*command {
 		"tools.info":        {label: "Scan Information…", enabled: hasScan, run: func(a *App) { a.dlg.info = true }},
 
 		// Options
-		"opt.exclusions": {label: "Scan Exclusions…", run: func(a *App) { a.dlg.openExclusions(a) }},
-		"opt.useExcl":    {label: "Apply Scan Exclusions", checked: func(a *App) bool { return a.prefs.UseExclusions }, run: func(a *App) { a.prefs.UseExclusions = !a.prefs.UseExclusions }},
+		"opt.exclusions": {label: "Skip During Scan…", run: func(a *App) { a.dlg.openExclusions(a) }},
+		"opt.useExcl":    {label: "Apply Skip List", checked: func(a *App) bool { return a.prefs.UseExclusions }, run: func(a *App) { a.prefs.UseExclusions = !a.prefs.UseExclusions }},
 		"opt.scanAuto":   {label: "Automatic (direct MFT read when permitted)", checked: func(a *App) bool { return a.prefs.ScanMode != "Enumerate" }, radio: true, run: func(a *App) { a.prefs.ScanMode = "Automatic" }},
 		"opt.scanEnum":   {label: "Directory Enumeration Only", checked: func(a *App) bool { return a.prefs.ScanMode == "Enumerate" }, radio: true, run: func(a *App) { a.prefs.ScanMode = "Enumerate" }},
 		"opt.admin":      {label: "Restart as Administrator", enabled: func(a *App) bool { return !a.admin && !a.scanning }, run: (*App).restartElevated},
@@ -189,6 +189,7 @@ func (a *App) mutableCached() bool {
 func (a *App) exec(id string) {
 	a.invalidateSelections() // commands act on the exact selection
 	if a.can(id) {
+		a.clearError() // the user has moved on; a new failure reports itself
 		a.cmds[id].run(a)
 		if a.win != nil {
 			a.win.Invalidate()
@@ -242,6 +243,23 @@ func (a *App) contextItems(m *ui.Menu, ids ...string) {
 			a.post(func() { a.exec(id) })
 		}
 	}
+}
+
+// moreItems adds the less frequent commands as a More submenu, when any of
+// them applies.
+func (a *App) moreItems(m *ui.Menu, ids ...string) {
+	shown := false
+	for _, id := range ids {
+		if cmd := a.cmds[id]; cmd != nil && (cmd.visible == nil || cmd.visible(a)) {
+			shown = true
+			break
+		}
+	}
+	if !shown {
+		return
+	}
+	m.Separator()
+	m.Submenu("More", func(sub *ui.Menu) { a.contextItems(sub, ids...) })
 }
 
 // Native menu bar.

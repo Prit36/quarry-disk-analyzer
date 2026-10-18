@@ -73,17 +73,18 @@ type App struct {
 	ext   extModel
 	tm    treemapModel
 
-	search       string
-	searchHandle ui.Handle
-	targetHandle ui.Handle // the location bar while it is a text box
-	locText      string
-	locEdit      bool // the location bar is a text box
-	locArmed     bool // ...and has had the focus, so losing it ends editing
-	wantLoc      bool // focus the location text box in the next frame
-	focusTable   bool
-	wantSearch   bool
-	extFilter    string
-	focused      map[string]bool
+	search         string
+	searchLeftTree bool // typing a search switched Tree View to File View
+	searchHandle   ui.Handle
+	targetHandle   ui.Handle // the location bar while it is a text box
+	locText        string
+	locEdit        bool // the location bar is a text box
+	locArmed       bool // ...and has had the focus, so losing it ends editing
+	wantLoc        bool // focus the location text box in the next frame
+	focusTable     bool
+	wantSearch     bool
+	extFilter      string
+	focused        map[string]bool
 
 	hover      index.ID // entry under the pointer in a list or the treemap, this frame
 	hoverOther bool     // hover is the "Smaller items" block of that folder
@@ -200,6 +201,13 @@ func (a *App) notify(format string, args ...any) {
 
 func (a *App) fail(format string, args ...any) {
 	a.message, a.messageAt, a.errorMsg = fmt.Sprintf(format, args...), time.Now(), true
+}
+
+// clearError removes an error from the status bar once it has been seen.
+func (a *App) clearError() {
+	if a.errorMsg {
+		a.message, a.messageAt, a.errorMsg = "", time.Time{}, false
+	}
 }
 
 func (a *App) metricAllocated() bool { return a.prefs.Metric == "Allocated" }
@@ -529,6 +537,9 @@ func (a *App) setView(s *index.Snapshot) {
 	if !s.Reachable(a.location) {
 		a.location = 0
 	}
+	if !a.files.pinned {
+		a.files.scope = a.location
+	}
 	a.tree.dataChanged()
 	if a.tree.sel.Len() == 0 {
 		a.tree.selectOnly(a.location)
@@ -568,6 +579,7 @@ func (a *App) navigateTo(id index.ID, record bool) {
 		a.histPos = len(a.history) - 1
 	}
 	a.tree.locationChanged(previous)
+	a.files.follow(id)
 	a.tm.invalidate()
 }
 
@@ -622,6 +634,7 @@ func (a *App) setViewMode(v int) {
 		return
 	}
 	a.prefs.View = v
+	a.searchLeftTree = false // a view chosen by the user stays when the search is cleared
 	a.focusTable = true
 	if v == viewFiles {
 		a.files.ensure()

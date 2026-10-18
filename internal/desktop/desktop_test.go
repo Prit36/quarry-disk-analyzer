@@ -389,8 +389,8 @@ func TestLocationBarPath(t *testing.T) {
 	}
 }
 
-// One click on a drive on the start page scans it, as on a recent folder.
-func TestStartPageClickScansDrive(t *testing.T) {
+// One click on a drive on the start page selects it; a double-click scans it.
+func TestStartPageDoubleClickScansDrive(t *testing.T) {
 	t.Setenv("QUARRY_CONFIG_DIR", t.TempDir())
 	a := newApp()
 	a.prefs.Theme = "Dark"
@@ -402,8 +402,59 @@ func TestStartPageClickScansDrive(t *testing.T) {
 	if err := tt.Click("Test volume"); err != nil {
 		t.Fatalf("click: %v; texts %q", err, tt.Texts())
 	}
+	tt.Frame()
+	if a.scanning || a.snap != nil || a.dlg.driveRow != 0 {
+		t.Fatalf("one click should only select the drive: scanning %v, row %d", a.scanning, a.dlg.driveRow)
+	}
+	if err := tt.Click("Test volume"); err != nil { // the second click of a double-click
+		t.Fatalf("click: %v", err)
+	}
 	settle(tt, func() bool { return a.snap != nil })
 	if a.snap == nil || a.snap.Root != dir {
-		t.Fatalf("one click should scan %s, scanning %v", dir, a.scanning)
+		t.Fatalf("a double-click should scan %s, scanning %v", dir, a.scanning)
+	}
+}
+
+// Clearing a search that typing started in Tree View returns to Tree View;
+// a view the user chose stays.
+func TestClearingSearchReturnsToTree(t *testing.T) {
+	a := testApp(t)
+	a.tree.selectOnly(6)
+	a.search = "report"
+	a.setViewMode(viewFiles)
+	a.searchLeftTree = true
+	a.search = ""
+	a.searchCleared(time.Now())
+	if a.prefs.View != viewTree || a.tree.cursorID() != 6 {
+		t.Fatalf("view %d cursor %d, want Tree View on the same row", a.prefs.View, a.tree.cursorID())
+	}
+	a.setViewMode(viewFiles) // chosen by the user
+	a.search = "report"
+	a.search = ""
+	a.searchCleared(time.Now())
+	if a.prefs.View != viewFiles {
+		t.Fatalf("a view chosen by the user should stay, got %d", a.prefs.View)
+	}
+}
+
+// File View and Extensions follow the location unless a scope was chosen.
+func TestScopeFollowsLocation(t *testing.T) {
+	a := testApp(t)
+	a.navigate(1) // media
+	if a.files.scope != 1 {
+		t.Fatalf("scope %d, want the location 1", a.files.scope)
+	}
+	a.files.pinScope(0)
+	a.navigate(6) // docs
+	if a.files.scope != 0 {
+		t.Fatalf("a chosen scope moved with navigation: %d", a.files.scope)
+	}
+	a.files.followLocation()
+	if a.files.scope != 6 || a.files.pinned {
+		t.Fatalf("scope %d pinned %v, want the location 6 again", a.files.scope, a.files.pinned)
+	}
+	a.up()
+	if a.files.scope != 0 {
+		t.Fatalf("scope %d after going up, want 0", a.files.scope)
 	}
 }
