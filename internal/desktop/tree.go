@@ -206,9 +206,15 @@ func (t *treeModel) selectedIDs() []index.ID {
 				}
 			}
 		} else if n > 1 {
-			for _, r := range t.rows {
-				if t.sel.Has(r.id) {
+			if n == len(t.rows) {
+				for _, r := range t.rows {
 					out = append(out, r.id)
+				}
+			} else {
+				for _, r := range t.rows {
+					if t.sel.Has(r.id) {
+						out = append(out, r.id)
+					}
 				}
 			}
 		}

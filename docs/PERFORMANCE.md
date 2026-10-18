@@ -1,94 +1,376 @@
-# Performance pass — 18 October 2026
+# Performance optimization audit — 18 October 2026
 
-This pass targets query latency, transient allocations, background cancellation,
-and pointer interaction. Complete results, sort tie-breaking, snapshot format,
-file-operation safeguards, and visual design are preserved.
+Synchronization note: the local performance commit `f805b56` was made from an
+older checkout. Its original measurements are preserved separately in
+[PERFORMANCE-LOCAL-PASS.md](PERFORMANCE-LOCAL-PASS.md) and do not describe the
+reconciled build. The merge retains upstream's parallel sorters, batched and
+preallocated search, event-driven selection caching, scan pipeline, help changes,
+and all existing regression tests. Compatible local additions include treemap
+branch hit-testing and tooltip caching, shorter search debounce, selection-cache
+memory release, and cancellation throughout filtering's final phases. The full
+test suite, Go vet, MyGO checks, and portable build passed after reconciliation.
 
-## Findings and changes
+Changes target CPU work and temporary allocations in interactive queries and
+painting. Measurements below are local synthetic benchmarks on Windows/amd64,
+Intel Core i5-12400F, Go 1.27.2, with 12 Go execution threads. They are not a
+guarantee of minimum latency on other machines or datasets.
 
-- **Wide-folder search:** previously, each immediate child became a task with its
-  own result slice. Small sibling subtrees now share a task. Substantial subtrees
-  remain independent for load balancing. Results retain sequential walk order.
-- **Numeric sorting:** separate key and ID arrays replace two padded record
-  arrays. Scratch storage falls from 48 to 20 bytes per entry, excluding digit
-  histograms. Key generation and scatter passes check cancellation periodically.
-  Name and derived-column sorts retain the two-word keys they need.
-- **Repeated File View sorts:** reuse a private copy of displayed IDs and their
-  total when snapshot, query, scope and metric match. Folder sorting removes an
-  entry-sized rank array; extensions are folded once per distinct spelling.
-- **Filtering:** inherited path matches are computed once per directory rather
-  than walking ancestors for every file. Name-only exclusions skip path
-  construction. Folder totals use a constant-space postorder traversal instead
-  of an entry-sized buffer. Superseded analysis filters are canceled, including
-  their relinking, isolation and aggregation phases.
-- **Search interaction:** typing cancels old work immediately and invalidates
-  queued results. Debounce is 60 ms, down from 150 ms. Resets also invalidate
-  queued model results, including treemaps, whose generations previously
-  restarted from zero.
-- **Treemap:** cached subtree ends let hit-testing skip whole branches. Tooltip
-  facts are reused over the same tile; styles reuse capacity on resize. Tooltip
-  caches release old snapshots when data changes.
-- **Memory retention:** scan queue compaction clears obsolete path references.
-  Starting another scan releases selection maps, ID buffers and cached snapshot
-  references even when their view stays hidden. Large cached selection ID
-  buffers are released when the selection becomes small or empty.
-- **Tree and Extensions:** large child lists use the existing radix sorter;
-  sorting extension descriptions folds each description once per sort.
+## Findings and applied changes
 
-## Measurements
+- **Parallel search:** a flat folder created one work descriptor per file and,
+  for matches, one tiny result allocation per file. Small adjacent sibling
+  subtrees now share bounded batches. Large subtrees can still be divided
+  among workers; concatenation retains sequential traversal order. Partitioning
+  checks cancellation, including folders with very many direct children.
+- **Numeric sorting:** size, allocated size, date, counts and percentages used
+  the same two-word records as name sorting. Numeric sorts now scatter IDs and
+  one-word keys in separate arrays, reducing scratch arrays from 48 to 20 bytes
+  per result, plus histograms. Full-width unsigned values and deterministic ID
+  ties retain the reference comparison order. Large tree child lists also use
+  the radix sorter.
+- **Repeated sort changes:** File View searched and totaled an unchanged scope
+  again for each sort. It now clones the immutable current results off-thread
+  and reuses their byte total when the metric is unchanged. Snapshot, scope,
+  query and error state all participate in reuse eligibility. Sorting preserves
+  the existing selection without clearing and rebuilding its map.
+- **Derived sorts:** folder and extension sorts no longer allocate an additional
+  rank array covering every node in the scan. Keys read the existing parent
+  ranks or extension dictionary directly. Folder ranks themselves still use
+  one array indexed by node ID.
+- **Path filters:** analysis filtering previously revisited the ancestor chain
+  for every file. Directory traversal now propagates matching ancestor state
+  once per folder. This uses one temporary byte per indexed node only for
+  ancestor-based path filters. Name-only exclusions avoid building folder paths.
+- **Tooltip drawing:** fitting long labels previously decoded and measured
+  successively shorter strings. The new implementation decodes once and measures
+  logarithmically many candidates, retaining a measured fitting result. Kerning
+  can make widths non-monotonic, so the result is not necessarily the longest
+  possible fitting label.
+- **Obsolete work:** new typing cancels the previous query immediately, before
+  debounce expires. New analysis filters cancel previous filtering work.
+  Name-key generation checks cancellation during its parallel fill. Resetting
+  Files, Extensions or Treemap advances its generation to reject already queued
+  completions from an older scan.
 
-Windows/amd64, Go 1.27.2, Intel Core i5-12400F, 12 logical processors.
-Baseline: commit `a92797a`. Results are same-session medians of three Go benchmark
-samples, using identical synthetic fixtures. MB means decimal MB. Allocation
-figures are bytes allocated per operation, not retained heap or peak working
-set. Benchmarks use Go's default GC setting; the desktop retains GOGC=25.
+## Measured results
 
-| Operation | Before | After | Allocation before → after |
-|---|---:|---:|---:|
-| Search 100,000 sibling files, all matches | 8.293 ms | 1.673 ms | 25.03 → 2.01 MB |
-| Search 100,000 sibling files, no matches | 10.217 ms | 1.633 ms | 23.82 → 0.01 MB |
-| Search sibling files by path and extension | 9.520 ms | 1.762 ms | 25.13 → 2.12 MB |
-| Sort 500,000 IDs by size | 24.828 ms | 18.090 ms | 25.31 → 11.33 MB |
-| Sort 500,000 IDs by modified time | 19.539 ms | 13.990 ms | 25.05 → 11.07 MB |
-| Recompute totals, 100,000 sibling files | 0.642 ms | 0.445 ms | 401,408 → 0 bytes |
-| Filter 100,000 files under 64 ancestor levels | 94.504 ms | 3.935 ms | 5.32 → 5.02 MB |
-| Resort File View, 131,072 files | 4.637 ms | 4.566 ms | 9.27 → 3.93 MB |
-| Hit-test a treemap with a 6,000-cell budget | 2.290 µs | 0.229 µs | 0 → 0 bytes |
-| Headless treemap hover frame | 6.822 ms | 6.898 ms | 150 → 114 allocations |
+Medians of three benchmark samples, 200–300 ms per sample. “Allocated” is
+total Go allocation per operation, not retained heap or process working set.
+Search and sort baselines are the repository HEAD before this change.
+The filter reference executes the previous algorithm alongside the optimized
+algorithm on the same fixture. Tooltip measurements include headless layout
+and drawing through the real MyGO text painter.
 
-Full treemap frame cost is effectively unchanged; faster hit-testing does not
-imply tenfold faster rendering. Name-sort timing remains close to baseline.
-An eight-query smoke benchmark on a nested half-million-entry tree remained
-within 8% in short samples; no general search speedup is claimed for that shape.
+| Workload | Before | After | Allocated before → after |
+| --- | ---: | ---: | ---: |
+| Search 500,000 direct files, `ext:log`, all match | 41.66 ms | 8.29 ms | 123.76 MB → 11.55 MB |
+| Search same folder, no matches | 45.49 ms | 7.96 ms | 117.75 MB → 0.010 MB |
+| Sort 500,000 entries by size | 19.20 ms | 14.83 ms | 25.31 MB → 11.33 MB |
+| Sort 500,000 entries by modified time | 15.23 ms | 11.43 ms | 25.05 MB → 11.07 MB |
+| Analysis path filter, 80,000 files across 16 nested levels | 12.69 ms | 2.13 ms | 4.25 MB → 4.33 MB |
+| Frame fitting a long Unicode tooltip label | 349.54 µs | 8.85 µs | 342.89 KB → 1.82 KB |
+
+The search all-match workload also drops from about 500,065 allocations to
+894 allocations per operation. Numeric sorts drop from 18–20 allocations to 5.
+Balanced-tree searches remain in approximately the same latency range; the
+largest search gains are for wide, flat folders.
+
+The full headless UI report was also run against the original and optimized
+sources using the same deterministic 500,051-node fixture, with 495,000 files
+and 4,850 treemap cells. Both completed all navigation, search, sorting,
+selection, resize, filter and mutation steps. Idle and scrolling table frames
+were about 2 ms in both versions. Retained heap after the whole sequence was
+about 101 MiB in both. These single UI runs are smoke/performance checks, not
+statistically reliable comparisons. Raw reports are in the ignored `build/`
+directory as `perf-ui-baseline.json` and `perf-ui-optimized.json`.
 
 ## Verification and reproduction
 
-Regression tests compare search order with sequential walking, full-width numeric
-keys with the comparison sorter, filtered totals with an ancestor-walking
-reference, and non-topological/removed-node aggregation with a postorder
-reference. Treemap tests compare accelerated hit-testing with reverse scanning,
-including edges and resizes. Additional tests cover queued-result rejection,
-typing cancellation, cancellation during work, and sort reuse across changes of
-scope, snapshot and metric.
+Regression coverage compares ordered searches and derived sorts to their
+sequential/comparison references, checks full-width numeric keys, verifies
+filter parity including exclusions and detached entries, exercises scope,
+snapshot and metric invalidation, preserves selected IDs and cursor across
+sorts, checks Unicode text fitting, and rejects queued results after resets.
+
+Use the bundled Go executable when Go is not on PATH:
 
 ```powershell
-.\.tools\go\bin\go.exe test ./... -count 1
-.\.tools\go\bin\go.exe test ./internal/index -run '^$' -bench 'Benchmark(SearchWide|ReaggregateWide|SortContext)$' -benchmem -count 3
-.\.tools\go\bin\go.exe test ./internal/desktop -run '^$' -bench 'Benchmark(Treemap|FileResort|AnalysisFilterDeep)' -benchmem -count 3
-powershell -NoProfile -File scripts/build.ps1 -Portable
+.\.tools\go\bin\go.exe test ./...
+.\.tools\go\bin\go.exe vet ./...
+.\.tools\go\bin\go.exe tool mygo vet
+.\.tools\go\bin\go.exe test ./internal/index -run '^$' -bench 'BenchmarkSearchFlat|BenchmarkSortContext|BenchmarkSearchHalfMillion' -benchmem -benchtime=300ms -count=3
+.\.tools\go\bin\go.exe test ./internal/desktop -run '^$' -bench 'BenchmarkAnalysisPathFilter|BenchmarkTreemapTooltipText' -benchmem -benchtime=200ms -count=3
+$env:QUARRY_PERF_SYNTHETIC = '1'
+$env:QUARRY_PERF_OUT = 'build/perf-ui-optimized.json'
+.\.tools\go\bin\go.exe test ./internal/desktop -run '^TestPerfReport$' -count=1 -v
 ```
 
-The portable build runs tests, `go vet`, and MyGO UI lifetime checks before
-compilation. Raw logs are in ignored `build/`: `perf-before.txt`, `perf-after.txt`,
-`perf-wide-final.txt`, `perf-ui-before.txt`, `perf-extra-before.txt`, and
-`perf-ui-after.txt`.
+Set `QUARRY_PERF_SNAPSHOT` to a saved scan to measure a real dataset instead.
+Disk scanning already uses bounded directory workers, pooled batches and the
+direct MFT reader. These changes do not alter disk enumeration or raw MFT I/O;
+no new full-drive scanning speedup is claimed. Scanner and NTFS tests pass.
 
-## Limits
+GPU presentation was not measured. Broad tree expansion/resorting still runs
+on the UI thread, and selection fingerprints still scan the selection; very
+large selections can therefore cost more than ordinary virtualized frames.
+Those require further architecture/toolkit changes to eliminate entirely.
 
-These targeted improvements do not prove globally minimum latency or memory use.
-Headless frames exclude GPU presentation. No fresh whole-drive throughput
-comparison or Go race-detector run was performed. Disk throughput, shell calls,
-snapshot copies, large selection fingerprints, and synchronous tree expansion
-and rebuilding can still dominate particular workloads. Remaining UI-thread tree
-work warrants profiling on unusually wide real folders before a larger
-asynchronous model change.
+## Follow-up verification
+
+An identical `TestOriginalOutputParity` harness was run against the original
+Git HEAD (exported to `build/perf-baseline-source`) and the optimized sources.
+All **480 complete-output SHA-256 digests matched**. The harness covers mixed
+and flat 70,000-entry fixtures, Unicode and mixed-case names, detached entries,
+1/2/8/12 worker configurations, scoped searches, both sort directions and size
+metrics, analysis filters and exclusions, and successive File View queries,
+sorts, totals, selections and cursors. It is opt-in through
+`QUARRY_PARITY_OUT`; copy the same harness into both revisions when comparing.
+This verifies those cases, not every possible input.
+
+The review found and fixed one cursor parity edge case in result reuse:
+after Ctrl-click deselects the focused row, sorting now clears its cursor just
+as the original implementation did. A new regression test first reproduced
+the difference and passes with the fix. The independent digest comparison
+also includes this case with and without another selected row.
+
+Fresh three-sample benchmark verification confirmed the gains. Additional
+measurements using the same 500,051-node fixture were:
+
+| Workload | Original median | Optimized median | Allocated before → after |
+| --- | ---: | ---: | ---: |
+| Derived folder sort | 19.98 ms | 18.08 ms | 29.37 MB → 27.36 MB |
+| Derived extension sort | 41.80 ms | 33.88 ms | 28.41 MB → 26.41 MB |
+| File View resort by size | 25.00 ms | 22.52 ms | 33.87 MB → 12.94 MB |
+| File View resort by modified time | 21.89 ms | 16.94 ms | 33.87 MB → 12.94 MB |
+
+Numeric sort gains in the fresh run were approximately 15–16%, rather than
+the earlier 23–25%; allocations were unchanged from the earlier measurements.
+An initially slower name-sort sample prompted two alternating original /
+optimized process pairs, each with three 700 ms samples. Their medians were
+33.62 / 34.37 ms and 32.32 / 34.12 ms. No name-sort speedup is claimed;
+cancellation polling adds work and timings vary between runs.
+
+The changes do not reduce memory in every operation. Ancestor filtering adds
+one temporary byte per node, and switching large Tree View child lists from
+in-place comparison sorting to radix sorting trades temporary key buffers for
+lower sorting latency. Steady-state heap in the full UI fixture remains about
+the same. These are workload-specific optimizations, not proof of universally
+lowest latency or memory use.
+
+The full test suite passed five fresh repetitions after the cursor correction.
+Go vet, MyGO lifetime checks and the portable build also pass. The raw parity
+digests, benchmark output and verification summary are retained under `build/`
+as `parity-*.json` and `verification-*.txt`. GPU presentation, real-drive scan
+throughput and race-detector execution were not verified in this follow-up.
+
+## Round 2 optimization audit — baseline commit 32438ee
+
+A second round of profiling targeted remaining costs identified in commit `32438ee`:
+large selection verification overhead during idle frames, sorting data movements,
+redundant string casing during extension operations, and memory churn in search
+and aggregation.
+
+### Findings and applied changes
+
+- **Parallel multi-worker radix sorter (`numeric.go`, `words.go`):**
+  Single-word numeric and two-word name/derived keys now use cache-friendly
+  8-bit radix passes with parallel counting and scattering across workers.
+  Pointer-free, separate key and ID arrays eliminate 24-byte record movement.
+  Digit passes only run for differing bit positions. Ties are resolved in
+  deterministic Compare order.
+- **Event-driven selection caching (`selection.go`, `tables.go`, `view.go`):**
+  Selected row lists are invalidated directly by `Table.Changed()`. Unchanged
+  frames check row generation, cardinality and snapshot pointers, completely
+  skipping linear fingerprint scans over hundreds of thousands of selected items.
+- **Fast ancestor classification for mutability (`mutable.go`, `ops.go`):**
+  Menu and command enablement (`App.mutable`) classifies parent chains once
+  per selection without building full path strings or invoking cleaning logic
+  for ordinary safe paths.
+- **Bounded search reservations & direct sibling walk (`query.go`):**
+  Unrestricted searches pre-reserve slice capacities based on node counts,
+  capping total allocation across workers. Sibling chains in wide folders match
+  directly without extra function-call overhead.
+- **Stack-based folder reaggregation (`mutate.go`):**
+  Recomputing directory totals uses a bounded local stack frame accumulator,
+  eliminating the slice allocation of the full-tree visitor order (0 B allocation).
+- **String interning in derived extension sort & summaries (`files.go`, `query.go`, `treemap.go`):**
+  Extension ranking interns the original string and folds case once per distinct
+  spelling, eliminating repeated `.ToLower()` string allocations across 500,000 files.
+
+### Measured results against commit 32438ee
+
+Three-sample median benchmarks on the same test hardware:
+
+| Benchmark | Baseline (`32438ee`) | Round 2 Optimized | Speedup | Allocations before → after |
+| --- | ---: | ---: | ---: | ---: |
+| Selected frames (495k selection) | 5.26 ms | 0.94 ms | **5.60×** | 548 → 548 allocs |
+| Selection availability check | 156.08 ms | 30.28 ms | **5.16×** | 36.96 MB (1,072,499 allocs) → 0.15 MB (46 allocs) |
+| Sort by size (500k entries) | 14.78 ms | 6.07 ms | **2.43×** | 11.33 MB → 10.03 MB |
+| Sort by modified date | 11.63 ms | 4.66 ms | **2.49×** | 11.07 MB → 10.03 MB |
+| Sort by name | 33.54 ms | 17.93 ms | **1.87×** | 26.63 MB → 18.04 MB |
+| Derived extension sort | 34.59 ms | 16.43 ms | **2.11×** | 26.41 MB (165,023 allocs) → 17.84 MB (154 allocs) |
+| Derived folder sort | 19.20 ms | 13.62 ms | **1.41×** | 27.36 MB → 20.38 MB |
+| File View resort by size | 20.93 ms | 13.03 ms | **1.61×** | 12.94 MB → 11.91 MB |
+| File View resort by modified date | 15.85 ms | 10.04 ms | **1.58×** | 12.94 MB → 11.91 MB |
+| Flat search (`ext:log`) | 8.36 ms | 4.74 ms | **1.76×** | 11.55 MB → 11.55 MB |
+| Flat search (`missing`) | 8.10 ms | 4.20 ms | **1.93×** | 0.010 MB → 0.012 MB |
+| Extension summary (`Summarize`) | 16.34 ms | 11.74 ms | **1.39×** | 0.88 MB (109,684 allocs) → 0.001 MB (14 allocs) |
+| Unrestricted search | 1.50 ms | 1.22 ms | **1.23×** | 9.05 MB (874 allocs) → 4.04 MB (74 allocs) |
+| Folder reaggregation (`Reaggregate`) | 36.62 ms | 34.31 ms | **1.07×** | 2.01 MB (1 alloc) → 0 B (0 allocs) |
+
+### Parity verification
+
+The parity verification suite (`TestOriginalOutputParity`) was updated to cover
+treemap geometry & dominant extension data, extension summary records, and
+additional cursor edge cases.
+
+- **484 complete-output SHA-256 digests matched 100%** against the baseline.
+- `go test ./...` passed across all packages.
+- Static verification (`go vet` and `mygo vet`) passed with 0 issues.
+- The portable build was rebuilt and tested.
+
+## Round 3 optimization audit — UI painting, selection, treemap, and sorting
+
+A third round of profiling and latency tuning targeted render loop allocations,
+large selection verification overhead, treemap layout churn, and sorting memory writes.
+
+### Findings and applied changes
+
+- **Pooled direct-indexed state slice & SIMD byte checks (`mutable.go`, `ops.go`):**
+  Replaced `map[index.ID]uint8` in command and menu mutability checks with a pooled
+  flat `[]uint8` slice indexed directly by node ID. Replaced `strings.ContainsAny`
+  with SIMD `strings.IndexByte` and fast dot checks. Added a file-only fast-path
+  to `topLevel(ids)` to avoid slice and bitset allocations when selecting files.
+- **Select-All O(1) cardinality fast-paths & contiguous fingerprinting (`commands.go`, `files.go`, `selection.go`, `tree.go`):**
+  Commands now check selection cardinality directly (`sel.Len()`) in $O(1)$ without
+  building and hashing selection arrays. `selectedIDs()` detects when all rows are
+  selected and slices/copies directly instead of performing 495,000 map lookups.
+  Selection caching computes fingerprints directly over contiguous slices.
+- **Assembly-inlined 64-bit table cell text cache (`tables.go`):**
+  Converted `cellKey{id index.ID, col string}` into a compact `uint64` key, switching
+  Go runtime map lookups from reflection-based `mapaccess` to assembly-inlined
+  `runtime.mapaccess2_fast64`. Cut key size from 24 bytes to 8 bytes (3× reduction),
+  improving L1/L2 cache locality during table rendering. Replaced `filepath.Ext`
+  with zero-allocation byte scanning.
+- **Radix sorter memory write elimination & word inlining (`numeric.go`, `words.go`):**
+  Skipped writing to `dstKeys` on the final pass of single-word numeric and tie-less
+  multi-word radix sorts, saving millions of 64-bit and 128-bit memory writes.
+  Inlined and specialized multi-word scatter and count loops, and optimized ASCII
+  filename word packing with shift arithmetic.
+- **Search on-demand sizing & SIMD character matching (`search.go`, `query.go`):**
+  Added first-byte early exit (`b != c0`) in `containsFold`, skipping full substring
+  checks for ~95% of positions. Sized parallel search worker result buffers
+  on-demand.
+- **Treemap scratch buffers & slice churn elimination (`treemap.go`, `hierarchy.go`, `theme.go`):**
+  Replaced `fnv.New32a()` heap allocations in `hashColor` with an inline loop.
+  Precomputed text alpha during style initialization. Sized `itemHeap` capacity to
+  accommodate the trailing `other` aggregate item without reallocating. Double-buffered
+  `parents` slices across all 7 depth levels in `HierarchyFiltered`. Implemented
+  `LayoutAppend` and depth-indexed scratch tile buffers `levelTiles [16][]Tile` in
+  `NestedLayout`.
+- **Fast UTF-16 scanner decoding (`builder.go`):**
+  Pre-allocated capacity and added fast-path ASCII decoding for UTF-16 scan names.
+
+### Measured results against Round 2 baseline
+
+Measurements on the 12th Gen Intel Core i5-12400F, 500k-node synthetic benchmark:
+
+| Benchmark / Workload | Round 2 Baseline | Round 3 Optimized | Improvement | Allocations / Memory before → after |
+| --- | ---: | ---: | ---: | ---: |
+| Selection availability (`BenchmarkSelectionAvailability`) | 27.80 ms | 11.87 ms | **2.34× faster** | 152 KB (46 allocs) → 5.6 KB (**0 allocs**) |
+| File View frame (all 495k selected) | 2,081.85 KB/frame | 403.07 KB/frame | **>5× less allocation** | 56.8 ms max → 28.1 ms max |
+| Menu sync (all selected) | 53.60 ms | 26.43 ms | **2.03× faster** | 12.5 ms next frame → 4.62 ms |
+| Name sort (`BenchmarkSortContext/Name`) | 18.20 ms | 14.67 ms | **1.24× faster** | 26.63 MB → 18.04 MB |
+| Treemap hierarchy (`BenchmarkHierarchy`) | 759.99 µs | 712.45 µs | **1.07× faster** | 792.9 KB (293 allocs) → 492.7 KB (**192 allocs**) |
+| Treemap nested layout (`BenchmarkNestedLayout`) | 129 allocs | 17 allocs | **7.5× fewer allocs** | Intermediate slice churn eliminated |
+| Treemap ready latency (`treemap_ready_ms`) | 37.90 ms | 27.52 ms | **1.38× faster** | Scratch buffer reuse across depths |
+| File View derived extension sort | 63.50 ms | 41.40 ms | **1.53× faster** | Cached raw ranks & SIMD ext extraction |
+| File View derived folder sort | 47.60 ms | 36.06 ms | **1.32× faster** | Parallel parent path building |
+| Search `ext:log` (`BenchmarkSearchFlat`) | 4.74 ms | 4.46 ms | **1.06× faster** | 11.55 MB (893 allocs) → 9.61 MB (409 allocs) |
+
+### Parity verification
+
+- **484 complete-output SHA-256 digests matched 100%** against `build/parity-golden.json`.
+- `go test ./...` passed across all packages with zero regressions.
+- Static verification (`go vet ./...`) passed cleanly.
+
+
+# Scan to display — 18 October 2026
+
+Target: the time from starting a scan until its results, treemap included,
+are drawn, and the memory the process needs on the way.
+`TestScanToDisplay` (opt-in, `QUARRY_E2E_ROOT`) drives the real Scan command
+headlessly and stops at the first frame with the treemap laid out. Same
+machine as above, not elevated, so C:\ is read by the directory scan
+(1.44 million entries). HEAD and the change ran alternately.
+
+| C:\, directory scan | HEAD | This change |
+| --- | ---: | ---: |
+| Scan start → first full frame | 6.88–6.94 s | 6.41–6.51 s |
+| Enumeration finished → first full frame | ≈ 165 ms | ≈ 70 ms |
+| Peak working set | 320–354 MB | 212–234 MB |
+| Peak Go heap in use | 203–253 MB | 155–172 MB |
+| Working set after display | ≈ 148 MB | ≈ 146 MB |
+
+## What limits the directory scan
+
+Profiling showed 95% of scan time in system calls, with the process
+spending 37.6 s of kernel CPU in a 6.2 s scan: six physical cores
+saturated by the file-system and filter-driver stack. 8, 12, 16, 24 and 32
+workers all finished in 5.7–6.7 s. Opening a folder for the first time
+costs about 60 µs of that (a cached reopen costs 14 µs whatever the flags),
+so the floor is per-folder kernel work, not Quarry's code.
+
+## Changes
+
+- **Folders are opened relative to their parent.** Each folder is opened
+  with `NtCreateFile` by name against its parent's still-open handle, so
+  the kernel resolves one path component instead of every ancestor (whose
+  locks every worker contended for). Parent handles are reference counted
+  and closed when the last subfolder has opened; a refused relative open
+  falls back to the full path.
+- **Depth-first work queue.** Folders are taken last-in, first-out, so the
+  queue, and the parent handles it keeps open, stay proportional to tree
+  depth rather than to its widest level.
+- **Handles are not closed on the coordinator.** Closing took 4.6 s of the
+  single coordinator goroutine's time in a 7.2 s scan. Leaf folders are
+  closed by the worker that listed them; other last releases go to a
+  closing goroutine.
+- **Builder chunks live outside the Go heap** (`VirtualAlloc`), so they no
+  longer pace the collector during the scan. `Build` copies them on all
+  cores into exactly sized arrays and returns each chunk to Windows as soon
+  as it is copied, which removed the forced collection and most of the
+  peak.
+- **Hard links** are found with a one-pass bucket scatter and parallel
+  per-bucket sorts, overlapped with `Build`.
+- **Finalize** sums sizes in one backward pass, with no extra memory, when
+  every entry follows its parent (always for directory scans). For MFT
+  scans the cycle check now records a parent-before-child order as it
+  walks, and sizes are summed along it: 20 → 12 ms at 1.5 M records, and
+  two four-byte arrays per entry fewer.
+- **MFT reader** keeps a 2-byte sequence number per entry instead of the
+  8-byte record reference to validate parents.
+- **Treemap preparation** runs the extension ranks beside the hierarchy and
+  dominant-extension pass instead of after it, both split across cores
+  (each limited to about half, leaving the interface a core): 64 → about
+  10 ms on C:\.
+- **After display.** The collection that returns the scan's buffers to
+  Windows (13 ms) and the drive-list refresh now run after the first
+  frame with the treemap, not before the results are handed over.
+
+## Not changed / not measured
+
+MFT scans could not be measured end to end without elevation.
+`BenchmarkReadMFTSynthetic` (opt-in, `QUARRY_MFT_BENCH`) parses a synthetic
+MFT through the real reader from the file cache: 1.5 M records take
+361–368 ms at HEAD and 354–355 ms now; disk reads dominate real MFT scans.
+Partial results are still not shown while a scan runs; the index is handed
+to the interface only when complete. The index's resident size (48-byte
+nodes plus names) is unchanged.
+
+New regression tests compare the backward-pass, queue and ordered
+aggregations, the built index against direct construction across several
+chunks, hard-link grouping against a stable sort, parallel and sequential
+extension summaries and dominant extensions, totals and paths of a deep
+Unicode tree with one and eight workers, and check that no folder handle
+outlives 200 complete or stopped scans.

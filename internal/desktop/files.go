@@ -2,9 +2,10 @@ package desktop
 
 import (
 	"context"
-	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -16,21 +17,21 @@ import (
 // a search also matches folders unless it says type:file. Every match is
 // kept; the virtualized table only builds rows in view.
 type fileModel struct {
-	a            *App
-	ids          []index.ID
-	total        uint64
-	busy         bool
-	err          string
-	gen          uint64
-	cancel       context.CancelFunc
-	dirty        bool
-	due          time.Time
-	forSnap      *index.Snapshot // snapshot of the shown results
-	runFor       *index.Snapshot // snapshot of the running query
-	ran          string          // query of the shown results
-	ranScope     index.ID
-	forAllocated bool
-	scope        index.ID
+	a              *App
+	ids            []index.ID
+	total          uint64
+	busy           bool
+	err            string
+	gen            uint64
+	cancel         context.CancelFunc
+	dirty          bool
+	due            time.Time
+	forSnap        *index.Snapshot // snapshot of the shown results
+	runFor         *index.Snapshot // snapshot of the running query
+	ran            string          // query of the shown results
+	scope          index.ID
+	shownScope     index.ID
+	shownAllocated bool
 
 	list   ui.ListState
 	sel    ui.Selection[index.ID]
@@ -52,7 +53,7 @@ func (f *fileModel) reset() {
 	if f.cancel != nil {
 		f.cancel()
 	}
-	f.gen++ // invalidate results already queued on the UI thread
+	f.gen++ // reject completions already posted before cancellation
 	f.cancel, f.runFor, f.due = nil, nil, time.Time{}
 	cols := f.list.Columns
 	f.list = ui.ListState{Columns: cols}
@@ -89,8 +90,8 @@ func (f *fileModel) queryChanged(now time.Time) {
 	if f.cancel != nil {
 		f.cancel()
 	}
-	f.gen++ // an old query must not replace results during the debounce
-	f.busy = false
+	f.gen++
+	f.busy, f.runFor = false, nil
 	f.dirty = true
 	f.due = now.Add(60 * time.Millisecond)
 }
@@ -139,25 +140,33 @@ func (f *fileModel) run() {
 	f.cancel = cancel
 	f.busy, f.dirty, f.due, f.runFor = true, false, time.Time{}, a.snap
 	s, query, scope, order, allocated := a.snap, strings.TrimSpace(a.search), f.scope, f.sort, a.metricAllocated()
-	// Sorting a displayed query only needs a private copy of its immutable IDs.
-	// Reuse its total too: searching and walking all ancestors again adds latency.
-	reuse := f.forSnap == s && f.ran == query && f.ranScope == scope && f.forAllocated == allocated && f.err == ""
-	previous, previousTotal := f.ids, f.total
+	// Results remain immutable while a worker sorts its own copy. Changing
+	// order or size metric need not search the same snapshot and scope again.
+	reuse := f.forSnap == s && f.ran == query && f.shownScope == scope && f.err == ""
+	previous, previousTotal, sameMetric := f.ids, f.total, f.shownAllocated == allocated
 	go func() {
 		defer cancel()
 		filter, err := index.ParseFilter(query)
 		var ids []index.ID
 		var total uint64
-		if reuse {
-			ids, total = slices.Clone(previous), previousTotal
+		if err == nil && reuse {
+			ids = slices.Clone(previous)
 		} else if err == nil {
 			if filter.Kind == index.KindAny && query == "" {
 				filter.Kind = index.KindFiles
 			}
 			ids, err = s.Search(ctx, scope, &filter)
 		}
-		// Count each matched byte once: skip matches inside a matched folder.
-		if err == nil && !reuse {
+		if err == nil {
+			err = sortEntries(ctx, s, ids, order, allocated)
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		if err == nil && reuse && sameMetric {
+			total = previousTotal
+		} else if err == nil {
+			// Count each matched byte once: skip matches inside a matched folder.
 			matchedDirs := map[index.ID]bool{}
 			for i, id := range ids {
 				if i&4095 == 0 && ctx.Err() != nil {
@@ -189,9 +198,6 @@ func (f *fileModel) run() {
 				}
 			}
 		}
-		if err == nil {
-			err = sortEntries(ctx, s, ids, order, allocated)
-		}
 		if ctx.Err() != nil {
 			return
 		}
@@ -201,7 +207,6 @@ func (f *fileModel) run() {
 			}
 			f.busy, f.forSnap, f.ran = false, s, query
 			f.cancel, f.runFor = nil, nil
-			f.ranScope, f.forAllocated = scope, allocated
 			if err != nil {
 				f.err = err.Error()
 				return
@@ -212,7 +217,11 @@ func (f *fileModel) run() {
 			// Checked before the selection is cleared, without a map copy.
 			var kept []index.ID
 			cursor := -1
-			if f.sel.Len() > 0 {
+			if reuse {
+				if f.sel.Has(cid) {
+					cursor = slices.Index(ids, cid)
+				}
+			} else if f.sel.Len() > 0 {
 				for i, id := range ids {
 					if f.sel.Has(id) {
 						kept = append(kept, id)
@@ -223,11 +232,14 @@ func (f *fileModel) run() {
 				}
 			}
 			f.ids, f.total = ids, total
+			f.shownScope, f.shownAllocated = scope, allocated
 			f.idsGen++
-			f.sel.Clear()
 			f.cursor = cursor
-			for _, id := range kept {
-				f.sel.Add(id)
+			if !reuse {
+				f.sel.Clear()
+				for _, id := range kept {
+					f.sel.Add(id)
+				}
 			}
 			f.selCache.invalidate()
 			if f.cursor < 0 {
@@ -246,65 +258,87 @@ func (f *fileModel) run() {
 // over a second for a million files.
 func sortEntries(ctx context.Context, s *index.Snapshot, ids []index.ID, order ui.SortOrder, allocated bool) error {
 	desc := order.Descending
-	keyOf := func(rank func(index.ID) uint32) func(index.ID) uint64 {
-		return func(id index.ID) uint64 {
-			k := uint64(rank(id))
-			if desc {
-				k = ^k
-			}
-			return k
+	keyOf := func(rank uint32) uint64 {
+		k := uint64(rank)
+		if desc {
+			k = ^k
 		}
+		return k
 	}
 	switch order.Column {
 	case "Folder":
-		parentRank := make([]uint32, len(s.Nodes))
+		parentSeen := make([]bool, len(s.Nodes))
 		var parents []index.ID
-		for i, id := range ids {
-			if i&4095 == 0 && ctx.Err() != nil {
-				return ctx.Err()
-			}
-			if p := s.Nodes[id].Parent; p != index.None && parentRank[p] == 0 {
-				parentRank[p] = 1
+		for _, id := range ids {
+			if p := s.Nodes[id].Parent; p != index.None && !parentSeen[p] {
+				parentSeen[p] = true
 				parents = append(parents, p)
 			}
 		}
-		paths := make(map[index.ID]string, len(parents))
-		for i, p := range parents {
-			if i&1023 == 0 && ctx.Err() != nil {
-				return ctx.Err()
-			}
-			paths[p] = strings.ToLower(s.Path(p))
+		type parentPath struct {
+			id   index.ID
+			path string
 		}
-		slices.SortFunc(parents, func(x, y index.ID) int { return strings.Compare(paths[x], paths[y]) })
-		rank := uint32(0)
+		parentList := make([]parentPath, len(parents))
 		for i, p := range parents {
-			if i == 0 || paths[p] != paths[parents[i-1]] {
+			parentList[i].id = p
+		}
+		workers := min(runtime.GOMAXPROCS(0), max(1, len(parentList)/64))
+		var wg sync.WaitGroup
+		for w := 0; w < workers; w++ {
+			wg.Add(1)
+			go func(w int) {
+				defer wg.Done()
+				start := len(parentList) * w / workers
+				end := len(parentList) * (w + 1) / workers
+				for i := start; i < end; i++ {
+					parentList[i].path = strings.ToLower(s.Path(parentList[i].id))
+				}
+			}(w)
+		}
+		wg.Wait()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		slices.SortFunc(parentList, func(x, y parentPath) int { return strings.Compare(x.path, y.path) })
+		parentKeys := make([]uint64, len(s.Nodes))
+		rank := uint32(0)
+		for i, pp := range parentList {
+			if i == 0 || pp.path != parentList[i-1].path {
 				rank++
 			}
-			parentRank[p] = rank
+			parentKeys[pp.id] = keyOf(rank)
 		}
-		rankOf := func(id index.ID) uint32 {
+		zeroKey := keyOf(0)
+		folderKey := func(id index.ID) uint64 {
 			if p := s.Nodes[id].Parent; p != index.None {
-				return parentRank[p]
+				return parentKeys[p]
 			}
-			return 0
+			return zeroKey
 		}
 		// Within a folder, by name: the first eight name bytes in the key, the
 		// rest compared where those are equal.
 		name := func(id index.ID) uint64 { return s.NameKey(id, 0) }
-		return s.SortByKeys(ctx, ids, keyOf(rankOf), name, &index.Sort{Column: "Name"})
+		return s.SortByKeys(ctx, ids, folderKey, name, &index.Sort{Column: "Name"})
 	case "Extension":
-		// Cache by spelling, so a million .DLL files lowercase only once.
-		spellings := map[string]uint32{}
+		// Intern by the borrowed, original spelling first. Case folding once
+		// per distinct spelling avoids allocating ".TXT" -> ".txt" per file.
+		rawRanks := map[string]uint32{}
 		ranks := map[string]uint32{}
+		var lastRaw string
 		for i, id := range ids {
 			if i&4095 == 0 && ctx.Err() != nil {
 				return ctx.Err()
 			}
-			spellings[rawExtOf(s, id)] = 0
-		}
-		for ext := range spellings {
-			ranks[strings.ToLower(ext)] = 0
+			raw := rawExtOf(s, id)
+			if raw == lastRaw && i > 0 {
+				continue
+			}
+			lastRaw = raw
+			if _, ok := rawRanks[raw]; !ok {
+				rawRanks[raw] = 0
+				ranks[strings.ToLower(raw)] = 0
+			}
 		}
 		exts := make([]string, 0, len(ranks))
 		for e := range ranks {
@@ -314,10 +348,11 @@ func sortEntries(ctx context.Context, s *index.Snapshot, ids []index.ID, order u
 		for i, e := range exts {
 			ranks[e] = uint32(i)
 		}
-		for ext := range spellings {
-			spellings[ext] = ranks[strings.ToLower(ext)]
+		rawKeyRanks := make(map[string]uint64, len(rawRanks))
+		for raw := range rawRanks {
+			rawKeyRanks[raw] = keyOf(ranks[strings.ToLower(raw)])
 		}
-		rankOf := func(id index.ID) uint32 { return spellings[rawExtOf(s, id)] }
+		extensionKey := func(id index.ID) uint64 { return rawKeyRanks[rawExtOf(s, id)] }
 		// Within an extension, largest first, then by ID: exactly as
 		// Compare with Sort{Desc: true} orders them.
 		largest := func(id index.ID) uint64 {
@@ -326,7 +361,7 @@ func sortEntries(ctx context.Context, s *index.Snapshot, ids []index.ID, order u
 			}
 			return ^s.Nodes[id].Size
 		}
-		return s.SortByKeys(ctx, ids, keyOf(rankOf), largest, nil)
+		return s.SortByKeys(ctx, ids, extensionKey, largest, nil)
 	}
 	column := order.Column
 	if column == "% of Scan" {
@@ -343,7 +378,11 @@ func rawExtOf(s *index.Snapshot, id index.ID) string {
 	if s.Nodes[id].IsDir() {
 		return ""
 	}
-	return filepath.Ext(s.NameView(id))
+	name := s.NameView(id)
+	if i := strings.LastIndexByte(name, '.'); i >= 0 {
+		return name[i:]
+	}
+	return ""
 }
 
 func (f *fileModel) cursorID() index.ID {
@@ -369,6 +408,9 @@ func (f *fileModel) selectedIDs() []index.ID {
 				out = append(out, id)
 			}
 		case n > 1:
+			if n == len(f.ids) {
+				return append(out, f.ids...)
+			}
 			for _, id := range f.ids {
 				if f.sel.Has(id) {
 					out = append(out, id)

@@ -275,44 +275,99 @@ func (s *Snapshot) Reaggregate() {
 	_ = s.reaggregate(context.Background())
 }
 
-// reaggregate uses the parent/sibling links for a postorder traversal. It
-// needs no entry-sized order buffer, including for very wide or deep trees.
 func (s *Snapshot) reaggregate(ctx context.Context) error {
-	current, visited := ID(0), 0
-	for {
+	if len(s.Nodes) == 0 {
+		return ctx.Err()
+	}
+	if !s.Nodes[0].IsDir() {
+		return s.reaggregateAllContext(ctx)
+	}
+	// Accumulate into the current folder's frame, then write its node once.
+	// Normal trees need only a small stack, rather than one ID per entry.
+	type frame struct {
+		id, next        ID
+		size, allocated uint64
+		files, dirs     uint32
+	}
+	var local [64]frame
+	stack := local[:1]
+	stack[0] = frame{id: 0, next: s.Nodes[0].FirstChild}
+	visited := 0
+	for len(stack) > 0 {
 		if visited&4095 == 0 && ctx.Err() != nil {
 			return ctx.Err()
 		}
 		visited++
-		n := &s.Nodes[current]
-		if n.IsDir() {
-			n.Size, n.Allocated, n.Files, n.Dirs = 0, 0, 0, 0
-		}
-		if n.FirstChild != None {
-			current = n.FirstChild
+		top := &stack[len(stack)-1]
+		if top.next == None {
+			value := *top
+			n := &s.Nodes[value.id]
+			n.Size, n.Allocated, n.Files, n.Dirs = value.size, value.allocated, value.files, value.dirs
+			stack = stack[:len(stack)-1]
+			if len(stack) > 0 {
+				parent := &stack[len(stack)-1]
+				parent.size += value.size
+				parent.allocated += value.allocated
+				parent.files += value.files
+				parent.dirs += value.dirs + 1
+			}
 			continue
 		}
-		for {
-			if current == 0 {
-				return ctx.Err()
+		id := top.next
+		n := &s.Nodes[id]
+		top.next = n.NextSibling
+		if n.IsDir() {
+			if len(stack) == 256 {
+				return s.reaggregateAllContext(ctx)
 			}
-			n := s.Nodes[current]
-			p := &s.Nodes[n.Parent]
-			p.Size += n.Size
-			p.Allocated += n.Allocated
-			if n.IsDir() {
-				p.Files += n.Files
-				p.Dirs += n.Dirs + 1
-			} else {
-				p.Files++
-			}
-			if n.NextSibling != None {
-				current = n.NextSibling
-				break
-			}
-			current = n.Parent
+			stack = append(stack, frame{id: id, next: n.FirstChild})
+		} else if n.FirstChild != None {
+			// Preserve pathologically deep and unusual imported trees with
+			// the original algorithm. File values have not been modified.
+			return s.reaggregateAllContext(ctx)
+		} else {
+			top.size += n.Size
+			top.allocated += n.Allocated
+			top.files++
 		}
 	}
+	return ctx.Err()
+}
+
+func (s *Snapshot) reaggregateAll() {
+	_ = s.reaggregateAllContext(context.Background())
+}
+
+func (s *Snapshot) reaggregateAllContext(ctx context.Context) error {
+	order := make([]ID, 0, len(s.Nodes))
+	err := s.walk(ctx, 0, func(id ID) (bool, error) {
+		order = append(order, id)
+		if s.Nodes[id].IsDir() {
+			n := &s.Nodes[id]
+			n.Size, n.Allocated, n.Files, n.Dirs = 0, 0, 0, 0
+		}
+		return true, nil
+	})
+	if err != nil {
+		return err
+	}
+	for i := len(order) - 1; i > 0; i-- {
+		if i&4095 == 0 && ctx.Err() != nil {
+			return ctx.Err()
+		}
+		id := order[i]
+		n := s.Nodes[id]
+		p := &s.Nodes[n.Parent]
+		p.Size += n.Size
+		p.Allocated += n.Allocated
+		if n.IsDir() {
+			p.Files += n.Files
+			p.Dirs += n.Dirs + 1
+		} else {
+			p.Files++
+		}
+	}
+	return ctx.Err()
 }
 
 var ntfsMetadata = map[string]bool{"$mft": true, "$mftmirr": true, "$logfile": true, "$volume": true, "$attrdef": true, "$bitmap": true, "$boot": true, "$badclus": true, "$secure": true, "$upcase": true, "$extend": true, "$quota": true, "$objid": true, "$reparse": true}

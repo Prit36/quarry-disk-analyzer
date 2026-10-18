@@ -43,10 +43,12 @@ func (f analysisFilter) apply(ctx context.Context, base *index.Snapshot) (*index
 	}
 	exclude := scan.NewExclusions(splitPatterns(f.Exclude))
 	hasInclude := strings.TrimSpace(f.Include) != ""
-	var ancestors []bool
+	// Filtered visits each directory before its files. Cache inherited path
+	// matches there instead of walking every file's ancestors again.
+	var ancestorOK []bool
 	if include.AncestorTerms() {
-		ancestors = make([]bool, len(base.Nodes))
-		ancestors[0] = include.MatchPathComponent(base.Root)
+		ancestorOK = make([]bool, len(base.Nodes))
+		ancestorOK[0] = include.MatchPathComponent(base.Root)
 	}
 	keep := func(id index.ID) bool {
 		name := base.NameView(id)
@@ -56,13 +58,12 @@ func (f analysisFilter) apply(ctx context.Context, base *index.Snapshot) (*index
 		if !hasInclude {
 			return true
 		}
-		inherited := ancestors != nil && ancestors[base.Nodes[id].Parent]
+		inherited := ancestorOK != nil && ancestorOK[base.Nodes[id].Parent]
 		return include.MatchNode(name, base.Nodes[id], func() string { return base.Path(id) }, inherited)
 	}
 	drop := func(id index.ID) bool {
-		name := base.NameView(id)
-		if ancestors != nil {
-			ancestors[id] = ancestors[base.Nodes[id].Parent] || include.MatchPathComponent(name)
+		if ancestorOK != nil {
+			ancestorOK[id] = ancestorOK[base.Nodes[id].Parent] || include.MatchPathComponent(base.NameView(id))
 		}
 		if exclude.Empty() {
 			return false
@@ -71,7 +72,7 @@ func (f analysisFilter) apply(ctx context.Context, base *index.Snapshot) (*index
 		if exclude.NeedsPaths() {
 			path = base.Path(id)
 		}
-		return exclude.Match(name, path, true)
+		return exclude.Match(base.NameView(id), path, true)
 	}
 	isolate := f.Isolate || hasInclude
 	return base.Filtered(ctx, keep, drop, isolate)

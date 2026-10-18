@@ -10,12 +10,21 @@ import (
 	"syscall"
 )
 
-func enumerate(ctx context.Context, path string, emit func(*dirBatch) error) error {
-	f, err := os.Open(path)
+func closeDirectory(uintptr) {}
+
+// enumerate lists a folder by its path; dirHandle only satisfies the shared
+// walk here, without a handle.
+func enumerate(ctx context.Context, t task, emit func(*dirBatch) error) (*dirHandle, error) {
+	t.parent.release()
+	f, err := os.Open(t.path)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer f.Close()
+	return nil, readDirectory(ctx, f, emit)
+}
+
+func readDirectory(ctx context.Context, f *os.File, emit func(*dirBatch) error) error {
 	for {
 		if err := ctx.Err(); err != nil {
 			return err

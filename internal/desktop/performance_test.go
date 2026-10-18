@@ -138,7 +138,7 @@ func TestFilterAncestorCacheMatchesReference(t *testing.T) {
 		}
 		include.Kind = index.KindFiles
 		want, wantStats, err := s.Filtered(context.Background(), func(id index.ID) bool {
-			return include.MatchNode(s.NameView(id), s.Nodes[id], func() string { return s.Path(id) }, ancestorMatches(s, id, &include))
+			return include.MatchNode(s.NameView(id), s.Nodes[id], func() string { return s.Path(id) }, ancestorMatchesLocal(s, id, &include))
 		}, nil, true)
 		if err != nil || stats != wantStats || !slices.Equal(got.Nodes, want.Nodes) {
 			t.Fatalf("%q differs from the ancestor-walking reference: %v", query, err)
@@ -146,7 +146,7 @@ func TestFilterAncestorCacheMatchesReference(t *testing.T) {
 	}
 }
 
-func ancestorMatches(s *index.Snapshot, id index.ID, f *index.Filter) bool {
+func ancestorMatchesLocal(s *index.Snapshot, id index.ID, f *index.Filter) bool {
 	if !f.AncestorTerms() {
 		return false
 	}
@@ -223,7 +223,7 @@ func filePerformanceFixture() *index.Snapshot {
 	return s
 }
 
-func BenchmarkFileResort(b *testing.B) {
+func BenchmarkFileResortLocal(b *testing.B) {
 	b.Setenv("QUARRY_CONFIG_DIR", b.TempDir())
 	a := newApp()
 	a.setBase(filePerformanceFixture(), "synthetic.quarry", nil, false)

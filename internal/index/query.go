@@ -21,30 +21,39 @@ type Summary struct {
 }
 
 func (s *Snapshot) Summarize(ctx context.Context) (Summary, error) {
-	types := make(map[string]*FileType)
-	for i, n := range s.Nodes {
-		if i%4096 == 0 {
-			if err := ctx.Err(); err != nil {
-				return Summary{}, err
+	// Ranges of the index are tallied in parallel, then merged: the sums,
+	// and so the result, do not depend on the split. Half the cores are
+	// left to the caller, which runs it beside other work (the treemap's).
+	parts := min(max(1, runtime.GOMAXPROCS(0)/2), max(1, len(s.Nodes)/65536))
+	partial := make([]map[string]*FileType, parts)
+	errs := make([]error, parts)
+	var group sync.WaitGroup
+	for w := range parts {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			partial[w], errs[w] = s.summarizeRange(ctx, len(s.Nodes)*w/parts, len(s.Nodes)*(w+1)/parts)
+		}()
+	}
+	group.Wait()
+	for _, err := range errs {
+		if err != nil {
+			return Summary{}, err
+		}
+	}
+	types := partial[0]
+	for _, part := range partial[1:] {
+		for ext, v := range part {
+			if t := types[ext]; t != nil {
+				t.Bytes += v.Bytes
+				t.Allocated += v.Allocated
+				t.Count += v.Count
+			} else {
+				types[ext] = v
 			}
 		}
-		if n.IsDir() {
-			continue
-		}
-		ext := strings.ToLower(filepath.Ext(s.NameView(ID(i))))
-		if ext == "" {
-			ext = "(no extension)"
-		}
-		v := types[ext]
-		if v == nil {
-			v = &FileType{Extension: ext}
-			types[ext] = v
-		}
-		v.Bytes += n.Size
-		v.Allocated += n.Allocated
-		v.Count++
 	}
-	result := Summary{}
+	result := Summary{Types: make([]FileType, 0, len(types))}
 	for _, v := range types {
 		result.Types = append(result.Types, *v)
 	}
@@ -58,6 +67,48 @@ func (s *Snapshot) Summarize(ctx context.Context) (Summary, error) {
 		return strings.Compare(a.Extension, b.Extension)
 	})
 	return result, nil
+}
+
+// summarizeRange tallies the files among s.Nodes[lo:hi] by lower-case
+// extension.
+func (s *Snapshot) summarizeRange(ctx context.Context, lo, hi int) (map[string]*FileType, error) {
+	types := make(map[string]*FileType)
+	byExt := make(map[string]*FileType)
+	var last *FileType
+	var lastExt string
+	for i := lo; i < hi; i++ {
+		if (i-lo)%4096 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+		n := &s.Nodes[i]
+		if n.IsDir() {
+			continue
+		}
+		raw := filepath.Ext(s.NameView(ID(i)))
+		v := last
+		if v == nil || raw != lastExt {
+			v = byExt[raw]
+			if v == nil {
+				ext := strings.ToLower(raw)
+				if ext == "" {
+					ext = "(no extension)"
+				}
+				v = types[ext]
+				if v == nil {
+					v = &FileType{Extension: ext}
+					types[ext] = v
+				}
+				byExt[raw] = v
+			}
+			last, lastExt = v, raw
+		}
+		v.Bytes += n.Size
+		v.Allocated += n.Allocated
+		v.Count++
+	}
+	return types, nil
 }
 
 type Row struct {
@@ -202,52 +253,50 @@ func (s *Snapshot) matchEntry(id ID, f *Filter, ancestorOK []bool) bool {
 // searchPiece is a part of a search, in index order: either the whole subtree
 // of id (walk), or the matched entries already collected in ids.
 type searchPiece struct {
-	id     ID
-	end    ID // exclusive end of a run of sibling subtrees
-	walk   bool
-	weight uint64
-	ids    []ID
+	id      ID
+	last    ID // inclusive end of a consecutive run of siblings
+	walk    bool
+	weight  uint64
+	files   uint64
+	reserve int
+	ids     []ID
 }
 
-// searchPieces groups small sibling subtrees into a task. A folder with a
-// million files must not create a million tasks and result slices.
-func (s *Snapshot) searchPieces(ctx context.Context, dir ID, target uint64) ([]searchPiece, error) {
+// Batch small sibling subtrees together. A flat folder can contain millions
+// of files; allocating a task and result slice for each one costs far more
+// than matching them. Large subtrees remain individually splittable.
+func (s *Snapshot) searchPieces(ctx context.Context, parent ID, target uint64) ([]searchPiece, error) {
 	var pieces []searchPiece
-	p := searchPiece{id: None, walk: true}
-	visited := 0
-	for c := s.Nodes[dir].FirstChild; c != None; c = s.Nodes[c].NextSibling {
-		if visited&4095 == 0 && ctx.Err() != nil {
+	first, last := None, None
+	var weight uint64
+	var files uint64
+	count := 0
+	for c := s.Nodes[parent].FirstChild; c != None; c = s.Nodes[c].NextSibling {
+		if count&4095 == 0 && ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		visited++
-		n := s.Nodes[c]
-		weight := uint64(1)
+		count++
+		n := &s.Nodes[c]
+		w := uint64(1)
+		fileCount := uint64(1)
 		if n.IsDir() {
-			weight += uint64(n.Files) + uint64(n.Dirs)
+			w += uint64(n.Files) + uint64(n.Dirs)
+			fileCount = uint64(n.Files)
 		}
-		// Keep substantial subtrees independent for load balancing. Batching
-		// those as well leaves too few tasks on ordinary directory trees.
-		separate := weight >= 256
-		if p.id != None && (p.weight >= target || separate) {
-			p.end = c
-			pieces = append(pieces, p)
-			p = searchPiece{id: None, walk: true}
+		if first != None && weight+w > target {
+			pieces = append(pieces, searchPiece{id: first, last: last, walk: true, weight: weight, files: files})
+			first, weight, files = None, 0, 0
 		}
-		if p.id == None {
-			p.id = c
+		if first == None {
+			first = c
 		}
-		p.weight += weight
-		if separate {
-			p.end = n.NextSibling
-			pieces = append(pieces, p)
-			p = searchPiece{id: None, walk: true}
-		}
+		last, weight = c, weight+w
+		files += fileCount
 	}
-	if p.id != None {
-		p.end = None
-		pieces = append(pieces, p)
+	if first != None {
+		pieces = append(pieces, searchPiece{id: first, last: last, walk: true, weight: weight, files: files})
 	}
-	return pieces, ctx.Err()
+	return pieces, nil
 }
 
 // searchParallel walks the children of root on several goroutines. Folders
@@ -256,7 +305,7 @@ func (s *Snapshot) searchPieces(ctx context.Context, dir ID, target uint64) ([]s
 // concatenated in order are exactly the index order of a single walk. Pieces
 // touch disjoint entries of ancestorOK, which keeps the workers race free.
 func (s *Snapshot) searchParallel(ctx context.Context, root ID, f *Filter, ancestorOK []bool, workers int) ([]ID, error) {
-	target := max(uint64(1024), (uint64(s.Nodes[root].Files)+uint64(s.Nodes[root].Dirs))/uint64(max(1, 4*workers)))
+	target := max(uint64(1024), (uint64(s.Nodes[root].Files)+uint64(s.Nodes[root].Dirs))/uint64(4*workers))
 	pieces, err := s.searchPieces(ctx, root, target)
 	if err != nil {
 		return nil, err
@@ -264,7 +313,7 @@ func (s *Snapshot) searchParallel(ctx context.Context, root ID, f *Filter, ances
 	for len(pieces) < 4*workers {
 		best := -1
 		for i, p := range pieces {
-			if p.walk && p.end == s.Nodes[p.id].NextSibling && s.Nodes[p.id].IsDir() && s.Nodes[p.id].FirstChild != None && (best < 0 || p.weight > pieces[best].weight) {
+			if p.walk && p.id == p.last && s.Nodes[p.id].IsDir() && s.Nodes[p.id].FirstChild != None && (best < 0 || p.weight > pieces[best].weight) {
 				best = i
 			}
 		}
@@ -284,6 +333,29 @@ func (s *Snapshot) searchParallel(ctx context.Context, root ID, f *Filter, ances
 		pieces = slices.Replace(pieces, best, best+1, split...)
 	}
 	errs := make([]error, len(pieces))
+	unrestricted := *f
+	unrestricted.Kind = KindAny
+	reserve := unrestricted.Empty()
+	if reserve {
+		// Counts are hints, including on imported snapshots. Bound all
+		// reservations together so bad totals cannot multiply allocations.
+		remaining := uint64(len(s.Nodes))
+		for i := range pieces {
+			p := &pieces[i]
+			if !p.walk {
+				continue
+			}
+			capacity := p.weight
+			if f.Kind == KindFiles {
+				capacity = p.files
+			}
+			if f.Kind == KindFolders {
+				capacity -= p.files
+			}
+			p.reserve = int(min(capacity, remaining))
+			remaining -= uint64(p.reserve)
+		}
+	}
 	var next atomic.Int64
 	var wg sync.WaitGroup
 	for range min(workers, len(pieces)) {
@@ -297,9 +369,30 @@ func (s *Snapshot) searchParallel(ctx context.Context, root ID, f *Filter, ances
 				}
 				if pieces[i].walk {
 					p := &pieces[i]
-					for c := p.id; c != p.end; c = s.Nodes[c].NextSibling {
-						p.ids, errs[i] = s.searchSubtree(ctx, c, root, f, ancestorOK, p.ids)
-						if errs[i] != nil {
+					if reserve {
+						p.ids = make([]ID, 0, p.reserve)
+					}
+					count := 0
+					for c := p.id; ; c = s.Nodes[c].NextSibling {
+						if count&4095 == 0 && ctx.Err() != nil {
+							errs[i] = ctx.Err()
+							break
+						}
+						count++
+						if s.Nodes[c].FirstChild == None {
+							if s.matchEntry(c, f, ancestorOK) {
+								if p.ids == nil {
+									p.ids = make([]ID, 0, min(1024, int(p.weight)))
+								}
+								p.ids = append(p.ids, c)
+							}
+						} else {
+							if p.ids == nil {
+								p.ids = make([]ID, 0, min(1024, int(p.weight)))
+							}
+							p.ids, errs[i] = s.searchSubtree(ctx, c, root, f, ancestorOK, p.ids)
+						}
+						if errs[i] != nil || c == p.last {
 							break
 						}
 					}
@@ -331,6 +424,9 @@ func (s *Snapshot) displayName(id ID) string {
 }
 
 func containsFold(s, lower string) bool {
+	if len(lower) == 0 {
+		return true
+	}
 	// ASCII names avoid allocating a lowercase copy per file. Unicode retains
 	// correct case-insensitive matching through the standard library fallback.
 	for i := 0; i < len(s); i++ {
@@ -338,14 +434,24 @@ func containsFold(s, lower string) bool {
 			return strings.Contains(strings.ToLower(s), lower)
 		}
 	}
-	for i := 0; i+len(lower) <= len(s); i++ {
+	c0 := lower[0]
+	n := len(lower)
+	maxI := len(s) - n
+	for i := 0; i <= maxI; i++ {
+		b := s[i]
+		if b >= 'A' && b <= 'Z' {
+			b += 32
+		}
+		if b != c0 {
+			continue
+		}
 		match := true
-		for j := range len(lower) {
-			b := s[i+j]
-			if b >= 'A' && b <= 'Z' {
-				b += 32
+		for j := 1; j < n; j++ {
+			c := s[i+j]
+			if c >= 'A' && c <= 'Z' {
+				c += 32
 			}
-			if b != lower[j] {
+			if c != lower[j] {
 				match = false
 				break
 			}

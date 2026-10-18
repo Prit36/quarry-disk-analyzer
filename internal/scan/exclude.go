@@ -62,8 +62,7 @@ func NewExclusions(patterns []string) Exclusions {
 func (e Exclusions) Empty() bool        { return len(e.raw) == 0 }
 func (e Exclusions) Patterns() []string { return e.raw }
 
-// NeedsPaths reports whether folder paths take part in matching. Callers can
-// skip constructing paths for exclusions that only inspect entry names.
+// NeedsPaths reports whether full folder paths are required by Match.
 func (e Exclusions) NeedsPaths() bool { return len(e.paths) > 0 }
 
 // Match reports whether an entry with this name and full path is excluded.

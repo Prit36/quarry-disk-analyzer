@@ -92,6 +92,8 @@ type App struct {
 	messageAt time.Time
 	errorMsg  bool
 
+	trimPending bool // a scan's transient memory is to be released after display
+
 	selFacts selectionFacts // cached facts about the active selection
 	mutMemo  mutableMemo    // cached answer of mutable for the active selection
 
@@ -245,16 +247,11 @@ func (a *App) startScan() {
 		if err == nil {
 			meta = hideMetadata(s, hide) // off the UI thread
 		}
-		// Return the scan's transient buffers to Windows now: otherwise the
-		// working set stays near the scan's peak until the runtime gets to it.
-		debug.FreeOSMemory()
-		drives := platform.Drives()
 		a.post(func() {
 			if gen != a.scanGen {
 				return
 			}
 			a.scanning, a.cancelScan = false, nil
-			a.drives = drives
 			if a.win != nil {
 				a.win.SetProgressBar(mygo.ProgressBar{})
 			}
@@ -269,6 +266,7 @@ func (a *App) startScan() {
 			a.prefs.Recent = remember(a.prefs.Recent, s.Root, 12)
 			a.menu.recentChanged = true
 			a.setBase(s, "", meta, hide)
+			a.trimPending = true
 			switch {
 			case s.Cancelled:
 				a.notify("Scan stopped after %s. Results are partial.", duration(s.Elapsed))
@@ -276,7 +274,21 @@ func (a *App) startScan() {
 				a.notify("Scan completed in %s.", duration(s.Elapsed))
 			}
 		})
+		// Free space may have changed; the results are shown first.
+		drives := platform.Drives()
+		a.post(func() { a.drives = drives })
 	}()
+}
+
+// trimAfterShown returns the scan's transient buffers to Windows once its
+// results are on screen, treemap included: otherwise the working set stays
+// near the scan's peak until the runtime gets to it, but doing it before
+// would delay the display.
+func (a *App) trimAfterShown() {
+	if a.trimPending && a.snap != nil && !a.filterBusy && !a.tm.busy {
+		a.trimPending = false
+		go debug.FreeOSMemory()
+	}
 }
 
 func (a *App) stopScan() {
@@ -399,6 +411,9 @@ func (a *App) applyFilter() {
 	a.filterBusy = true
 	go func() {
 		defer cancel()
+		if ctx.Err() != nil {
+			return
+		}
 		if toggle {
 			base = base.Clone()
 			if hide {
