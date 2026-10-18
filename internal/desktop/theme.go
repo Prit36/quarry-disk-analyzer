@@ -3,7 +3,6 @@ package desktop
 import (
 	"embed"
 	"fmt"
-	"hash/fnv"
 	"strconv"
 	"strings"
 	"time"
@@ -230,9 +229,11 @@ var categorical = []ui.Color{
 }
 
 func hashColor(s string) ui.Color {
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(s))
-	c := categorical[h.Sum32()%uint32(len(categorical))]
+	h := uint32(2166136261)
+	for i := 0; i < len(s); i++ {
+		h = (h ^ uint32(s[i])) * 16777619
+	}
+	c := categorical[h%uint32(len(categorical))]
 	return c.Mix(ui.Hex("#808080"), .45)
 }
 

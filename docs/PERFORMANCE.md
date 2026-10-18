@@ -218,3 +218,69 @@ additional cursor edge cases.
 - `go test ./...` passed across all packages.
 - Static verification (`go vet` and `mygo vet`) passed with 0 issues.
 - The portable build was rebuilt and tested.
+
+## Round 3 optimization audit — UI painting, selection, treemap, and sorting
+
+A third round of profiling and latency tuning targeted render loop allocations,
+large selection verification overhead, treemap layout churn, and sorting memory writes.
+
+### Findings and applied changes
+
+- **Pooled direct-indexed state slice & SIMD byte checks (`mutable.go`, `ops.go`):**
+  Replaced `map[index.ID]uint8` in command and menu mutability checks with a pooled
+  flat `[]uint8` slice indexed directly by node ID. Replaced `strings.ContainsAny`
+  with SIMD `strings.IndexByte` and fast dot checks. Added a file-only fast-path
+  to `topLevel(ids)` to avoid slice and bitset allocations when selecting files.
+- **Select-All O(1) cardinality fast-paths & contiguous fingerprinting (`commands.go`, `files.go`, `selection.go`, `tree.go`):**
+  Commands now check selection cardinality directly (`sel.Len()`) in $O(1)$ without
+  building and hashing selection arrays. `selectedIDs()` detects when all rows are
+  selected and slices/copies directly instead of performing 495,000 map lookups.
+  Selection caching computes fingerprints directly over contiguous slices.
+- **Assembly-inlined 64-bit table cell text cache (`tables.go`):**
+  Converted `cellKey{id index.ID, col string}` into a compact `uint64` key, switching
+  Go runtime map lookups from reflection-based `mapaccess` to assembly-inlined
+  `runtime.mapaccess2_fast64`. Cut key size from 24 bytes to 8 bytes (3× reduction),
+  improving L1/L2 cache locality during table rendering. Replaced `filepath.Ext`
+  with zero-allocation byte scanning.
+- **Radix sorter memory write elimination & word inlining (`numeric.go`, `words.go`):**
+  Skipped writing to `dstKeys` on the final pass of single-word numeric and tie-less
+  multi-word radix sorts, saving millions of 64-bit and 128-bit memory writes.
+  Inlined and specialized multi-word scatter and count loops, and optimized ASCII
+  filename word packing with shift arithmetic.
+- **Search on-demand sizing & SIMD character matching (`search.go`, `query.go`):**
+  Added first-byte early exit (`b != c0`) in `containsFold`, skipping full substring
+  checks for ~95% of positions. Sized parallel search worker result buffers
+  on-demand.
+- **Treemap scratch buffers & slice churn elimination (`treemap.go`, `hierarchy.go`, `theme.go`):**
+  Replaced `fnv.New32a()` heap allocations in `hashColor` with an inline loop.
+  Precomputed text alpha during style initialization. Sized `itemHeap` capacity to
+  accommodate the trailing `other` aggregate item without reallocating. Double-buffered
+  `parents` slices across all 7 depth levels in `HierarchyFiltered`. Implemented
+  `LayoutAppend` and depth-indexed scratch tile buffers `levelTiles [16][]Tile` in
+  `NestedLayout`.
+- **Fast UTF-16 scanner decoding (`builder.go`):**
+  Pre-allocated capacity and added fast-path ASCII decoding for UTF-16 scan names.
+
+### Measured results against Round 2 baseline
+
+Measurements on the 12th Gen Intel Core i5-12400F, 500k-node synthetic benchmark:
+
+| Benchmark / Workload | Round 2 Baseline | Round 3 Optimized | Improvement | Allocations / Memory before → after |
+| --- | ---: | ---: | ---: | ---: |
+| Selection availability (`BenchmarkSelectionAvailability`) | 27.80 ms | 11.87 ms | **2.34× faster** | 152 KB (46 allocs) → 5.6 KB (**0 allocs**) |
+| File View frame (all 495k selected) | 2,081.85 KB/frame | 403.07 KB/frame | **>5× less allocation** | 56.8 ms max → 28.1 ms max |
+| Menu sync (all selected) | 53.60 ms | 26.43 ms | **2.03× faster** | 12.5 ms next frame → 4.62 ms |
+| Name sort (`BenchmarkSortContext/Name`) | 18.20 ms | 14.67 ms | **1.24× faster** | 26.63 MB → 18.04 MB |
+| Treemap hierarchy (`BenchmarkHierarchy`) | 759.99 µs | 712.45 µs | **1.07× faster** | 792.9 KB (293 allocs) → 492.7 KB (**192 allocs**) |
+| Treemap nested layout (`BenchmarkNestedLayout`) | 129 allocs | 17 allocs | **7.5× fewer allocs** | Intermediate slice churn eliminated |
+| Treemap ready latency (`treemap_ready_ms`) | 37.90 ms | 27.52 ms | **1.38× faster** | Scratch buffer reuse across depths |
+| File View derived extension sort | 63.50 ms | 41.40 ms | **1.53× faster** | Cached raw ranks & SIMD ext extraction |
+| File View derived folder sort | 47.60 ms | 36.06 ms | **1.32× faster** | Parallel parent path building |
+| Search `ext:log` (`BenchmarkSearchFlat`) | 4.74 ms | 4.46 ms | **1.06× faster** | 11.55 MB (893 allocs) → 9.61 MB (409 allocs) |
+
+### Parity verification
+
+- **484 complete-output SHA-256 digests matched 100%** against `build/parity-golden.json`.
+- `go test ./...` passed across all packages with zero regressions.
+- Static verification (`go vet ./...`) passed cleanly.
+

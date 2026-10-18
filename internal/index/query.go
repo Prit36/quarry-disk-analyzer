@@ -333,9 +333,15 @@ func (s *Snapshot) searchParallel(ctx context.Context, root ID, f *Filter, ances
 						count++
 						if s.Nodes[c].FirstChild == None {
 							if s.matchEntry(c, f, ancestorOK) {
+								if p.ids == nil {
+									p.ids = make([]ID, 0, min(1024, int(p.weight)))
+								}
 								p.ids = append(p.ids, c)
 							}
 						} else {
+							if p.ids == nil {
+								p.ids = make([]ID, 0, min(1024, int(p.weight)))
+							}
 							p.ids, errs[i] = s.searchSubtree(ctx, c, root, f, ancestorOK, p.ids)
 						}
 						if errs[i] != nil || c == p.last {
@@ -370,6 +376,9 @@ func (s *Snapshot) displayName(id ID) string {
 }
 
 func containsFold(s, lower string) bool {
+	if len(lower) == 0 {
+		return true
+	}
 	// ASCII names avoid allocating a lowercase copy per file. Unicode retains
 	// correct case-insensitive matching through the standard library fallback.
 	for i := 0; i < len(s); i++ {
@@ -377,14 +386,24 @@ func containsFold(s, lower string) bool {
 			return strings.Contains(strings.ToLower(s), lower)
 		}
 	}
-	for i := 0; i+len(lower) <= len(s); i++ {
+	c0 := lower[0]
+	n := len(lower)
+	maxI := len(s) - n
+	for i := 0; i <= maxI; i++ {
+		b := s[i]
+		if b >= 'A' && b <= 'Z' {
+			b += 32
+		}
+		if b != c0 {
+			continue
+		}
 		match := true
-		for j := range len(lower) {
-			b := s[i+j]
-			if b >= 'A' && b <= 'Z' {
-				b += 32
+		for j := 1; j < n; j++ {
+			c := s[i+j]
+			if c >= 'A' && c <= 'Z' {
+				c += 32
 			}
-			if b != lower[j] {
+			if c != lower[j] {
 				match = false
 				break
 			}

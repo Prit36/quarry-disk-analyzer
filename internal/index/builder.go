@@ -125,7 +125,16 @@ func (b *Builder) Build() *Snapshot {
 // intermediate allocations. Unpaired surrogates become U+FFFD, as with
 // unicode/utf16.Decode.
 func AppendUTF16(dst []byte, b []byte) []byte {
+	needed := len(b) / 2
+	if cap(dst)-len(dst) < needed {
+		dst = slices.Grow(dst, needed)
+	}
 	for i := 0; i+1 < len(b); i += 2 {
+		low, high := b[i], b[i+1]
+		if high == 0 && low < utf8.RuneSelf {
+			dst = append(dst, low)
+			continue
+		}
 		u := rune(binary.LittleEndian.Uint16(b[i:]))
 		switch {
 		case u < utf8.RuneSelf:

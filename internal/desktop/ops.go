@@ -78,6 +78,16 @@ func (a *App) topLevel(ids []index.ID) []index.ID {
 		return ids
 	}
 	// Only folders can cover other entries.
+	hasDir := false
+	for _, id := range ids {
+		if a.snap.Nodes[id].IsDir() {
+			hasDir = true
+			break
+		}
+	}
+	if !hasDir {
+		return ids
+	}
 	var set []bool
 	for _, id := range ids {
 		if a.snap.Nodes[id].IsDir() {
@@ -86,9 +96,6 @@ func (a *App) topLevel(ids []index.ID) []index.ID {
 			}
 			set[id] = true
 		}
-	}
-	if set == nil {
-		return ids
 	}
 	out := make([]index.ID, 0, len(ids))
 	for _, id := range ids {

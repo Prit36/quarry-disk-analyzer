@@ -55,8 +55,9 @@ type tileKey struct {
 }
 
 type cellStyle struct {
-	color ui.Color // tile fill, or a group's frame
-	text  ui.Color
+	color     ui.Color // tile fill, or a group's frame
+	text      ui.Color
+	textAlpha ui.Color
 	// lightEnd and darkEnd are the tile's gradient ends for color, so the
 	// paint loop does not derive them for every tile on every frame.
 	lightEnd, darkEnd ui.Color
@@ -93,10 +94,12 @@ func (m *treemapModel) ensureStyles(s *index.Snapshot, dark bool) {
 				}
 			}
 			st.color, st.text = frame, readableOn(frame)
+			st.textAlpha = st.text.Alpha(.8)
 			st.name = a.name(cell.Tile.ID) + "  " + a.size(cell.Tile.Bytes)
 			continue
 		}
 		st.color, st.text = col, readableOn(col)
+		st.textAlpha = st.text.Alpha(.8)
 		st.lightEnd, st.darkEnd = col.Mix(ui.Hex("#FFFFFF"), .10), col.Mix(ui.Hex("#000000"), .18)
 		st.name = "Smaller items"
 		if !cell.Tile.Other {
@@ -321,7 +324,7 @@ func (m *treemapModel) color(s *index.Snapshot, cell treemap.Cell, dark bool) ui
 	if n.IsDir() {
 		return neutral
 	}
-	ext := strings.ToLower(filepath.Ext(s.NameView(id)))
+	ext := strings.ToLower(rawExtOf(s, id))
 	if ext == "" {
 		ext = "(no extension)"
 	}
@@ -337,7 +340,7 @@ func (m *treemapModel) cellExt(s *index.Snapshot, cell treemap.Cell) string {
 	if cell.Tile.Other || cell.Group || s.Nodes[cell.Tile.ID].IsDir() {
 		return ""
 	}
-	ext := strings.ToLower(filepath.Ext(s.NameView(cell.Tile.ID)))
+	ext := strings.ToLower(rawExtOf(s, cell.Tile.ID))
 	if ext == "" {
 		ext = "(no extension)"
 	}
@@ -594,7 +597,7 @@ func (a *App) treemapView(c *ui.Context, pal palette) {
 				p.Clip(ui.Rect{X: rect.X + 2, Y: rect.Y, W: rect.W - 4, H: rect.H}, 0, func() {
 					p.Text(rect.X+4, rect.Y+2, st.name, 11, fg)
 					if rect.H > 32 {
-						p.Text(rect.X+4, rect.Y+16, st.size, 11, fg.Alpha(.8))
+						p.Text(rect.X+4, rect.Y+16, st.size, 11, st.textAlpha)
 					}
 				})
 			}

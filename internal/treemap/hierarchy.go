@@ -37,18 +37,19 @@ func HierarchyFiltered(ctx context.Context, s *index.Snapshot, root index.ID, al
 		return branches
 	}
 	branches := build(root, min(remaining, 96))
-	parents := []*Branch{}
+	parents := make([]*Branch, 0, 128)
+	nextParents := make([]*Branch, 0, 128)
 	collect := func(nodes []Branch) {
 		for position := range nodes {
 			if !nodes[position].Item.Other && s.Nodes[nodes[position].Item.ID].IsDir() {
-				parents = append(parents, &nodes[position])
+				nextParents = append(nextParents, &nodes[position])
 			}
 		}
 	}
 	collect(branches)
+	parents, nextParents = nextParents, parents
 	for depth := 0; depth < 7 && len(parents) > 0 && remaining >= 2 && ctx.Err() == nil; depth++ {
 		level := parents
-		parents = nil
 		for position, parent := range level {
 			if remaining < 2 || ctx.Err() != nil {
 				break
@@ -57,6 +58,7 @@ func HierarchyFiltered(ctx context.Context, s *index.Snapshot, root index.ID, al
 			parent.Children = build(parent.Item.ID, min(remaining, limit))
 			collect(parent.Children)
 		}
+		parents, nextParents = nextParents, level[:0]
 	}
 	return branches
 }
@@ -72,16 +74,26 @@ func countBranches(branches []Branch) int {
 
 func NestedLayout(branches []Branch, bounds Rect) []Cell {
 	cells := make([]Cell, 0, countBranches(branches))
-	// items is scratch space: Layout copies what it needs into its tiles, so
-	// one buffer serves every folder, including the nested ones.
-	var items []Item
+	// items and levelTiles are scratch space: one buffer per depth level serves
+	// every folder, eliminating intermediate slice allocations during recursion.
+	items := make([]Item, 0, 128)
+	var levelTiles [16][]Tile
+	for i := range levelTiles {
+		levelTiles[i] = make([]Tile, 0, 128)
+	}
 	var layout func([]Branch, Rect, int)
 	layout = func(nodes []Branch, r Rect, depth int) {
 		items = items[:0]
 		for _, n := range nodes {
 			items = append(items, n.Item)
 		}
-		tiles := Layout(items, r)
+		var tiles []Tile
+		if depth < len(levelTiles) {
+			tiles = LayoutAppend(items, r, levelTiles[depth][:0])
+			levelTiles[depth] = tiles
+		} else {
+			tiles = Layout(items, r)
+		}
 		for i, tile := range tiles {
 			r := tile.Rect
 			group := len(nodes[i].Children) > 0 && r.W >= 18 && r.H >= 18

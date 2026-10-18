@@ -3,7 +3,6 @@ package index
 import (
 	"fmt"
 	"math"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -436,11 +435,13 @@ func (f *Filter) MatchNode(name string, n Node, path func() string, ancestor boo
 	if len(f.extensions) > 0 {
 		ext := ""
 		if !n.IsDir() {
-			ext = filepath.Ext(name)
+			if i := strings.LastIndexByte(name, '.'); i >= 0 {
+				ext = name[i:]
+			}
 		}
 		found := false
 		for _, want := range f.extensions {
-			if strings.EqualFold(ext, want) {
+			if equalFoldASCII(ext, want) || strings.EqualFold(ext, want) {
 				found = true
 				break
 			}

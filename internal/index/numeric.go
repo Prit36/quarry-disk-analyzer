@@ -64,7 +64,7 @@ func sortNumeric(ctx context.Context, ids []ID, key func(ID) uint64) error {
 	hist := make([]uint32, workers*256)
 	srcIDs, dstIDs := ids, make([]ID, len(ids))
 	srcKeys, dstKeys := keys, make([]uint64, len(ids))
-	for _, slot := range slots[:n] {
+	for pass, slot := range slots[:n] {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -90,29 +90,52 @@ func sortNumeric(ctx context.Context, ids []ID, key func(ID) uint64) error {
 				hist[p], sum = sum, sum+hist[p]
 			}
 		}
+		isLast := (pass == n-1)
 		run(func(w, start, end int) {
 			counts := hist[w*256 : (w+1)*256]
-			if slot < 4 {
-				shift := uint(slot * 8)
-				for i := start; i < end; i++ {
-					d := uint32(srcIDs[i]) >> shift & 255
-					p := counts[d]
-					dstIDs[p], dstKeys[p] = srcIDs[i], srcKeys[i]
-					counts[d]++
+			if isLast {
+				if slot < 4 {
+					shift := uint(slot * 8)
+					for i := start; i < end; i++ {
+						d := uint32(srcIDs[i]) >> shift & 255
+						p := counts[d]
+						dstIDs[p] = srcIDs[i]
+						counts[d]++
+					}
+				} else {
+					shift := uint((slot - 4) * 8)
+					for i := start; i < end; i++ {
+						d := srcKeys[i] >> shift & 255
+						p := counts[d]
+						dstIDs[p] = srcIDs[i]
+						counts[d]++
+					}
 				}
 			} else {
-				shift := uint((slot - 4) * 8)
-				for i := start; i < end; i++ {
-					d := srcKeys[i] >> shift & 255
-					p := counts[d]
-					dstIDs[p], dstKeys[p] = srcIDs[i], srcKeys[i]
-					counts[d]++
+				if slot < 4 {
+					shift := uint(slot * 8)
+					for i := start; i < end; i++ {
+						d := uint32(srcIDs[i]) >> shift & 255
+						p := counts[d]
+						dstIDs[p], dstKeys[p] = srcIDs[i], srcKeys[i]
+						counts[d]++
+					}
+				} else {
+					shift := uint((slot - 4) * 8)
+					for i := start; i < end; i++ {
+						d := srcKeys[i] >> shift & 255
+						p := counts[d]
+						dstIDs[p], dstKeys[p] = srcIDs[i], srcKeys[i]
+						counts[d]++
+					}
 				}
 			}
 		})
 		srcIDs, dstIDs = dstIDs, srcIDs
 		srcKeys, dstKeys = dstKeys, srcKeys
 	}
-	copy(ids, srcIDs)
+	if &ids[0] != &srcIDs[0] {
+		copy(ids, srcIDs)
+	}
 	return ctx.Err()
 }

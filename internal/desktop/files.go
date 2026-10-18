@@ -2,9 +2,10 @@ package desktop
 
 import (
 	"context"
-	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -264,34 +265,54 @@ func sortEntries(ctx context.Context, s *index.Snapshot, ids []index.ID, order u
 	}
 	switch order.Column {
 	case "Folder":
-		parentRank := make([]uint32, len(s.Nodes))
+		parentSeen := make([]bool, len(s.Nodes))
 		var parents []index.ID
 		for _, id := range ids {
-			if p := s.Nodes[id].Parent; p != index.None && parentRank[p] == 0 {
-				parentRank[p] = 1
+			if p := s.Nodes[id].Parent; p != index.None && !parentSeen[p] {
+				parentSeen[p] = true
 				parents = append(parents, p)
 			}
 		}
-		paths := make(map[index.ID]string, len(parents))
-		for i, p := range parents {
-			if i&1023 == 0 && ctx.Err() != nil {
-				return ctx.Err()
-			}
-			paths[p] = strings.ToLower(s.Path(p))
+		type parentPath struct {
+			id   index.ID
+			path string
 		}
-		slices.SortFunc(parents, func(x, y index.ID) int { return strings.Compare(paths[x], paths[y]) })
-		rank := uint32(0)
+		parentList := make([]parentPath, len(parents))
 		for i, p := range parents {
-			if i == 0 || paths[p] != paths[parents[i-1]] {
+			parentList[i].id = p
+		}
+		workers := min(runtime.GOMAXPROCS(0), max(1, len(parentList)/64))
+		var wg sync.WaitGroup
+		for w := 0; w < workers; w++ {
+			wg.Add(1)
+			go func(w int) {
+				defer wg.Done()
+				start := len(parentList) * w / workers
+				end := len(parentList) * (w + 1) / workers
+				for i := start; i < end; i++ {
+					parentList[i].path = strings.ToLower(s.Path(parentList[i].id))
+				}
+			}(w)
+		}
+		wg.Wait()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		slices.SortFunc(parentList, func(x, y parentPath) int { return strings.Compare(x.path, y.path) })
+		parentKeys := make([]uint64, len(s.Nodes))
+		rank := uint32(0)
+		for i, pp := range parentList {
+			if i == 0 || pp.path != parentList[i-1].path {
 				rank++
 			}
-			parentRank[p] = rank
+			parentKeys[pp.id] = keyOf(rank)
 		}
+		zeroKey := keyOf(0)
 		folderKey := func(id index.ID) uint64 {
 			if p := s.Nodes[id].Parent; p != index.None {
-				return keyOf(parentRank[p])
+				return parentKeys[p]
 			}
-			return keyOf(0)
+			return zeroKey
 		}
 		// Within a folder, by name: the first eight name bytes in the key, the
 		// rest compared where those are equal.
@@ -302,11 +323,16 @@ func sortEntries(ctx context.Context, s *index.Snapshot, ids []index.ID, order u
 		// per distinct spelling avoids allocating ".TXT" -> ".txt" per file.
 		rawRanks := map[string]uint32{}
 		ranks := map[string]uint32{}
+		var lastRaw string
 		for i, id := range ids {
 			if i&4095 == 0 && ctx.Err() != nil {
 				return ctx.Err()
 			}
 			raw := rawExtOf(s, id)
+			if raw == lastRaw && i > 0 {
+				continue
+			}
+			lastRaw = raw
 			if _, ok := rawRanks[raw]; !ok {
 				rawRanks[raw] = 0
 				ranks[strings.ToLower(raw)] = 0
@@ -320,10 +346,11 @@ func sortEntries(ctx context.Context, s *index.Snapshot, ids []index.ID, order u
 		for i, e := range exts {
 			ranks[e] = uint32(i)
 		}
+		rawKeyRanks := make(map[string]uint64, len(rawRanks))
 		for raw := range rawRanks {
-			rawRanks[raw] = ranks[strings.ToLower(raw)]
+			rawKeyRanks[raw] = keyOf(ranks[strings.ToLower(raw)])
 		}
-		extensionKey := func(id index.ID) uint64 { return keyOf(rawRanks[rawExtOf(s, id)]) }
+		extensionKey := func(id index.ID) uint64 { return rawKeyRanks[rawExtOf(s, id)] }
 		// Within an extension, largest first, then by ID: exactly as
 		// Compare with Sort{Desc: true} orders them.
 		largest := func(id index.ID) uint64 {
@@ -349,7 +376,11 @@ func rawExtOf(s *index.Snapshot, id index.ID) string {
 	if s.Nodes[id].IsDir() {
 		return ""
 	}
-	return filepath.Ext(s.NameView(id))
+	name := s.NameView(id)
+	if i := strings.LastIndexByte(name, '.'); i >= 0 {
+		return name[i:]
+	}
+	return ""
 }
 
 func (f *fileModel) cursorID() index.ID {
@@ -375,6 +406,9 @@ func (f *fileModel) selectedIDs() []index.ID {
 				out = append(out, id)
 			}
 		case n > 1:
+			if n == len(f.ids) {
+				return append(out, f.ids...)
+			}
 			for _, id := range f.ids {
 				if f.sel.Has(id) {
 					out = append(out, id)

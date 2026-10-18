@@ -47,15 +47,28 @@ func (c *selectionCache) get(sel *ui.Selection[index.ID], rows uint64, s *index.
 	if c.valid && c.checked && c.key.n == sel.Len() && c.key.rows == rows && c.key.snap == s {
 		return c.ids
 	}
-	k := fingerprint(sel, rows, s)
-	c.checked = true
-	if c.valid && k == c.key {
-		return c.ids
+	if c.valid {
+		k := fingerprint(sel, rows, s)
+		c.checked = true
+		if k == c.key {
+			return c.ids
+		}
 	}
 	c.ids = build(c.ids[:0])
-	c.key, c.valid = k, true
+	c.key = fingerprintSlice(c.ids, rows, s)
+	c.valid, c.checked = true, true
 	c.version++
 	return c.ids
+}
+
+func fingerprintSlice(ids []index.ID, rows uint64, s *index.Snapshot) selectionKey {
+	k := selectionKey{n: len(ids), rows: rows, snap: s}
+	for _, id := range ids {
+		v := uint64(id) + 1
+		k.sum += v * 0x9e3779b97f4a7c15
+		k.mix ^= (v ^ v>>17) * 0xc2b2ae3d27d4eb4f
+	}
+	return k
 }
 
 // selectionFacts are derived from one version of the active selection.

@@ -78,15 +78,29 @@ func (s *Snapshot) sortWordKeys(ctx context.Context, ids []ID, key func(ID) word
 		hist := make([]uint32, workers*256)
 		srcIDs, dstIDs := ids, make([]ID, len(ids))
 		srcKeys, dstKeys := keys, make([]wordKey, len(ids))
-		for _, slot := range slots[:n] {
+		for pass, slot := range slots[:n] {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
 			clear(hist)
 			run(func(w, start, end int) {
 				counts := hist[w*256 : (w+1)*256]
-				for i := start; i < end; i++ {
-					counts[wordDigit(srcIDs[i], srcKeys[i], slot)]++
+				switch {
+				case slot < 4:
+					shift := uint(slot * 8)
+					for i := start; i < end; i++ {
+						counts[byte(uint32(srcIDs[i])>>shift)]++
+					}
+				case slot < 12:
+					shift := uint((slot - 4) * 8)
+					for i := start; i < end; i++ {
+						counts[byte(srcKeys[i].lo>>shift)]++
+					}
+				default:
+					shift := uint((slot - 12) * 8)
+					for i := start; i < end; i++ {
+						counts[byte(srcKeys[i].hi>>shift)]++
+					}
 				}
 			})
 			var sum uint32
@@ -96,19 +110,71 @@ func (s *Snapshot) sortWordKeys(ctx context.Context, ids []ID, key func(ID) word
 					hist[p], sum = sum, sum+hist[p]
 				}
 			}
+			isLast := (pass == n-1)
 			run(func(w, start, end int) {
 				counts := hist[w*256 : (w+1)*256]
-				for i := start; i < end; i++ {
-					d := wordDigit(srcIDs[i], srcKeys[i], slot)
-					p := counts[d]
-					dstIDs[p], dstKeys[p] = srcIDs[i], srcKeys[i]
-					counts[d]++
+				if isLast && tie == nil {
+					switch {
+					case slot < 4:
+						shift := uint(slot * 8)
+						for i := start; i < end; i++ {
+							d := byte(uint32(srcIDs[i]) >> shift)
+							p := counts[d]
+							dstIDs[p] = srcIDs[i]
+							counts[d]++
+						}
+					case slot < 12:
+						shift := uint((slot - 4) * 8)
+						for i := start; i < end; i++ {
+							d := byte(srcKeys[i].lo >> shift)
+							p := counts[d]
+							dstIDs[p] = srcIDs[i]
+							counts[d]++
+						}
+					default:
+						shift := uint((slot - 12) * 8)
+						for i := start; i < end; i++ {
+							d := byte(srcKeys[i].hi >> shift)
+							p := counts[d]
+							dstIDs[p] = srcIDs[i]
+							counts[d]++
+						}
+					}
+				} else {
+					switch {
+					case slot < 4:
+						shift := uint(slot * 8)
+						for i := start; i < end; i++ {
+							d := byte(uint32(srcIDs[i]) >> shift)
+							p := counts[d]
+							dstIDs[p], dstKeys[p] = srcIDs[i], srcKeys[i]
+							counts[d]++
+						}
+					case slot < 12:
+						shift := uint((slot - 4) * 8)
+						for i := start; i < end; i++ {
+							d := byte(srcKeys[i].lo >> shift)
+							p := counts[d]
+							dstIDs[p], dstKeys[p] = srcIDs[i], srcKeys[i]
+							counts[d]++
+						}
+					default:
+						shift := uint((slot - 12) * 8)
+						for i := start; i < end; i++ {
+							d := byte(srcKeys[i].hi >> shift)
+							p := counts[d]
+							dstIDs[p], dstKeys[p] = srcIDs[i], srcKeys[i]
+							counts[d]++
+						}
+					}
 				}
 			})
 			srcIDs, dstIDs = dstIDs, srcIDs
 			srcKeys, dstKeys = dstKeys, srcKeys
 		}
-		copy(ids, srcIDs)
+		if &ids[0] != &srcIDs[0] {
+			copy(ids, srcIDs)
+		}
 		keys = srcKeys
 	}
 	if tie != nil {
@@ -142,28 +208,40 @@ func (s *Snapshot) sortWordKeys(ctx context.Context, ids []ID, key func(ID) word
 // Fold a Unicode name once and pack both prefix words in the same pass.
 func (s *Snapshot) nameWords(id ID) wordKey {
 	name := s.NameView(id)
-	for i := range len(name) {
+	isASCII := true
+	for i := 0; i < len(name); i++ {
 		if name[i] >= 128 {
+			isASCII = false
 			name = strings.ToLower(name)
 			break
 		}
 	}
-	var k wordKey
-	for i := range 16 {
-		var b byte
-		if i < len(name) {
-			b = name[i]
-			if b >= 'A' && b <= 'Z' {
+	var hi, lo uint64
+	n := min(len(name), 16)
+	limit8 := min(n, 8)
+	for i := 0; i < limit8; i++ {
+		b := name[i]
+		if isASCII && b >= 'A' && b <= 'Z' {
+			b += 32
+		}
+		hi = (hi << 8) | uint64(b)
+	}
+	if limit8 < 8 {
+		hi <<= 8 * (8 - limit8)
+	}
+	if n > 8 {
+		for i := 8; i < n; i++ {
+			b := name[i]
+			if isASCII && b >= 'A' && b <= 'Z' {
 				b += 32
 			}
+			lo = (lo << 8) | uint64(b)
 		}
-		if i < 8 {
-			k.hi = k.hi<<8 | uint64(b)
-		} else {
-			k.lo = k.lo<<8 | uint64(b)
+		if n < 16 {
+			lo <<= 8 * (16 - n)
 		}
 	}
-	return k
+	return wordKey{hi: hi, lo: lo}
 }
 
 func wordDigit(id ID, k wordKey, slot int) byte {

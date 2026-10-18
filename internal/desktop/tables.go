@@ -1,7 +1,6 @@
 package desktop
 
 import (
-	"path/filepath"
 	"strings"
 
 	"github.com/egoist/mygo/transfer"
@@ -429,12 +428,34 @@ type cellTextCache struct {
 	snap      *index.Snapshot
 	units     string
 	allocated bool
-	text      map[cellKey]string
+	text      map[uint64]string
 }
 
-type cellKey struct {
-	id  index.ID
-	col string
+func colCode(col string) uint8 {
+	switch col {
+	case "Name":
+		return 1
+	case "Size":
+		return 2
+	case "Allocated":
+		return 3
+	case "% of Parent":
+		return 4
+	case "% of Scan":
+		return 5
+	case "Files":
+		return 6
+	case "Folders":
+		return 7
+	case "Modified":
+		return 8
+	case "Extension":
+		return 9
+	case "Folder":
+		return 10
+	default:
+		return 0
+	}
 }
 
 // treeCellText returns a cell's text, formatting it only once per snapshot
@@ -444,11 +465,15 @@ func (a *App) treeCellText(id index.ID, col string) string {
 	if c.snap != a.snap || c.units != a.prefs.Units || c.allocated != a.metricAllocated() || len(c.text) >= maxCellText {
 		c.snap, c.units, c.allocated = a.snap, a.prefs.Units, a.metricAllocated()
 		if c.text == nil {
-			c.text = map[cellKey]string{}
+			c.text = map[uint64]string{}
 		}
 		clear(c.text)
 	}
-	k := cellKey{id, col}
+	code := colCode(col)
+	if code == 0 {
+		return a.formatCellText(id, col)
+	}
+	k := uint64(id)<<8 | uint64(code)
 	if s, ok := c.text[k]; ok {
 		return s
 	}
@@ -487,7 +512,12 @@ func (a *App) formatCellText(id index.ID, col string) string {
 		return dateText(n.ModTime())
 	case "Extension":
 		if !n.IsDir() {
-			return strings.ToLower(strings.TrimPrefix(filepath.Ext(s.NameView(id)), "."))
+			name := s.NameView(id)
+			i := strings.LastIndexByte(name, '.')
+			if i >= 0 && i < len(name)-1 {
+				return strings.ToLower(name[i+1:])
+			}
+			return ""
 		}
 	case "Folder":
 		if n.Parent != index.None {
