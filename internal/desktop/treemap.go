@@ -577,7 +577,7 @@ func (a *App) treemapView(c *ui.Context, pal palette) {
 		p.Stroke(rect, t.Focus, 0, 2)
 		const pad, rowH, labelW, maxW = 12, 17, 62, 340
 		titleSpan := ui.Span{Text: tip.title, Size: 13, Weight: 600, Color: t.Text}
-		sizeSpan := ui.Span{Text: tip.size, Size: 17, Weight: 600, Color: t.Text}
+		sizeSpan := ui.Span{Text: tip.size, Size: 16, Weight: 600, Color: t.Text}
 		w, _ := p.MeasureText(0, titleSpan)
 		w += 18 // swatch
 		sw, _ := p.MeasureText(0, sizeSpan)
