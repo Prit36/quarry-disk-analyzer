@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.2 - 2026-10-18
 
 Less on screen, nothing lost: every total was shown up to four times at once.
 

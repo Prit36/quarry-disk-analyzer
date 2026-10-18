@@ -438,7 +438,7 @@ func (a *App) dialogs(c *ui.Context, pal palette) {
 }
 
 // Version is set by main.
-var Version = "0.2.1"
+var Version = "0.2.2"
 
 func (s *searchDialog) query() string {
 	var parts []string
