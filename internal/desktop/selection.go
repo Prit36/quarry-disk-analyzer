@@ -62,6 +62,13 @@ func (c *selectionCache) get(sel *ui.Selection[index.ID], rows uint64, s *index.
 	} else {
 		c.peak = max(c.peak, sel.Len())
 	}
+	if c.valid && c.borrowed && c.key.n == sel.Len() && c.key.rows == rows && c.key.snap == s {
+		// A borrowed list is the complete set of current file results. Its
+		// selection cannot change membership without changing cardinality:
+		// query application intersects the selection with those results.
+		c.checked = true
+		return c.ids
+	}
 	if c.valid && c.checked && c.key.n == sel.Len() && c.key.rows == rows && c.key.snap == s {
 		return c.ids
 	}
@@ -77,7 +84,11 @@ func (c *selectionCache) get(sel *ui.Selection[index.ID], rows uint64, s *index.
 	}
 	c.borrowed = false // build may explicitly borrow another immutable result
 	c.ids = build(c.ids[:0])
-	c.key = fingerprintSlice(c.ids, rows, s)
+	if c.borrowed {
+		c.key = selectionKey{n: len(c.ids), rows: rows, snap: s}
+	} else {
+		c.key = fingerprintSlice(c.ids, rows, s)
+	}
 	c.valid, c.checked = true, true
 	c.version++
 	return c.ids

@@ -395,6 +395,12 @@ func (s *Snapshot) Compare(a, b ID, by Sort) int {
 }
 
 func compareFold(a, b string) int {
+	// Duplicate filenames are common across package and system folders.
+	// The runtime compares equal byte strings in wide chunks, avoiding a
+	// byte-by-byte case fold before falling through to the ID tie breaker.
+	if a == b {
+		return 0
+	}
 	for i := 0; i < min(len(a), len(b)); i++ {
 		x, y := a[i], b[i]
 		if x >= 128 || y >= 128 {

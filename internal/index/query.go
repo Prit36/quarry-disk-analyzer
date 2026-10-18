@@ -516,18 +516,17 @@ func containsFold(s, lower string) bool {
 	if len(lower) == 0 {
 		return true
 	}
-	// ASCII names avoid allocating a lowercase copy per file. Unicode retains
-	// correct case-insensitive matching through the standard library fallback.
-	for i := 0; i < len(s); i++ {
-		if s[i] >= 128 {
-			return strings.Contains(strings.ToLower(s), lower)
-		}
-	}
+	// Fold ASCII while searching, instead of first scanning the entire name
+	// to classify it. A positive ASCII match is valid even when a later byte
+	// is Unicode; encountering Unicode otherwise uses the full fold.
 	c0 := lower[0]
 	n := len(lower)
 	maxI := len(s) - n
 	for i := 0; i <= maxI; i++ {
 		b := s[i]
+		if b >= 128 {
+			return strings.Contains(strings.ToLower(s), lower)
+		}
 		if b >= 'A' && b <= 'Z' {
 			b += 32
 		}
@@ -537,6 +536,9 @@ func containsFold(s, lower string) bool {
 		match := true
 		for j := 1; j < n; j++ {
 			c := s[i+j]
+			if c >= 128 {
+				return strings.Contains(strings.ToLower(s), lower)
+			}
 			if c >= 'A' && c <= 'Z' {
 				c += 32
 			}
@@ -547,6 +549,13 @@ func containsFold(s, lower string) bool {
 		}
 		if match {
 			return true
+		}
+	}
+	// A Unicode fold can change encoded length, including in the tail that
+	// was too short to contain the original byte pattern.
+	for i := max(0, maxI+1); i < len(s); i++ {
+		if s[i] >= 128 {
+			return strings.Contains(strings.ToLower(s), lower)
 		}
 	}
 	return false

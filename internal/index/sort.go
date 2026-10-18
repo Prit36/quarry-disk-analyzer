@@ -3,6 +3,7 @@ package index
 import (
 	"context"
 	"math"
+	"runtime"
 	"slices"
 	"strings"
 )
@@ -10,8 +11,8 @@ import (
 // SortContext orders ids as Compare does. Large lists are sorted by a
 // precomputed key with a radix sort instead of a comparison sort: a million
 // comparisons through Compare cost about as much as reading every node
-// twenty times. Names are keyed by their first sixteen case-folded bytes,
-// and only entries sharing those are compared in full.
+// twenty times. Names use eight-byte chunks, reading later chunks only in
+// groups sharing the earlier prefix.
 func (s *Snapshot) SortContext(ctx context.Context, ids []ID, by Sort) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -21,13 +22,7 @@ func (s *Snapshot) SortContext(ctx context.Context, ids []ID, by Sort) error {
 		return nil
 	}
 	if by.Column == "Name" {
-		return s.sortWordKeysFrom(ctx, ids, func(id ID) wordKey {
-			k := s.nameWords(id)
-			if by.Desc {
-				k.hi, k.lo = ^k.hi, ^k.lo
-			}
-			return k
-		}, &by, 16)
+		return s.sortNames(ctx, ids, by)
 	}
 	key := s.sortKey(by)
 	if key == nil {
@@ -132,6 +127,77 @@ func (s *Snapshot) sortCompare(ctx context.Context, ids []ID, by Sort) error {
 			return 0
 		}
 		return s.Compare(first, second, by)
+	})
+	return ctx.Err()
+}
+
+// ReverseSortContext changes only the direction of an already sorted list.
+// Reverse the rows, then restore ascending ID order inside equal-value runs.
+// The source order must have been produced with the same column and metric.
+func (s *Snapshot) ReverseSortContext(ctx context.Context, ids []ID, by Sort) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	key := s.sortKey(by)
+	if by.Column != "Name" && key == nil {
+		return s.SortContext(ctx, ids, by)
+	}
+	slices.Reverse(ids)
+	if len(ids) < 2 {
+		return ctx.Err()
+	}
+	workers := min(runtime.GOMAXPROCS(0), max(1, len(ids)/(1<<16)))
+	bounds := make([]int, workers+1)
+	bounds[workers] = len(ids)
+	for w := 1; w < workers; w++ {
+		p := max(len(ids)*w/workers, bounds[w-1])
+		for p < len(ids) {
+			if p&4095 == 0 && ctx.Err() != nil {
+				return ctx.Err()
+			}
+			equal := false
+			if by.Column == "Name" {
+				equal = compareFold(s.NameView(ids[p-1]), s.NameView(ids[p])) == 0
+			} else {
+				equal = key(ids[p-1]) == key(ids[p])
+			}
+			if !equal {
+				break
+			}
+			p++
+		}
+		bounds[w] = p
+	}
+	runSortWorkers(workers, workers, func(w, _, _ int) {
+		nextCheck := bounds[w]
+		for start := bounds[w]; start < bounds[w+1]; {
+			if start >= nextCheck {
+				if ctx.Err() != nil {
+					return
+				}
+				nextCheck = start + 4096
+			}
+			end := start + 1
+			if by.Column == "Name" {
+				name := s.NameView(ids[start])
+				for end < bounds[w+1] && compareFold(name, s.NameView(ids[end])) == 0 {
+					if end&4095 == 0 && ctx.Err() != nil {
+						return
+					}
+					end++
+				}
+			} else {
+				value := key(ids[start])
+				for end < bounds[w+1] && value == key(ids[end]) {
+					if end&4095 == 0 && ctx.Err() != nil {
+						return
+					}
+					end++
+				}
+			}
+			slices.Reverse(ids[start:end])
+			start = end
+		}
 	})
 	return ctx.Err()
 }

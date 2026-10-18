@@ -181,8 +181,9 @@ func (t *treeModel) selectOnly(id index.ID) bool {
 	if i < 0 {
 		return false
 	}
-	t.sel.Clear()
+	t.sel = ui.Selection[index.ID]{}
 	t.sel.Add(id)
+	t.selCache.peak = 1
 	t.cursor = i
 	t.selCache.invalidate()
 	t.list.ScrollIntoView(i)
@@ -414,6 +415,13 @@ func (t *treeModel) collapseLevel() {
 
 func (t *treeModel) collapseAll() {
 	t.open = map[index.ID]bool{t.a.location: true}
+	// Keep only the current folder's already sorted children. A whole-tree
+	// expansion can cache hundreds of thousands of hidden child IDs.
+	if kids, ok := t.kids[t.a.location]; ok {
+		t.kids = map[index.ID][]index.ID{t.a.location: kids}
+	} else {
+		t.kids = nil
+	}
 	t.rebuild()
 	if t.cursor < 0 {
 		t.selectOnly(t.a.location)

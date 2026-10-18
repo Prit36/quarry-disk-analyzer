@@ -33,6 +33,7 @@ type fileModel struct {
 	shownScope     index.ID
 	shownAllocated bool
 	shownOnDisk    bool
+	shownSort      ui.SortOrder
 
 	list   ui.ListState
 	sel    ui.Selection[index.ID]
@@ -146,6 +147,7 @@ func (f *fileModel) run() {
 	reuse := f.forSnap == s && f.ran == query && f.shownScope == scope && f.err == ""
 	previous, previousTotal, sameMetric := f.ids, f.total, f.shownAllocated == allocated
 	previousOnDisk := f.shownOnDisk
+	previousSort := f.shownSort
 	go func() {
 		defer cancel()
 		filter, err := index.ParseFilter(query)
@@ -153,7 +155,11 @@ func (f *fileModel) run() {
 		var total uint64
 		onDisk := previousOnDisk
 		if err == nil && reuse {
-			ids = slices.Clone(previous)
+			if sameMetric && previousSort == order {
+				ids = previous // unchanged, immutable results need no new buffer
+			} else {
+				ids = slices.Clone(previous)
+			}
 		} else if err == nil {
 			if filter.Kind == index.KindAny && query == "" {
 				filter.Kind = index.KindFiles
@@ -181,8 +187,12 @@ func (f *fileModel) run() {
 				}
 			}
 		}
-		if err == nil {
-			err = sortEntries(ctx, s, ids, order, allocated)
+		if err == nil && !(reuse && sameMetric && previousSort == order) {
+			if reuse && sameMetric && previousSort.Column == order.Column && previousSort.Descending != order.Descending && order.Column != "Folder" && order.Column != "Extension" {
+				err = s.ReverseSortContext(ctx, ids, index.Sort{Column: order.Column, Allocated: allocated})
+			} else {
+				err = sortEntries(ctx, s, ids, order, allocated)
+			}
 		}
 		if ctx.Err() != nil {
 			return
@@ -220,6 +230,7 @@ func (f *fileModel) run() {
 			f.ids, f.total = ids, total
 			f.shownScope, f.shownAllocated = scope, allocated
 			f.shownOnDisk = onDisk
+			f.shownSort = order
 			f.idsGen++
 			f.cursor = cursor
 			if !reuse {
@@ -251,13 +262,6 @@ func sortEntries(ctx context.Context, s *index.Snapshot, ids []index.ID, order u
 		return ctx.Err()
 	}
 	desc := order.Descending
-	keyOf := func(rank uint32) uint64 {
-		k := uint64(rank)
-		if desc {
-			k = ^k
-		}
-		return k
-	}
 	switch order.Column {
 	case "Folder":
 		parentRanks := make([]uint32, len(s.Nodes))
@@ -363,17 +367,15 @@ func sortEntries(ctx context.Context, s *index.Snapshot, ids []index.ID, order u
 			}
 			parentRanks[pp.id] = rank
 		}
-		zeroKey := keyOf(0)
-		folderKey := func(id index.ID) uint64 {
+		folderRank := func(id index.ID) uint32 {
 			if p := s.Nodes[id].Parent; p != index.None {
-				return keyOf(parentRanks[p])
+				return parentRanks[p]
 			}
-			return zeroKey
+			return 0
 		}
-		// Within a folder, by name: the first eight name bytes in the key, the
-		// rest compared where those are equal.
-		name := func(id index.ID) uint64 { return s.NameKey(id, 0) }
-		return s.SortByKeys(ctx, ids, folderKey, name, &index.Sort{Column: "Name"})
+		// Counting the dense folder rank keeps unrelated folders out of the
+		// more expensive name comparisons and needs only compact scratch IDs.
+		return s.SortByRank(ctx, ids, folderRank, rank, desc, index.Sort{Column: "Name"})
 	case "Extension":
 		// Intern by the borrowed, original spelling first. Case folding once
 		// per distinct spelling avoids allocating ".TXT" -> ".txt" per file.
@@ -402,20 +404,14 @@ func sortEntries(ctx context.Context, s *index.Snapshot, ids []index.ID, order u
 		for i, e := range exts {
 			ranks[e] = uint32(i)
 		}
-		rawKeyRanks := make(map[string]uint64, len(rawRanks))
+		rawKeyRanks := make(map[string]uint32, len(rawRanks))
 		for raw := range rawRanks {
-			rawKeyRanks[raw] = keyOf(ranks[strings.ToLower(raw)])
+			rawKeyRanks[raw] = ranks[strings.ToLower(raw)]
 		}
-		extensionKey := func(id index.ID) uint64 { return rawKeyRanks[rawExtOf(s, id)] }
+		extensionRank := func(id index.ID) uint32 { return rawKeyRanks[rawExtOf(s, id)] }
 		// Within an extension, largest first, then by ID: exactly as
 		// Compare with Sort{Desc: true} orders them.
-		largest := func(id index.ID) uint64 {
-			if allocated {
-				return ^s.Nodes[id].Allocated
-			}
-			return ^s.Nodes[id].Size
-		}
-		return s.SortByKeys(ctx, ids, extensionKey, largest, nil)
+		return s.SortByRank(ctx, ids, extensionRank, uint32(len(exts)-1), desc, index.Sort{Desc: true, Allocated: allocated})
 	}
 	column := order.Column
 	if column == "% of Scan" {
@@ -478,8 +474,9 @@ func (f *fileModel) selectedIDs() []index.ID {
 }
 
 func (f *fileModel) selectOnly(id index.ID) {
-	f.sel.Clear()
+	f.sel = ui.Selection[index.ID]{}
 	f.sel.Add(id)
+	f.selCache.peak = 1
 	f.selCache.invalidate()
 	f.cursor = slices.Index(f.ids, id)
 	if f.cursor >= 0 {

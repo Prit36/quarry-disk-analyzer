@@ -249,7 +249,11 @@ func clickSelect(cell ui.Element, sel *ui.Selection[index.ID], cursor *int, row 
 			sel.Add(id)
 		}
 	default:
-		sel.Clear()
+		if sel.Len() > 4096 {
+			*sel = ui.Selection[index.ID]{}
+		} else {
+			sel.Clear()
+		}
 		sel.Add(id)
 	}
 	*cursor = row

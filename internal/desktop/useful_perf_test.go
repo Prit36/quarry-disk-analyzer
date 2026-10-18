@@ -122,3 +122,35 @@ func BenchmarkRealSelectionFacts(b *testing.B) {
 		a.facts()
 	}
 }
+
+// Clicking the active heading changes direction while retaining the same
+// query, scope and metric. Include result application and selection retention.
+func BenchmarkRealSortToggle(b *testing.B) {
+	s := realPerfSnapshot(b)
+	b.Setenv("QUARRY_CONFIG_DIR", b.TempDir())
+	for _, column := range []string{"Name", "Size", "Modified"} {
+		b.Run(column, func(b *testing.B) {
+			a := newApp()
+			a.snap = s
+			a.files.sort = ui.SortOrder{Column: column}
+			wait := func() {
+				for a.files.busy {
+					a.drain()
+					runtime.Gosched()
+				}
+				if a.files.err != "" {
+					b.Fatal(a.files.err)
+				}
+			}
+			a.files.run()
+			wait()
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				a.files.sort.Descending = !a.files.sort.Descending
+				a.files.run()
+				wait()
+			}
+		})
+	}
+}

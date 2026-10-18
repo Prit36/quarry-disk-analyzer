@@ -499,7 +499,33 @@ func (a *App) completeScan() func() *index.Snapshot {
 
 // setView installs the snapshot the views read and refreshes them.
 func (a *App) setView(s *index.Snapshot) {
-	a.snap = s
+	if a.snap != s {
+		a.snap = s
+		// Hidden views are refreshed lazily. Their cache identity must not
+		// keep a former copy-on-write node table alive until they are shown.
+		// IDs remain stable across these changes, so retain rows/selections
+		// and cancel/reject only obsolete derived results.
+		a.tree.selCache.reset()
+		a.tree.cells = cellTextCache{}
+		a.files.selCache.reset()
+		if a.files.cancel != nil {
+			a.files.cancel()
+		}
+		a.files.gen++
+		a.files.cancel, a.files.forSnap, a.files.runFor = nil, nil, nil
+		a.files.busy = false
+		if a.ext.cancel != nil {
+			a.ext.cancel()
+		}
+		a.ext.gen++
+		a.ext.cancel, a.ext.forSnap, a.ext.runFor = nil, nil, nil
+		a.ext.busy = false
+		a.selFacts, a.mutMemo = selectionFacts{}, mutableMemo{}
+		if a.tm.forSnap != a.mapSnapshot() {
+			a.tm.reset()
+		}
+		a.dlg.dup.reset()
+	}
 	if !s.Reachable(a.location) {
 		a.location = 0
 	}
