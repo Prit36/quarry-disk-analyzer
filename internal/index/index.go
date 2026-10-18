@@ -144,7 +144,7 @@ func (s *Snapshot) appendRegularPath(dst []byte, id ID) ([]byte, bool) {
 			return nil, false
 		}
 		name := s.NameView(cur)
-		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `\/`) {
+		if name == "" || name == "." || name == ".." || hasSeparator(name) {
 			return nil, false
 		}
 		size += len(name) + 1
@@ -343,7 +343,59 @@ type Sort struct {
 }
 
 func (s *Snapshot) Sort(ids []ID, by Sort) {
-	slices.SortFunc(ids, func(a, b ID) int { return s.Compare(a, b, by) })
+	if len(ids) < 2 {
+		return
+	}
+	desc := by.Desc
+	// The same order as Compare, without deciding the column and copying
+	// both nodes on every comparison.
+	if by.Column == "Name" {
+		if len(ids) >= keyedNameSort {
+			s.sortNamesKeyed(ids, desc, 0)
+			return
+		}
+		slices.SortFunc(ids, func(a, b ID) int {
+			v := compareFold(s.NameView(a), s.NameView(b))
+			if v == 0 {
+				return cmp.Compare(a, b)
+			}
+			if desc {
+				return -v
+			}
+			return v
+		})
+		return
+	}
+	nodes := s.Nodes
+	switch column := by.Column; {
+	case column == "Modified":
+		sortIDsByKey(ids, desc, func(id ID) uint64 { return uint64(nodes[id].Modified) })
+	case column == "Files":
+		sortIDsByKey(ids, desc, func(id ID) uint64 { return uint64(nodes[id].Files) })
+	case column == "Folders":
+		sortIDsByKey(ids, desc, func(id ID) uint64 { return uint64(nodes[id].Dirs) })
+	case column == "Allocated" || column != "Size" && column != "% of Parent" && by.Allocated:
+		sortIDsByKey(ids, desc, func(id ID) uint64 { return nodes[id].Allocated })
+	case column != "% of Parent":
+		sortIDsByKey(ids, desc, func(id ID) uint64 { return nodes[id].Size })
+	default:
+		slices.SortFunc(ids, func(a, b ID) int { return s.Compare(a, b, by) })
+	}
+}
+
+// sortIDsByKey orders ids by key, reversed with desc, then by ascending ID.
+// key does not escape, so callers' closures stay on the stack.
+func sortIDsByKey(ids []ID, desc bool, key func(ID) uint64) {
+	slices.SortFunc(ids, func(a, b ID) int {
+		v := cmp.Compare(key(a), key(b))
+		if v == 0 {
+			return cmp.Compare(a, b)
+		}
+		if desc {
+			return -v
+		}
+		return v
+	})
 }
 
 func (s *Snapshot) Compare(a, b ID, by Sort) int {
@@ -401,7 +453,26 @@ func compareFold(a, b string) int {
 	if a == b {
 		return 0
 	}
-	for i := 0; i < min(len(a), len(b)); i++ {
+	n := min(len(a), len(b))
+	i := 0
+	// Whole ASCII words first; a word with any other byte is left to the
+	// byte loop, which decides exactly where Unicode folding takes over.
+	for ; i+8 <= n; i += 8 {
+		x, y := load64BE(a, i), load64BE(b, i)
+		if (x|y)&swarHigh != 0 {
+			break
+		}
+		if x == y {
+			continue
+		}
+		if x, y = foldASCII8(x), foldASCII8(y); x != y {
+			if x < y {
+				return -1
+			}
+			return 1
+		}
+	}
+	for ; i < n; i++ {
 		x, y := a[i], b[i]
 		if x >= 128 || y >= 128 {
 			return strings.Compare(strings.ToLower(a), strings.ToLower(b))

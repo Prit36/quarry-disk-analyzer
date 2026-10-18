@@ -53,16 +53,18 @@ func (s *Snapshot) sortNameChunks(ctx context.Context, ids, spareIDs []ID, keys,
 					name = strings.ToLower(name)
 				}
 				finished[w] = finished[w] && len(name) <= offset+8
-				var k uint64
-				for j := offset; j < offset+8; j++ {
-					var ch byte
-					if j < len(name) {
-						ch = name[j]
-						if ch >= 'A' && ch <= 'Z' {
-							ch += 32
+				k, ok := foldedWord(name, offset)
+				if !ok {
+					for j := offset; j < offset+8; j++ {
+						var ch byte
+						if j < len(name) {
+							ch = name[j]
+							if ch >= 'A' && ch <= 'Z' {
+								ch += 32
+							}
 						}
+						k = k<<8 | uint64(ch)
 					}
-					k = k<<8 | uint64(ch)
 				}
 				if by.Desc {
 					k = ^k
@@ -178,6 +180,10 @@ func (s *Snapshot) sortNameTie(ctx context.Context, ids []ID, by Sort, prefix in
 		if len(name) < prefix || !isASCII(name[:prefix]) {
 			return s.sortCompare(ctx, ids, by)
 		}
+	}
+	if len(ids) >= keyedNameSort {
+		s.sortNamesKeyed(ids, by.Desc, prefix)
+		return ctx.Err()
 	}
 	comparisons := 0
 	canceled := false

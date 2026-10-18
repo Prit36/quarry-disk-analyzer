@@ -32,6 +32,33 @@ func plainName(p string) bool {
 	return true
 }
 
+// equalFoldWord is strings.EqualFold(name, word) for an ASCII word. A name
+// of the same length can only match byte for byte; a longer one only when
+// it contains a character folding to ASCII (such as the Kelvin sign).
+func equalFoldWord(name, word string) bool {
+	switch {
+	case len(name) < len(word):
+		return false
+	case len(name) > len(word):
+		for i := 0; i < len(name); i++ {
+			if name[i] >= 0x80 {
+				return strings.EqualFold(name, word)
+			}
+		}
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		a, b := name[i], word[i]
+		if a == b {
+			continue
+		}
+		if a|0x20 != b|0x20 || a|0x20 < 'a' || a|0x20 > 'z' {
+			return false
+		}
+	}
+	return true
+}
+
 func NewExclusions(patterns []string) Exclusions {
 	e := Exclusions{}
 	for _, p := range patterns {
@@ -68,7 +95,7 @@ func (e Exclusions) NeedsPaths() bool { return len(e.paths) > 0 }
 // Match reports whether an entry with this name and full path is excluded.
 func (e Exclusions) Match(name, path string, dir bool) bool {
 	for _, w := range e.words {
-		if strings.EqualFold(name, w) {
+		if equalFoldWord(name, w) {
 			return true
 		}
 	}

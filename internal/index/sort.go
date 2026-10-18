@@ -101,6 +101,9 @@ func (s *Snapshot) NameKey(id ID, offset int) uint64 {
 			break
 		}
 	}
+	if k, ok := foldedWord(name, offset); ok {
+		return k
+	}
 	var k uint64
 	for i := offset; i < offset+8; i++ {
 		var b byte

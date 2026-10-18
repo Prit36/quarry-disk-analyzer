@@ -185,6 +185,17 @@ func (s *Snapshot) Filtered(ctx context.Context, keepFile func(ID) bool, dropFol
 	}
 	c := s.Clone()
 	stats := FilterStats{}
+	if err := c.filterTree(ctx, 0, keepFile, dropFolder, isolate, nil, &stats); err != nil {
+		return nil, stats, err
+	}
+	return c, stats, ctx.Err()
+}
+
+// filterTree rebuilds the subtree of top in c, a copy of the snapshot being
+// filtered, and stores top's new totals; it neither drops nor attaches top
+// itself. A folder child for which done reports ready was rebuilt (or
+// dropped) separately and is attached as it is.
+func (c *Snapshot) filterTree(ctx context.Context, root ID, keepFile func(ID) bool, dropFolder func(ID) bool, isolate bool, done func(ID) (ready, dropped bool), stats *FilterStats) error {
 	type frame struct {
 		id, next, last  ID
 		size, allocated uint64
@@ -193,7 +204,7 @@ func (s *Snapshot) Filtered(ctx context.Context, keepFile func(ID) bool, dropFol
 	}
 	var local [64]frame
 	stack := local[:1]
-	stack[0] = frame{id: 0, next: s.Nodes[0].FirstChild, last: None}
+	stack[0] = frame{id: root, next: c.Nodes[root].FirstChild, last: None}
 	visited := 0
 	// Attach a retained child and add its already computed totals. The next
 	// original sibling is saved in the parent frame before any link changes.
@@ -217,7 +228,7 @@ func (s *Snapshot) Filtered(ctx context.Context, keepFile func(ID) bool, dropFol
 	}
 	for len(stack) > 0 {
 		if visited&4095 == 0 && ctx.Err() != nil {
-			return nil, stats, ctx.Err()
+			return ctx.Err()
 		}
 		visited++
 		top := &stack[len(stack)-1]
@@ -226,6 +237,14 @@ func (s *Snapshot) Filtered(ctx context.Context, keepFile func(ID) bool, dropFol
 			n := &c.Nodes[id]
 			top.next = n.NextSibling
 			if n.IsDir() {
+				if done != nil {
+					if ready, dropped := done(id); ready {
+						if !dropped {
+							attach(top, id)
+						}
+						continue
+					}
+				}
 				if dropFolder != nil && dropFolder(id) {
 					n.Flags |= Removed
 					stats.HiddenFolders += uint64(n.Dirs) + 1
@@ -254,7 +273,7 @@ func (s *Snapshot) Filtered(ctx context.Context, keepFile func(ID) bool, dropFol
 			last := None
 			for id := c.Nodes[top.id].FirstChild; id != None; {
 				if visited&4095 == 0 && ctx.Err() != nil {
-					return nil, stats, ctx.Err()
+					return ctx.Err()
 				}
 				visited++
 				n := &c.Nodes[id]
@@ -282,7 +301,7 @@ func (s *Snapshot) Filtered(ctx context.Context, keepFile func(ID) bool, dropFol
 			attach(&stack[len(stack)-1], id)
 		}
 	}
-	return c, stats, ctx.Err()
+	return ctx.Err()
 }
 
 func (s *Snapshot) filteredGeneral(ctx context.Context, keepFile func(ID) bool, dropFolder func(ID) bool, isolate bool) (*Snapshot, FilterStats, error) {

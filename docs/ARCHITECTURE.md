@@ -1,8 +1,9 @@
 # Architecture
 
-The latest interaction measurements against commit `cb57e1f` are in
-[PERFORMANCE-INTERACTIONS.md](PERFORMANCE-INTERACTIONS.md). The preceding pass is
-in [PERFORMANCE-THROUGHPUT.md](PERFORMANCE-THROUGHPUT.md).
+The latest sorting, filtering and search measurements against commit
+`38f9eeb` are in [PERFORMANCE-SORTS-FILTERS.md](PERFORMANCE-SORTS-FILTERS.md).
+The preceding passes are in [PERFORMANCE-INTERACTIONS.md](PERFORMANCE-INTERACTIONS.md)
+and [PERFORMANCE-THROUGHPUT.md](PERFORMANCE-THROUGHPUT.md).
 
 ```
 main.go                 command line, or desktop.Run
@@ -24,7 +25,7 @@ A directory scan grows its index in fixed-size chunks (`Builder`) and assembles 
 
 Snapshots are shared with background goroutines and never mutated in place. A delete, rename, exclusion or analysis filter produces a copy with the same IDs (`Clone`, `Remove`, `Restore`, `Rename`, `Prune`, `Filtered`, `Reaggregate`), so selections, expansion and history survive. `Compact` renumbers a copy for saving.
 
-`SortContext` radix-sorts numeric orders in stable 11-bit passes. Values and ID ties that fit together use two packed-word buffers (16 scratch bytes per entry); full-width values use separate key/ID buffers (20 bytes). Name sorting reads folded eight-byte chunks, inspecting later chunks only in groups sharing a prefix, with 20 scratch bytes per entry. Dense folder/extension ranks use a counting partition followed by sorting within groups. All paths preserve `Compare` ordering and ascending ID ties. Changing the direction of an existing numeric/name order reverses groups in parallel without building new key buffers.
+`SortContext` radix-sorts numeric orders in stable 11-bit passes. Values and ID ties that fit together use two packed-word buffers (16 scratch bytes per entry); full-width values use separate key/ID buffers (20 bytes). Name sorting reads folded eight-byte chunks, inspecting later chunks only in groups sharing a prefix, with 20 scratch bytes per entry. Dense folder/extension ranks use a counting partition followed by sorting within groups. All paths preserve `Compare` ordering and ascending ID ties. Changing the direction of an existing numeric/name order reverses groups in parallel without building new key buffers. Numeric keys are read and packed on all cores. Name comparison, folding and contains-matching handle ASCII eight bytes at a time (`fold.go`), and name lists of 12 or more entries below the radix threshold sort by a folded eight-byte key first, falling back to the full comparison only for equal keys.
 
 
 `ParseFilter` compiles the search syntax (wildcards, quoted phrases, negation, `ext:`, `size:`, `modified:`, `path:`, `type:`, `regex:` with Go's linear-time RE2) into a `Filter`; `Search` walks a scope without recursion and evaluates `path:` terms incrementally per folder rather than by building paths. Prefix, suffix and contains wildcards match ASCII names without backtracking. Scopes of 32,768 entries or more are divided into subtrees searched on all cores and concatenated in index order. Small adjacent sibling subtrees share tasks, keeping wide folders from allocating a descriptor and result slice for every file.
@@ -35,7 +36,11 @@ Saved scans keep the original format: 52-byte little-endian records, gzip. They 
 depth-first folder walk. Empty subtrees are isolated as their parent's totals
 finish, preserving the former removal flags and callback order. Scratch storage
 tracks depth rather than every node. Unusual imported trees with children under
-files retain the general filtering path.
+files retain the general filtering path. `FilteredParallel` produces the same
+copy with concurrent, deterministic callbacks: the heaviest folders are split
+into pieces rebuilt on workers, and the split folders are finished afterwards
+in the original order. The Show/Hide Filter decides its files beforehand, the
+include query as a parallel search and name exclusions in parallel ranges.
 
 `SortByRankGroups` returns four-byte group lengths from the counting pass's
 existing boundaries. File View retains only these lengths to reverse Folder or
@@ -45,6 +50,13 @@ column changes; it retains no paths or per-file rank table.
 
 Full-path terms use a worker-owned path buffer and ancestor stack, with the
 existing normalization fallback for unusual paths and unresolved metadata.
+Plain (non-wildcard) terms are matched incrementally: a term in a folder's path
+holds below it, and otherwise only the folder path's last `len(term)-1` bytes
+and the rest are searched while the folder's path is ASCII. Folders are decided
+only when an entry below them reaches the path test. File View's Folder sort
+builds parent paths with `PathCursor`, which keeps the previous path's
+ancestors; its Extension sort interns extensions on all cores and passes ranks
+by position (`SortByRankValues`).
 Unrestricted searches give workers disjoint, capacity-clipped ranges of a
 single result array. Incorrect saved counts can grow individual ranges safely;
 the coordinator then copies or compacts them without changing traversal order.

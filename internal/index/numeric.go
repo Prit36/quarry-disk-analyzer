@@ -20,31 +20,67 @@ func sortNumeric(ctx context.Context, ids []ID, key func(ID) uint64) error {
 	}
 	const digitBits, digits = 11, 1 << 11
 	keys := make([]uint64, len(ids))
+	// Read the keys on all cores; each worker summarizes its range.
+	type summary struct {
+		diff           uint64
+		diffID, maxID  uint32
+		ordered        bool
+		firstKey, last uint64
+	}
+	workers := min(runtime.GOMAXPROCS(0), max(1, len(ids)/(1<<16)))
+	parts := make([]summary, workers)
+	runSortWorkers(len(ids), workers, func(w, start, end int) {
+		p := summary{ordered: true}
+		if start == end {
+			parts[w] = p
+			return
+		}
+		first, firstID := key(ids[start]), ids[start]
+		for i := start; i < end; i++ {
+			if i&4095 == 0 && ctx.Err() != nil {
+				return
+			}
+			id := ids[i]
+			k := key(id)
+			keys[i] = k
+			p.diff |= k ^ first
+			p.diffID |= uint32(id ^ firstID)
+			p.maxID = max(p.maxID, uint32(id))
+			if i > start && id < ids[i-1] {
+				p.ordered = false
+			}
+		}
+		p.firstKey = first
+		parts[w] = p
+	})
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	var diff uint64
-	var diffID uint32
-	var maxID uint32
+	var diffID, maxID uint32
 	orderedIDs := true
-	for i, id := range ids {
-		if i&4095 == 0 && ctx.Err() != nil {
-			return ctx.Err()
+	for w, p := range parts {
+		start := len(ids) * w / workers
+		if start == len(ids)*(w+1)/workers {
+			continue
 		}
-		keys[i] = key(id)
-		diff |= keys[i] ^ keys[0]
-		diffID |= uint32(id ^ ids[0])
-		maxID = max(maxID, uint32(id))
-		if i > 0 && id < ids[i-1] {
-			orderedIDs = false
-		}
+		diff |= p.diff | (p.firstKey ^ keys[0])
+		diffID |= p.diffID | uint32(ids[start]^ids[0])
+		maxID = max(maxID, p.maxID)
+		orderedIDs = orderedIDs && p.ordered && (start == 0 || ids[start-1] <= ids[start])
 	}
 	// Most sizes and timestamps, together with the ID tie breaker, fit in
 	// one word. Scatter only that word instead of separate keys and IDs.
 	// Common high key bits do not affect ordering and can be omitted.
 	if keyBits, idBits := bits.Len64(diff), bits.Len32(maxID); keyBits+idBits <= 64 {
 		mask := ^uint64(0) >> (64 - keyBits)
-		for i, id := range ids {
-			keys[i] = (keys[i]&mask)<<idBits | uint64(id)
-		}
-		return sortPackedNumeric(ctx, ids, keys, uint(idBits))
+		runSortWorkers(len(ids), workers, func(_, start, end int) {
+			for i := start; i < end; i++ {
+				keys[i] = (keys[i]&mask)<<idBits | uint64(ids[i])
+			}
+		})
+		// Packed keys differ exactly in the key bits and ID bits that differ.
+		return sortPackedNumeric(ctx, ids, keys, uint(idBits), (diff&mask)<<idBits|uint64(diffID))
 	}
 	var slots [12]int
 	n := 0
@@ -63,7 +99,6 @@ func sortNumeric(ctx context.Context, ids []ID, key func(ID) uint64) error {
 	if n == 0 {
 		return ctx.Err()
 	}
-	workers := min(runtime.GOMAXPROCS(0), max(1, len(ids)/(1<<16)))
 	run := func(f func(worker, start, end int)) {
 		var wg sync.WaitGroup
 		for w := 1; w < workers; w++ {
@@ -155,7 +190,9 @@ func sortNumeric(ctx context.Context, ids []ID, key func(ID) uint64) error {
 	return ctx.Err()
 }
 
-func sortPackedNumeric(ctx context.Context, ids []ID, keys []uint64, idBits uint) error {
+// sortPackedNumeric sorts keys holding a value above idBits ID bits; diff
+// has the bits in which some keys differ.
+func sortPackedNumeric(ctx context.Context, ids []ID, keys []uint64, idBits uint, diff uint64) error {
 	const digitBits, digits = 11, 1 << 11
 	workers := min(runtime.GOMAXPROCS(0), max(1, len(ids)/(1<<16)))
 	run := func(f func(w, start, end int)) {
@@ -166,10 +203,6 @@ func sortPackedNumeric(ctx context.Context, ids []ID, keys []uint64, idBits uint
 		}
 		f(0, 0, len(ids)/workers)
 		wg.Wait()
-	}
-	var diff uint64
-	for _, k := range keys {
-		diff |= k ^ keys[0]
 	}
 	hist := make([]uint32, workers*digits)
 	src, dst := keys, make([]uint64, len(keys))
@@ -205,8 +238,10 @@ func sortPackedNumeric(ctx context.Context, ids []ID, keys []uint64, idBits uint
 		src, dst = dst, src
 	}
 	mask := uint64(1)<<idBits - 1
-	for i, k := range src {
-		ids[i] = ID(k & mask)
-	}
+	run(func(_, start, end int) {
+		for i := start; i < end; i++ {
+			ids[i] = ID(src[i] & mask)
+		}
+	})
 	return ctx.Err()
 }

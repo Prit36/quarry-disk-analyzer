@@ -366,6 +366,7 @@ func sortEntriesGrouped(ctx context.Context, s *index.Snapshot, ids []index.ID, 
 				end := len(parentList) * (w + 1) / workers
 				chunkSize := max(4096, min(1<<20, (end-start)*128))
 				var scratch []byte
+				cursor := s.NewPathCursor()
 				var arena strings.Builder
 				chunkStart := start
 				publish := func(end int) {
@@ -383,21 +384,14 @@ func sortEntriesGrouped(ctx context.Context, s *index.Snapshot, ids []index.ID, 
 					if i&1023 == 0 && ctx.Err() != nil {
 						return
 					}
-					scratch = s.AppendPath(scratch[:0], parentList[i].id)
-					ascii := true
-					for j, ch := range scratch {
-						if ch >= 128 {
-							ascii = false
-							break
-						}
-						if ch >= 'A' && ch <= 'Z' {
-							scratch[j] = ch + 32
-						}
-					}
+					// Neighbouring parents share ancestors; their prefix is kept.
+					path := cursor.Path(parentList[i].id)
+					var ascii bool
+					scratch, ascii = index.AppendFoldedASCII(scratch[:0], path)
 					var unicodePath string
 					length := len(scratch)
 					if !ascii {
-						unicodePath = strings.ToLower(string(scratch))
+						unicodePath = strings.ToLower(path)
 						length = len(unicodePath)
 					}
 					// Fixed chunks bound unused capacity and avoid copying a large
@@ -447,47 +441,95 @@ func sortEntriesGrouped(ctx context.Context, s *index.Snapshot, ids []index.ID, 
 		// more expensive name comparisons and needs only compact scratch IDs.
 		return s.SortByRankGroups(ctx, ids, folderRank, rank, desc, index.Sort{Column: "Name"}, groups)
 	case "Extension":
-		// Intern by the borrowed, original spelling first. Case folding once
-		// per distinct spelling avoids allocating ".TXT" -> ".txt" per file.
-		rawRanks := map[string]uint32{}
-		ranks := map[string]uint32{}
-		var lastRaw string
-		for i, id := range ids {
-			if i&4095 == 0 && ctx.Err() != nil {
-				return ctx.Err()
-			}
-			raw := rawExtOf(s, id)
-			if raw == lastRaw && i > 0 {
-				continue
-			}
-			lastRaw = raw
-			if _, ok := rawRanks[raw]; !ok {
-				rawRanks[raw] = 0
-				ranks[strings.ToLower(raw)] = 0
-			}
+		ranks, maxRank, err := extensionRanks(ctx, s, ids)
+		if err != nil {
+			return err
 		}
-		exts := make([]string, 0, len(ranks))
-		for e := range ranks {
-			exts = append(exts, e)
-		}
-		slices.Sort(exts)
-		for i, e := range exts {
-			ranks[e] = uint32(i)
-		}
-		rawKeyRanks := make(map[string]uint32, len(rawRanks))
-		for raw := range rawRanks {
-			rawKeyRanks[raw] = ranks[strings.ToLower(raw)]
-		}
-		extensionRank := func(id index.ID) uint32 { return rawKeyRanks[rawExtOf(s, id)] }
 		// Within an extension, largest first, then by ID: exactly as
 		// Compare with Sort{Desc: true} orders them.
-		return s.SortByRankGroups(ctx, ids, extensionRank, uint32(len(exts)-1), desc, index.Sort{Desc: true, Allocated: allocated}, groups)
+		return s.SortByRankValues(ctx, ids, ranks, maxRank, desc, index.Sort{Desc: true, Allocated: allocated}, groups)
 	}
 	column := order.Column
 	if column == "% of Scan" {
 		column = ""
 	}
 	return s.SortContext(ctx, ids, index.Sort{Column: column, Desc: desc, Allocated: allocated})
+}
+
+// extensionRanks returns the rank of each entry's lower-case extension
+// among the distinct extensions of ids, in sorted order, and the largest
+// rank. Workers intern the borrowed, original spellings of their ranges
+// (consecutive entries mostly share one), so case folding happens once per
+// distinct spelling and every entry is hashed at most once.
+func extensionRanks(ctx context.Context, s *index.Snapshot, ids []index.ID) ([]uint32, uint32, error) {
+	workers := min(runtime.GOMAXPROCS(0), max(1, len(ids)/(1<<15)))
+	ranks := make([]uint32, len(ids)) // slots into the worker's spellings, then ranks
+	spellings := make([][]string, workers)
+	var wg sync.WaitGroup
+	for w := range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			slots := map[string]uint32{}
+			var raws []string
+			var last string
+			var lastSlot uint32
+			for i := len(ids) * w / workers; i < len(ids)*(w+1)/workers; i++ {
+				if i&4095 == 0 && ctx.Err() != nil {
+					return
+				}
+				raw := rawExtOf(s, ids[i])
+				if raw != last || len(raws) == 0 {
+					slot, ok := slots[raw]
+					if !ok {
+						slot = uint32(len(raws))
+						slots[raw] = slot
+						raws = append(raws, raw)
+					}
+					last, lastSlot = raw, slot
+				}
+				ranks[i] = lastSlot
+			}
+			spellings[w] = raws
+		}()
+	}
+	wg.Wait()
+	if err := ctx.Err(); err != nil {
+		return nil, 0, err
+	}
+	folded := map[string]uint32{}
+	for _, raws := range spellings {
+		for _, raw := range raws {
+			folded[strings.ToLower(raw)] = 0
+		}
+	}
+	exts := make([]string, 0, len(folded))
+	for e := range folded {
+		exts = append(exts, e)
+	}
+	slices.Sort(exts)
+	for i, e := range exts {
+		folded[e] = uint32(i)
+	}
+	tables := make([][]uint32, workers)
+	for w, raws := range spellings {
+		tables[w] = make([]uint32, len(raws))
+		for slot, raw := range raws {
+			tables[w][slot] = folded[strings.ToLower(raw)]
+		}
+	}
+	for w := range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			table := tables[w]
+			for i := len(ids) * w / workers; i < len(ids)*(w+1)/workers; i++ {
+				ranks[i] = table[ranks[i]]
+			}
+		}()
+	}
+	wg.Wait()
+	return ranks, uint32(max(1, len(exts)) - 1), nil
 }
 
 func extOf(s *index.Snapshot, id index.ID) string {

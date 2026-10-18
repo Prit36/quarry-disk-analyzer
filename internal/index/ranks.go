@@ -56,19 +56,47 @@ func (s *Snapshot) SortByRankGroups(ctx context.Context, ids []ID, rank func(ID)
 		}
 		return ctx.Err()
 	}
+	return s.sortRanked(ctx, ids, func(i int) uint32 { return rank(ids[i]) }, make([]uint32, len(ids)), maxRank, desc, tie, groups)
+}
+
+// SortByRankValues is SortByRankGroups with the rank of ids[i] given as
+// ranks[i], which is overwritten. Callers that derive ranks in bulk avoid
+// a per-entry lookup during the sort.
+func (s *Snapshot) SortByRankValues(ctx context.Context, ids []ID, ranks []uint32, maxRank uint32, desc bool, tie Sort, groups *[]uint32) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if len(ids) != len(ranks) {
+		panic("SortByRankValues: one rank per entry")
+	}
+	if len(ids) >= 2 && uint64(maxRank)+1 > uint64(max(4096, 2*len(ids))) {
+		byID := make(map[ID]uint32, len(ids))
+		for i, id := range ids {
+			byID[id] = ranks[i]
+		}
+		return s.SortByRankGroups(ctx, ids, func(id ID) uint32 { return byID[id] }, maxRank, desc, tie, groups)
+	}
+	if len(ids) < 2 {
+		return s.SortByRankGroups(ctx, ids, nil, maxRank, desc, tie, groups)
+	}
+	return s.sortRanked(ctx, ids, func(i int) uint32 { return ranks[i] }, ranks, maxRank, desc, tie, groups)
+}
+
+// sortRanked is the counting sort of SortByRankGroups. rank(i) is the rank
+// of ids[i]; ranks receives the adjusted rank at the same position.
+func (s *Snapshot) sortRanked(ctx context.Context, ids []ID, rank func(int) uint32, ranks []uint32, maxRank uint32, desc bool, tie Sort, groups *[]uint32) error {
 	buckets := int(maxRank) + 1
 	// Bound histograms even for scans with almost one distinct folder per
 	// result. Small scans also avoid goroutine setup.
 	workers := min(runtime.GOMAXPROCS(0), max(1, len(ids)/(1<<16)), max(1, (8<<20)/(4*buckets)))
 	hist := make([]uint32, workers*buckets)
-	ranks := make([]uint32, len(ids))
 	runSortWorkers(len(ids), workers, func(w, start, end int) {
 		counts := hist[w*buckets : (w+1)*buckets]
 		for i := start; i < end; i++ {
 			if i&4095 == 0 && ctx.Err() != nil {
 				return
 			}
-			r := rank(ids[i])
+			r := rank(i)
 			if desc {
 				r = maxRank - r
 			}

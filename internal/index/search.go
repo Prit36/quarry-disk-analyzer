@@ -232,15 +232,6 @@ func newMatcher(value string, negate bool) textMatcher {
 	return m
 }
 
-func isASCII(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if s[i] >= utf8.RuneSelf {
-			return false
-		}
-	}
-	return true
-}
-
 // equalFoldASCII compares s with an ASCII lower-case literal, folding
 // s's ASCII upper case; it reports false for non-ASCII s.
 func equalFoldASCII(s, lower string) bool {
@@ -416,6 +407,12 @@ func ParseSize(s string) (uint64, error) {
 // MatchNode tests an entry. path is only consulted when NeedsPath; ancestor
 // reports whether an ancestor already satisfied every path: term.
 func (f *Filter) MatchNode(name string, n Node, path func() string, ancestor bool) bool {
+	return f.matchNode(name, n, path, nil, ancestor)
+}
+
+// matchNode is MatchNode. With paths, the path terms paths tracks are
+// decided by its incremental matches for the path that path() returned.
+func (f *Filter) matchNode(name string, n Node, path func() string, paths *pathWalker, ancestor bool) bool {
 	switch f.Kind {
 	case KindFiles:
 		if n.IsDir() {
@@ -454,11 +451,17 @@ func (f *Filter) MatchNode(name string, n Node, path func() string, ancestor boo
 		return false
 	}
 	var full string
-	for _, t := range f.terms {
+	for i, t := range f.terms {
 		subject := name
 		if t.path {
 			if full == "" {
 				full = path()
+			}
+			if paths != nil && i < 64 && paths.plain&(1<<i) != 0 {
+				if (paths.termHits()&(1<<i) != 0) == t.negate {
+					return false
+				}
+				continue
 			}
 			subject = full
 		}

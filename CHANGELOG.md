@@ -12,6 +12,28 @@
 - Measurements against 0.2.2 and reproduction details are in
   [PERFORMANCE-INTERACTIONS.md](docs/PERFORMANCE-INTERACTIONS.md).
 
+Faster sorting, filtering and searching, measured on the same saved scan of
+C:\ (1.45 million entries) against `38f9eeb`, with identical results (all 484
+complete-output digests match):
+
+- **Show/Hide Filter** 44–58 → 22–24 ms. Which files to keep is decided on
+  all cores first (the include query as a parallel search, name exclusions in
+  parallel ranges), and separate subtrees are rebuilt in parallel; the split
+  folders are finished last in the same order, so totals, IDs and removal
+  flags are unchanged.
+- **Sorting File View** by Extension 30 → 14 ms, Size and Modified 14 → 8 ms,
+  Folder 58 → 40 ms, Name 51 → 42 ms. Extensions are interned once per
+  entry on all cores; the numeric sort reads and packs keys in parallel;
+  names compare and fold eight bytes at a time and small groups sort by a
+  folded eight-byte key first; folder paths reuse the previous parent's
+  ancestors.
+- **Full-path searches** such as `path:C:\Windows\System32` 57 → 22 ms: a
+  term found in a folder's path holds for everything below it, and otherwise
+  only the end of the folder's path and the rest are searched.
+- **Showing all files** 19.5 → 13.9 ms, `type:folder` 9.8 → 7.8 ms, name
+  searches 3–9% faster: the search loop calls the matcher directly.
+- Details in [PERFORMANCE-SORTS-FILTERS.md](docs/PERFORMANCE-SORTS-FILTERS.md).
+
 ## 0.2.2 - 2026-10-18
 
 Less on screen, nothing lost: every total was shown up to four times at once.

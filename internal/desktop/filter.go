@@ -2,7 +2,9 @@ package desktop
 
 import (
 	"context"
+	"runtime"
 	"strings"
+	"sync"
 
 	"quarry/internal/index"
 	"quarry/internal/scan"
@@ -43,39 +45,73 @@ func (f analysisFilter) apply(ctx context.Context, base *index.Snapshot) (*index
 	}
 	exclude := scan.NewExclusions(splitPatterns(f.Exclude))
 	hasInclude := strings.TrimSpace(f.Include) != ""
-	// Filtered visits each directory before its files. Cache inherited path
-	// matches there instead of walking every file's ancestors again.
-	var ancestorOK []bool
-	if include.AncestorTerms() {
-		ancestorOK = make([]bool, len(base.Nodes))
-		ancestorOK[0] = include.MatchPathComponent(base.Root)
+	// Decide every file up front on all cores; the tree rebuild then only
+	// reads bits. The included files are exactly a search of the whole scan
+	// (inherited path: terms, full paths and all), and name exclusions need
+	// nothing but the name.
+	var matched, excluded []uint64
+	if hasInclude && len(base.Nodes) > 0 {
+		ids, err := base.Search(ctx, 0, &include)
+		if err != nil {
+			return nil, index.FilterStats{}, err
+		}
+		matched = make([]uint64, (len(base.Nodes)+63)/64)
+		for _, id := range ids {
+			matched[id>>6] |= 1 << (id & 63)
+		}
+	}
+	if !exclude.Empty() {
+		var err error
+		if excluded, err = excludedFiles(ctx, base, exclude); err != nil {
+			return nil, index.FilterStats{}, err
+		}
 	}
 	keep := func(id index.ID) bool {
-		name := base.NameView(id)
-		if exclude.Match(name, "", false) {
+		if excluded != nil && excluded[id>>6]&(1<<(id&63)) != 0 {
 			return false
 		}
-		if !hasInclude {
-			return true
-		}
-		inherited := ancestorOK != nil && ancestorOK[base.Nodes[id].Parent]
-		return include.MatchNode(name, base.Nodes[id], func() string { return base.Path(id) }, inherited)
+		return matched == nil || matched[id>>6]&(1<<(id&63)) != 0
 	}
-	drop := func(id index.ID) bool {
-		if ancestorOK != nil {
-			ancestorOK[id] = ancestorOK[base.Nodes[id].Parent] || include.MatchPathComponent(base.NameView(id))
+	var drop func(index.ID) bool
+	if !exclude.Empty() {
+		drop = func(id index.ID) bool {
+			path := ""
+			if exclude.NeedsPaths() {
+				path = base.Path(id)
+			}
+			return exclude.Match(base.NameView(id), path, true)
 		}
-		if exclude.Empty() {
-			return false
-		}
-		path := ""
-		if exclude.NeedsPaths() {
-			path = base.Path(id)
-		}
-		return exclude.Match(base.NameView(id), path, true)
 	}
 	isolate := f.Isolate || hasInclude
-	return base.Filtered(ctx, keep, drop, isolate)
+	return base.FilteredParallel(ctx, keep, drop, isolate)
+}
+
+// excludedFiles marks the files whose names match exclude, splitting the
+// index into word-aligned ranges matched in parallel.
+func excludedFiles(ctx context.Context, s *index.Snapshot, exclude scan.Exclusions) ([]uint64, error) {
+	bits := make([]uint64, (len(s.Nodes)+63)/64)
+	workers := min(runtime.GOMAXPROCS(0), max(1, len(bits)/1024))
+	var wg sync.WaitGroup
+	for w := range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for word := len(bits) * w / workers; word < len(bits)*(w+1)/workers; word++ {
+				if word&63 == 0 && ctx.Err() != nil {
+					return
+				}
+				var v uint64
+				for i := word * 64; i < min(len(s.Nodes), word*64+64); i++ {
+					if !s.Nodes[i].IsDir() && exclude.Match(s.NameView(index.ID(i)), "", false) {
+						v |= 1 << (i & 63)
+					}
+				}
+				bits[word] = v
+			}
+		}()
+	}
+	wg.Wait()
+	return bits, ctx.Err()
 }
 
 func (f analysisFilter) summary() string {

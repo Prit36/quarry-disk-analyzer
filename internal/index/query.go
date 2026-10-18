@@ -265,22 +265,41 @@ func (s *Snapshot) searchSubtree(ctx context.Context, top, skip ID, f *Filter, a
 	}
 	var paths *pathWalker
 	if f.NeedsPath() {
-		paths = s.newPathWalker()
+		paths = s.newTermWalker(f)
 	}
 	return s.searchSubtreeWalk(ctx, top, skip, f, ancestorOK, ids, tally, paths)
 }
 
 func (s *Snapshot) searchSubtreeWalk(ctx context.Context, top, skip ID, f *Filter, ancestorOK []bool, ids []ID, tally *searchTally, paths *pathWalker) ([]ID, error) {
-	err := s.Visit(ctx, top, func(id ID) error {
-		if id == skip {
-			return nil
+	// The same depth-first order as Visit, without two indirect calls per
+	// entry.
+	if top == None || int(top) >= len(s.Nodes) {
+		return ids, fmt.Errorf("invalid scope")
+	}
+	nodes := s.Nodes
+	current, count := top, 0
+	for {
+		if count&4095 == 0 {
+			if err := ctx.Err(); err != nil {
+				return ids, err
+			}
 		}
-		if s.matchEntry(id, f, ancestorOK, tally, paths) {
-			ids = append(ids, id)
+		count++
+		if current != skip && s.matchEntry(current, f, ancestorOK, tally, paths) {
+			ids = append(ids, current)
 		}
-		return nil
-	})
-	return ids, err
+		if child := nodes[current].FirstChild; child != None {
+			current = child
+			continue
+		}
+		for current != top && nodes[current].NextSibling == None {
+			current = nodes[current].Parent
+		}
+		if current == top {
+			return ids, ctx.Err()
+		}
+		current = nodes[current].NextSibling
+	}
 }
 
 // matchEntry tests one entry, after its parent has been tested. For folders it
@@ -302,7 +321,7 @@ func (s *Snapshot) matchEntry(id ID, f *Filter, ancestorOK []bool, tally *search
 		// rejects it: descendants reuse its path without ancestor walks.
 		full = paths.path(id)
 	}
-	matched := f.MatchNode(name, n, func() string {
+	matched := f.matchNode(name, n, func() string {
 		if paths == nil {
 			return s.Path(id)
 		}
@@ -310,7 +329,7 @@ func (s *Snapshot) matchEntry(id ID, f *Filter, ancestorOK []bool, tally *search
 			full = paths.path(id)
 		}
 		return full
-	}, inherited)
+	}, paths, inherited)
 	if tally != nil && (matched || n.FirstChild != None) {
 		const covered, metadata = 1, 2
 		var state uint32
@@ -494,7 +513,7 @@ func (s *Snapshot) searchParallel(ctx context.Context, root ID, f *Filter, ances
 					}
 					var paths *pathWalker
 					if f.NeedsPath() {
-						paths = s.newPathWalker()
+						paths = s.newTermWalker(f)
 					}
 					count := 0
 					for c := p.id; ; c = s.Nodes[c].NextSibling {
@@ -563,6 +582,9 @@ func (s *Snapshot) displayName(id ID) string {
 func containsFold(s, lower string) bool {
 	if len(lower) == 0 {
 		return true
+	}
+	if isASCII(s) {
+		return containsFoldASCII(s, lower)
 	}
 	// Fold ASCII while searching, instead of first scanning the entire name
 	// to classify it. A positive ASCII match is valid even when a later byte
