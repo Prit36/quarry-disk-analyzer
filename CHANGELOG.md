@@ -10,7 +10,7 @@ Less on screen, nothing lost: every total was shown up to four times at once.
 - **Scan progress** (files, folders, elapsed time, phase and percentage) is in the status bar during a rescan and on the scanning page for a first scan.
 - **Status bar** counts the selection only when more than one item is selected; a single item is already described on the left.
 - **Treemap bar** no longer repeats the location and its size; the metric reads "Logical size" or "Allocated size".
-- **Start page** shows the drive table (double-click or Enter scans) and recent folders (one click scans), nothing else. Gone: the heading and instructions, the Scan Selected Drive, Scan Folder… and Open Saved Scan… buttons (all in the Scan menu), drive roots repeated under Recent, and the administrator paragraph, now one line with a link. While the first scan runs, its progress is shown once, on the page.
+- **Start page** shows the drive table and recent folders, nothing else; one click scans either. Gone: the heading and instructions, the Scan Selected Drive, Scan Folder… and Open Saved Scan… buttons (all in the Scan menu), drive roots repeated under Recent, and the administrator paragraph, now one line with a link. While the first scan runs, its progress is shown once, on the page.
 
 ## 0.2.1 — 2026-10-18
 

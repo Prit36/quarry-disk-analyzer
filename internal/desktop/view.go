@@ -823,30 +823,33 @@ func (a *App) startPage(c *ui.Context, pal palette) {
 		a.dlg.driveList.Selected = &a.dlg.driveRow
 		table := ui.Table(c.Key("drives"), &a.dlg.driveList, cols, len(a.drives), func(row, col int) {
 			d := a.drives[row]
-			switch col {
-			case 0:
-				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+			// One click scans, like the recent folders below.
+			cell := cellBox(c, cols[col].Align)
+			if cell.Clicked() {
+				a.post(func() { a.scanPath(d.Path) })
+			}
+			cell.Children(func() {
+				switch col {
+				case 0:
 					if b := shellIcons["drive"]; b != nil {
 						ui.Image(c, b).Size(16, 16)
 					}
 					ui.Text(c, d.Path).SingleLine()
-				})
-			case 1:
-				ui.Text(c, d.Name).SingleLine()
-			case 2:
-				ui.Text(c, d.FileSystem).TextColor(t.TextMuted)
-			case 3:
-				ui.Text(c, a.size(d.Total))
-			case 4:
-				used := percent(d.Total-d.Free, d.Total)
-				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+				case 1:
+					ui.Text(c, d.Name).SingleLine()
+				case 2:
+					ui.Text(c, d.FileSystem).TextColor(t.TextMuted)
+				case 3:
+					ui.Text(c, a.size(d.Total))
+				case 4:
+					used := percent(d.Total-d.Free, d.Total)
 					shareBar(c, used/100, 90, pal)
 					ui.Text(c, percentText(used)).TextColor(t.TextMuted)
-				})
-			case 5:
-				ui.Text(c, a.size(d.Free))
-			}
-		}).Height(float32(28 + 26*max(1, len(a.drives)))).MaxHeight(260).MaxWidth(720).Tooltip("Double-click or press Enter to scan")
+				case 5:
+					ui.Text(c, a.size(d.Free))
+				}
+			})
+		}).Height(float32(28 + 26*max(1, len(a.drives)))).MaxHeight(260).MaxWidth(720).Tooltip("Click or press Enter to scan")
 		if table.Submitted() && a.dlg.driveRow >= 0 && a.dlg.driveRow < len(a.drives) {
 			a.scanPath(a.drives[a.dlg.driveRow].Path)
 		}

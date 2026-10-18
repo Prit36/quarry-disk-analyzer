@@ -9,6 +9,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 	"quarry/internal/index"
+	"quarry/internal/platform"
 )
 
 // fixture: C:\data
@@ -385,5 +386,24 @@ func TestLocationBarPath(t *testing.T) {
 	a.goToLocation(`C:\Users\Me\notes.txt`)
 	if a.current() != file {
 		t.Fatalf("typing a file path should reveal it, current %d", a.current())
+	}
+}
+
+// One click on a drive on the start page scans it, as on a recent folder.
+func TestStartPageClickScansDrive(t *testing.T) {
+	t.Setenv("QUARRY_CONFIG_DIR", t.TempDir())
+	a := newApp()
+	a.prefs.Theme = "Dark"
+	dir := t.TempDir()
+	a.menu = &menuBar{} // windowless: scan completion marks the recent list
+	a.drives = []platform.Drive{{Path: dir, Name: "Test volume", FileSystem: "NTFS", Total: 100, Free: 40}}
+	tt := ui.NewTester(a.view, 1000, 700)
+	tt.Frame()
+	if err := tt.Click("Test volume"); err != nil {
+		t.Fatalf("click: %v; texts %q", err, tt.Texts())
+	}
+	settle(tt, func() bool { return a.snap != nil })
+	if a.snap == nil || a.snap.Root != dir {
+		t.Fatalf("one click should scan %s, scanning %v", dir, a.scanning)
 	}
 }
