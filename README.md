@@ -9,18 +9,17 @@ Quarry shows where the space went and gets you from a storage problem to the fil
 
 ```
 File  Edit  View  Tools  Options  Help                         (native menu bar)
-[C:\        v] [Scan] [Stop] | <- -> ^ | C: > Users > me | [Search...      v]
-Size 307.9 GiB   Allocated 308.8 GiB   1,070,517 files   331,611 folders   Volume C: ...
+[Scan v] [Rescan] | <- -> ^ | C: > Users > me                  | [Search...      v]
 Tree | Files | Extensions                                     Scope: Entire scan
 +--------------------------------------------------------------------------------+
 | Name                       Size   Allocated   % of Parent      Files   Modified |
 | v C:\                    307 GiB    308 GiB   ##### 100 %   1,070,517          |
 |   > Users                152 GiB    153 GiB   ##    49 %       804,863          |
 +------------------------------ splitter -----------------------------------------+
-| Treemap                                 [Logical v] [Color by extension v] ^ x |
+| Treemap                             [Logical size v] [Color by extension v] ^ x |
 |                                  treemap                                       |
 +--------------------------------------------------------------------------------+
-Ready                                   1 selected · 152 GiB   Directory scan · 9 s
+C:\Users  ·  152 GiB  ·  804,863 files          NTFS MFT · 2 s   C: 120 GiB free
 ```
 
 - **Tree** — the folder hierarchy below the current location, sorted by size. Right/Left expand and collapse (Shift for the whole subtree, bounded at 200,000 rows), Enter or double-click expands folders and opens files, Backspace or Alt+Up goes up.

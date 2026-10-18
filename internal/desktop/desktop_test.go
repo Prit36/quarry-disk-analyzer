@@ -270,11 +270,15 @@ func TestStartPageListsDrives(t *testing.T) {
 	a.prefs.Theme = "Dark"
 	tt := ui.NewTester(a.view, 1000, 700)
 	tt.Frame()
-	if !tt.HasText("Choose a drive or folder to analyze") {
-		t.Fatalf("start page %q", tt.Texts())
-	}
 	if len(a.drives) > 0 && !tt.HasText(a.drives[0].Path) {
 		t.Fatalf("drive %s not listed", a.drives[0].Path)
+	}
+	for i := 0; i < 5; i++ {
+		tt.Advance(100 * time.Millisecond)
+		tt.Frame()
+	}
+	if a.scanning {
+		t.Fatal("the start page began a scan without a click")
 	}
 }
 
@@ -337,12 +341,49 @@ func TestMetadataHiddenByDefault(t *testing.T) {
 	if a.snap.Reachable(bad) || a.snap.Nodes[0].Size != 100 || !a.snap.Reachable(3) {
 		t.Fatalf("metadata should be hidden: size %d", a.snap.Nodes[0].Size)
 	}
-	if !tt.HasText("NTFS metadata hidden") {
-		t.Fatalf("the information bar should say metadata is hidden: %q", tt.Texts())
+	if bytes, ok := a.metadataBytes(); !ok || bytes != 1<<30 {
+		t.Fatalf("the status bar's engine tip should report %d bytes of hidden metadata, got %d %v", 1<<30, bytes, ok)
 	}
 	a.exec("opt.showMeta")
 	settle(tt, func() bool { return !a.filterBusy && a.snap.Reachable(bad) })
 	if !a.snap.Reachable(bad) || a.snap.Nodes[0].Size != 1<<30+100 {
 		t.Fatalf("Show NTFS Metadata Files: size %d", a.snap.Nodes[0].Size)
+	}
+}
+
+// A path typed into the location bar goes to that folder of the scan, case
+// insensitively, and reveals files; anything else is not found.
+func TestLocationBarPath(t *testing.T) {
+	t.Setenv("QUARRY_CONFIG_DIR", t.TempDir())
+	s := index.New(`C:\`)
+	users := s.Add(0, "Users", 0, 0, 0, index.Directory)
+	me := s.Add(users, "Me", 0, 0, 0, index.Directory)
+	file := s.Add(me, "notes.txt", 10, 10, 0, 0)
+	s.Finalize()
+	a := newApp()
+	a.prefs.Theme = "Dark"
+	tt := ui.NewTester(a.view, 1000, 700)
+	a.setBase(s, "", nil, false)
+	settle(tt, func() bool { return a.snap != nil })
+	if id, ok := a.findPath(`c:\users\ME\`); !ok || id != me {
+		t.Fatalf("findPath: %d %v, want %d", id, ok, me)
+	}
+	if id, ok := a.findPath(`C:\`); !ok || id != 0 {
+		t.Fatalf("findPath root: %d %v", id, ok)
+	}
+	if _, ok := a.findPath(`C:\Users\Nobody`); ok {
+		t.Fatal("findPath found a missing folder")
+	}
+	if _, ok := a.findPath(`D:\Users`); ok {
+		t.Fatal("findPath found a path outside the scan")
+	}
+	a.editLocation()
+	a.goToLocation(`C:\Users\Me`)
+	if a.location != me || a.locEdit {
+		t.Fatalf("location %d editing %v, want %d", a.location, a.locEdit, me)
+	}
+	a.goToLocation(`C:\Users\Me\notes.txt`)
+	if a.current() != file {
+		t.Fatalf("typing a file path should reveal it, current %d", a.current())
 	}
 }

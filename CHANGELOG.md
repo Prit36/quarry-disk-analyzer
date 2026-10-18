@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+Less on screen, nothing lost: every total was shown up to four times at once.
+
+- **No information bar.** Size, allocated size, files and folders are in the tree's root row; the volume's free space moved to the status bar and is refreshed after deletions. Warnings (saved scan, partial scan, exclusions, outdated results, analysis filter with Clear) appear beside the view tabs only when they apply. "NTFS metadata hidden" is in the scan method's tooltip. View → Information Bar is gone.
+- **Location bar works like Explorer's.** The separate scan-target box, which repeated the location, is gone. Click the empty part of the breadcrumbs or press Ctrl+L to type a path: a folder inside the scan is opened, a file is revealed in the tree, any other folder is scanned, and a saved scan file is opened. Esc or clicking elsewhere returns to the breadcrumbs.
+- **Scan menu.** One Scan button lists drives with their free space, recent locations, Scan Folder… and Open Saved Scan…. Rescan becomes Stop while a scan runs, instead of a Stop button that was disabled the rest of the time.
+- **Scan progress** (files, folders, elapsed time, phase and percentage) is in the status bar during a rescan and on the scanning page for a first scan.
+- **Status bar** counts the selection only when more than one item is selected; a single item is already described on the left.
+- **Treemap bar** no longer repeats the location and its size; the metric reads "Logical size" or "Allocated size".
+- **Start page** shows the drive table (double-click or Enter scans) and recent folders (one click scans), nothing else. Gone: the heading and instructions, the Scan Selected Drive, Scan Folder… and Open Saved Scan… buttons (all in the Scan menu), drive roots repeated under Recent, and the administrator paragraph, now one line with a link. While the first scan runs, its progress is shown once, on the page.
+
 ## 0.2.1 — 2026-10-18
 
 Faster searching, sorting, opening saved scans and duplicate verification. Measured on a saved scan of C:\ (1.43 million entries), 0.2.0 against 0.2.1, alternating runs, medians; every search, sort, analysis, treemap layout, JSON export and duplicate result was checked to be identical in both versions. Details in `docs/benchmark-results.json`.

@@ -60,9 +60,6 @@ func (a *App) view(c *ui.Context) {
 	}
 	root.Children(func() {
 		a.toolbar(c, pal)
-		if a.prefs.ShowInfo && (a.snap != nil || a.scanning) {
-			a.infoBar(c, pal)
-		}
 		ui.Column(c).Grow(1).MinHeight(0).Children(func() {
 			switch {
 			case a.snap == nil && a.scanning:
@@ -169,45 +166,18 @@ func vsep(c *ui.Context, pal palette) {
 }
 
 func (a *App) toolbar(c *ui.Context, pal palette) {
-	t := c.Theme()
 	ui.Row(c).Height(36).Shrink(0).Padding(0, 6).Gap(4).AlignItems(ui.Center).Background(pal.chrome).BorderWidth(0, 0, 1, 0).BorderColor(pal.separator).Children(func() {
-		// Scan target: an editable box with drives, recent folders and Browse.
-		ui.Row(c).Gap(0).AlignItems(ui.Center).Children(func() {
-			in := ui.TextInput(c.Key("target"), &a.target).Bind(&a.targetHandle).Width(220).Height(26).Placeholder("Drive or folder to scan").Label("Scan target").SingleLine()
-			if in.Submitted() {
-				a.startScan()
+		a.scanMenu(c)
+		// One button that rescans and, while a scan runs, stops it.
+		switch {
+		case a.scanning:
+			if textButton(c, "stop", "Stop", "Stop scanning (Esc)", true).Clicked() {
+				a.stopScan()
 			}
-			ui.ButtonBase(c.Key("target-menu")).Size(22, 26).Center().Label("Choose drive or folder").Tooltip("Drives and recent locations").Children(func() {
-				ui.Icon(c, icons["chevron_down"]).FontSize(11).TextColor(t.TextMuted)
-			}).Menu(func(m *ui.Menu) {
-				for _, d := range a.drives {
-					if m.Item(driveLabel(d, a)).Chosen() {
-						a.scanPath(d.Path)
-					}
-				}
-				if len(a.prefs.Recent) > 0 {
-					m.Separator()
-					for _, r := range a.prefs.Recent {
-						if m.Item(r).Chosen() {
-							a.scanPath(r)
-						}
-					}
-				}
-				m.Separator()
-				if m.Item("Browse for Folder…").Shortcut(ui.Ctrl, ui.KeyO).Chosen() {
-					a.chooseFolder()
-				}
-			})
-		})
-		label := "Scan"
-		if a.base != nil && a.source == "" && strings.EqualFold(filepath.Clean(a.target), filepath.Clean(a.base.Root)) {
-			label = "Rescan"
-		}
-		if textButton(c, "scan", label, "Scan the target (F5 rescans)", !a.scanning).Clicked() {
-			a.startScan()
-		}
-		if textButton(c, "stop", "Stop", "Stop scanning (Esc)", a.scanning).Clicked() {
-			a.stopScan()
+		case a.base != nil:
+			if textButton(c, "rescan", "Rescan", "Scan "+a.base.Root+" again (F5)", true).Clicked() {
+				a.rescan()
+			}
 		}
 		vsep(c, pal)
 		if toolButton(c, "back", "arrow_left", "Back (Alt+Left)", a.canBack()) {
@@ -219,27 +189,184 @@ func (a *App) toolbar(c *ui.Context, pal palette) {
 		if toolButton(c, "up", "arrow_up", "Up one level (Alt+Up)", a.canUp()) {
 			a.up()
 		}
-		// Location: where Tree View and the treemap are rooted.
-		ui.Row(c).Grow(1).MinWidth(60).Height(26).Padding(0, 6).Radius(4).Border(1, t.Border).Background(pal.grid).AlignItems(ui.Center).Clip().Children(func() {
-			if a.snap == nil {
-				return
-			}
-			var ids []index.ID
-			for id := a.location; id != index.None; id = a.snap.Nodes[id].Parent {
-				ids = append([]index.ID{id}, ids...)
-			}
-			names := make([]string, len(ids))
-			for i, id := range ids {
-				names[i] = strings.TrimSuffix(a.name(id), `\`)
-			}
-			chosen := len(ids) - 1
-			if ui.Breadcrumbs(c.Key("crumbs"), names, &chosen).Label("Location").Changed() && chosen >= 0 && chosen < len(ids) {
-				a.navigate(ids[chosen])
-			}
-		})
+		a.locationBar(c, pal)
 		vsep(c, pal)
 		a.searchBox(c)
 	})
+}
+
+// scanMenu is the toolbar's entry point for new scans: drives with their
+// free space, recent locations, a folder picker and saved scans.
+func (a *App) scanMenu(c *ui.Context) {
+	t := c.Theme()
+	b := ui.ButtonBase(c.Key("scan-menu")).Height(26).Padding(0, 6, 0, 8).Gap(6).Radius(4).Border(1, t.Border).AlignItems(ui.Center).Label("Scan").Tooltip("Scan a drive or folder").Disabled(a.scanning)
+	color := t.Text
+	switch {
+	case a.scanning:
+		color = t.TextMuted.Alpha(.5)
+	case b.Pressed():
+		b.Background(t.SurfacePressed)
+	case b.Hovered():
+		b.Background(t.SurfaceHover)
+	default:
+		b.Background(t.Surface)
+	}
+	b.Children(func() {
+		ui.Icon(c, icons["hard_drive"]).FontSize(14).TextColor(color)
+		ui.Text(c, "Scan").TextColor(color).SingleLine()
+		ui.Icon(c, icons["chevron_down"]).FontSize(10).TextColor(t.TextMuted)
+	})
+	if a.scanning {
+		return
+	}
+	b.Menu(func(m *ui.Menu) {
+		for _, d := range a.drives {
+			if m.Item(strings.ReplaceAll(driveLabel(d, a), "&&", "&")).Chosen() {
+				a.scanPath(d.Path)
+			}
+		}
+		if len(a.prefs.Recent) > 0 {
+			m.Separator()
+			for _, r := range a.prefs.Recent {
+				if m.Item(r).Chosen() {
+					a.scanPath(r)
+				}
+			}
+		}
+		m.Separator()
+		a.contextItems(m, "scan.folder", "file.openScan")
+	})
+}
+
+// locationBar shows where Tree View and the treemap are rooted as
+// breadcrumbs. Like Explorer's address bar, a click on its empty part or
+// Ctrl+L turns it into a text box: a path inside the scan goes there, any
+// other folder is scanned.
+func (a *App) locationBar(c *ui.Context, pal palette) {
+	t := c.Theme()
+	editing := a.locEdit || a.snap == nil
+	bar := ui.Row(c).Grow(1).MinWidth(60).Height(26).Radius(4).Border(1, t.Border).Background(pal.grid).AlignItems(ui.Center).Clip()
+	bar.Children(func() {
+		if editing {
+			placeholder := "Type a folder path and press Enter to scan it"
+			field := ui.TextInput(c.Key("location"), &a.locText).Bind(&a.targetHandle).Grow(1).MinWidth(0).Height(24).Background(ui.Transparent).Border(0, ui.Transparent).Padding(0, 6).Placeholder(placeholder).Label("Location").SingleLine()
+			if field.Focused() {
+				bar.Border(1, t.Focus)
+				a.locArmed = true
+			} else if a.locArmed && a.snap != nil {
+				a.endLocationEdit() // focus moved elsewhere, as in Explorer
+			}
+			if a.wantLoc {
+				a.wantLoc = false
+				field.Focus()
+				field.SetTextSelection(0, len([]rune(a.locText)))
+				c.Invalidate()
+			}
+			if field.Shortcut(0, ui.KeyEscape) {
+				a.endLocationEdit()
+				a.focusTable = a.snap != nil
+			}
+			if field.Submitted() {
+				a.goToLocation(a.locText)
+			}
+			return
+		}
+		var ids []index.ID
+		for id := a.location; id != index.None; id = a.snap.Nodes[id].Parent {
+			ids = append([]index.ID{id}, ids...)
+		}
+		names := make([]string, len(ids))
+		for i, id := range ids {
+			names[i] = strings.TrimSuffix(a.name(id), `\`)
+		}
+		chosen := len(ids) - 1
+		ui.Box(c).Width(6).Shrink(0)
+		if ui.Breadcrumbs(c.Key("crumbs"), names, &chosen).Label("Location").Shrink(1).MinWidth(0).Changed() && chosen >= 0 && chosen < len(ids) {
+			a.navigate(ids[chosen])
+		}
+		edit := ui.ButtonBase(c.Key("location-edit")).Grow(1).Height(24).Label("Edit location").Tooltip(a.pathOf(a.location) + "\nClick to type a path (Ctrl+L)")
+		if edit.Clicked() {
+			a.editLocation()
+		}
+	})
+}
+
+func (a *App) editLocation() {
+	a.locText = a.target
+	if a.snap != nil {
+		a.locText = a.pathOf(a.location)
+	}
+	a.locEdit, a.locArmed, a.wantLoc = true, false, true
+}
+
+func (a *App) endLocationEdit() {
+	a.locEdit, a.locArmed, a.wantLoc = false, false, false
+}
+
+// goToLocation handles a path typed into the location bar.
+func (a *App) goToLocation(text string) {
+	path := strings.Trim(strings.TrimSpace(text), `"`)
+	if path == "" {
+		return
+	}
+	if len(path) == 2 && path[1] == ':' {
+		path += `\`
+	}
+	if a.snap != nil {
+		if id, ok := a.findPath(path); ok {
+			a.endLocationEdit()
+			if a.snap.Nodes[id].IsDir() {
+				a.navigate(id)
+			} else {
+				a.reveal(id)
+			}
+			a.focusTable = true
+			return
+		}
+	}
+	info, err := os.Stat(path)
+	switch {
+	case err == nil && info.IsDir():
+		if a.scanning {
+			a.fail("Wait for the current scan to finish, or stop it (Esc).")
+			return
+		}
+		a.endLocationEdit()
+		a.scanPath(path)
+	case err == nil && isScanFile(path):
+		a.endLocationEdit()
+		a.openSnapshot(path)
+	default:
+		a.fail("Cannot find %s.", path)
+	}
+}
+
+// findPath returns the entry of the scan at path, if the scan contains it.
+func (a *App) findPath(path string) (index.ID, bool) {
+	s := a.snap
+	root := strings.TrimSuffix(filepath.Clean(s.Root), `\`)
+	p := strings.TrimSuffix(filepath.Clean(path), `\`)
+	if len(p) < len(root) || !strings.EqualFold(p[:len(root)], root) || (len(p) > len(root) && p[len(root)] != '\\') {
+		return index.None, false
+	}
+	id := index.ID(0)
+	for _, part := range strings.Split(p[len(root):], `\`) {
+		if part == "" {
+			continue
+		}
+		next := index.None
+		for _, k := range s.Children(id) {
+			if strings.EqualFold(s.NameView(k), part) {
+				next = k
+				break
+			}
+		}
+		if next == index.None {
+			return index.None, false
+		}
+		id = next
+	}
+	return id, true
 }
 
 func (a *App) searchBox(c *ui.Context) {
@@ -323,64 +450,56 @@ func (a *App) searchBox(c *ui.Context) {
 	})
 }
 
-// Information bar: one line of high-value facts about the scan.
+// progressText is the live line of a running scan.
+func (a *App) progressText() string {
+	p := a.progress
+	if p == nil {
+		return "Scanning " + a.target + "…"
+	}
+	text := fmt.Sprintf("Scanning %s — %s files, %s folders · %s · %s", a.target, count(p.Files.Load()), count(p.Folders.Load()), duration(time.Since(a.scanStart)), p.Status())
+	if total := p.TotalRecords.Load(); total > 0 {
+		text += fmt.Sprintf(" %.0f%%", 100*float64(p.Records.Load())/float64(total))
+	}
+	if e := p.Errors.Load(); e > 0 {
+		text += " · " + plural(e, "inaccessible item", "inaccessible items")
+	}
+	return text
+}
 
-func (a *App) infoBar(c *ui.Context, pal palette) {
+// scanFlags names what makes the results differ from the disk as it is:
+// only shown when it applies, beside the view tabs.
+func (a *App) scanFlags(c *ui.Context) {
 	t := c.Theme()
-	ui.Row(c).Height(24).Shrink(0).Padding(0, 10).Gap(14).AlignItems(ui.Center).Background(pal.chrome).BorderWidth(0, 0, 1, 0).BorderColor(pal.separator).Clip().Children(func() {
-		muted := func(s string) ui.Element { return ui.Text(c, s).TextColor(t.TextMuted).SingleLine() }
-		if a.scanning {
-			p := a.progress
-			ui.Spinner(c).Size(12, 12)
-			text := fmt.Sprintf("Scanning %s — %s files, %s folders · %s", a.target, count(p.Files.Load()), count(p.Folders.Load()), duration(time.Since(a.scanStart)))
-			ui.Text(c, text).SingleLine()
-			phase := p.Status()
-			if total := p.TotalRecords.Load(); total > 0 {
-				phase += fmt.Sprintf(" %.0f%%", 100*float64(p.Records.Load())/float64(total))
-			}
-			muted(phase)
-			if e := p.Errors.Load(); e > 0 {
-				ui.Text(c, plural(e, "inaccessible item", "inaccessible items")).TextColor(t.Warning)
-			}
-			return
+	s := a.snap
+	warn := func(text, tip string) {
+		ui.Text(c, text).TextColor(t.Warning).SingleLine().Tooltip(tip)
+	}
+	if a.source != "" {
+		warn("Saved scan from "+s.Started.Format("2006-01-02 15:04"), a.source+"\nHistorical data: files may have changed since.")
+	}
+	if s.Cancelled {
+		warn("Partial scan", "The scan was stopped before it finished; totals are incomplete.")
+	}
+	if len(s.Exclusions) > 0 {
+		warn(plural(s.Excluded, "entry excluded", "entries excluded"), "Scan exclusions kept these out; totals are incomplete:\n"+strings.Join(s.Exclusions, "\n"))
+	}
+	if a.stale != "" {
+		warn("Results may be outdated", a.stale+"\nPress F5 to rescan.")
+	}
+	if a.filter.active() {
+		status := "Filtered: " + a.filter.summary()
+		if a.filterBusy {
+			status = "Applying filter…"
+		} else if a.filter.stats.HiddenFiles > 0 {
+			status += " · " + plural(a.filter.stats.HiddenFiles, "file", "files") + " hidden"
 		}
-		s, root := a.snap, a.snap.Nodes[0]
-		ui.Text(c, "Size "+a.size(root.Size)+"   Allocated "+a.size(root.Allocated)).SingleLine().Tooltip(fmt.Sprintf("Logical: %s bytes\nAllocated on disk: %s bytes\nAllocated excludes filesystem overhead and is not the volume's used space.", count(root.Size), count(root.Allocated)))
-		ui.Text(c, plural(uint64(root.Files), "file", "files")+"   "+plural(uint64(root.Dirs), "folder", "folders")).SingleLine()
-		if d, ok := a.driveOf(s.Root); ok && a.source == "" {
-			muted(fmt.Sprintf("Volume %s %s used, %s free", strings.TrimSuffix(d.Path, `\`), a.size(d.Total-d.Free), a.size(d.Free)))
+		ui.Text(c, status).TextColor(t.Focus).SingleLine().MinWidth(0).Shrink(1).MaxWidth(360).Tooltip(status)
+		b := ui.ButtonBase(c.Key("clear-filter")).Padding(0, 4).Label("Clear filter").Tooltip("Show all entries again")
+		b.Children(func() { ui.Text(c, "Clear").TextColor(t.Focus).Underline() })
+		if b.Clicked() {
+			a.clearFilter()
 		}
-		ui.Spacer(c)
-		if bytes, ok := a.metadataBytes(); ok {
-			muted("NTFS metadata hidden").Tooltip(fmt.Sprintf("$MFT, $LogFile, $BadClus, $Extend and other filesystem records (%s) are not listed or counted.\nOptions → Show NTFS Metadata Files lists them.", a.size(bytes)))
-		}
-		if a.source != "" {
-			ui.Text(c, "Saved scan from "+s.Started.Format("2006-01-02 15:04")).TextColor(t.Warning).SingleLine().Tooltip(a.source + "\nHistorical data: files may have changed since.")
-		}
-		if s.Cancelled {
-			ui.Text(c, "Partial scan").TextColor(t.Warning).Tooltip("The scan was stopped before it finished; totals are incomplete.")
-		}
-		if len(s.Exclusions) > 0 {
-			ui.Text(c, plural(s.Excluded, "entry excluded", "entries excluded")).TextColor(t.Warning).Tooltip("Scan exclusions kept these out; totals are incomplete:\n" + strings.Join(s.Exclusions, "\n"))
-		}
-		if a.stale != "" {
-			ui.Text(c, "Results may be outdated").TextColor(t.Warning).Tooltip(a.stale + "\nPress F5 to rescan.")
-		}
-		if a.filter.active() {
-			status := "Filtered: " + a.filter.summary()
-			if a.filterBusy {
-				status = "Applying filter…"
-			} else if a.filter.stats.HiddenFiles > 0 {
-				status += " · " + plural(a.filter.stats.HiddenFiles, "file", "files") + " hidden"
-			}
-			ui.Text(c, status).TextColor(t.Focus).SingleLine().MaxWidth(420)
-			b := ui.ButtonBase(c.Key("clear-filter")).Padding(0, 4).Label("Clear filter").Tooltip("Show all entries again")
-			b.Children(func() { ui.Text(c, "Clear").TextColor(t.Focus).Underline() })
-			if b.Clicked() {
-				a.clearFilter()
-			}
-		}
-	})
+	}
 }
 
 func engineName(s *index.Snapshot) string {
@@ -464,7 +583,10 @@ func (a *App) viewTabs(c *ui.Context, pal palette) {
 			}
 		}
 		ui.Spacer(c)
-		ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() { a.viewContext(c) })
+		ui.Row(c).Gap(10).AlignItems(ui.Center).MinWidth(0).Shrink(1).Clip().Children(func() {
+			a.scanFlags(c)
+			a.viewContext(c)
+		})
 	})
 }
 
@@ -535,18 +657,15 @@ func truncateMiddle(s string, n int) string {
 func (a *App) treemapBar(c *ui.Context, pal palette) {
 	t := c.Theme()
 	ui.Row(c).Height(28).Shrink(0).Padding(0, 6, 0, 10).Gap(6).AlignItems(ui.Center).Background(pal.chrome).BorderWidth(1, 0, 1, 0).BorderColor(pal.separator).Children(func() {
-		ui.Text(c, "Treemap").SingleLine()
-		if a.snap != nil {
-			loc := a.location
-			ui.Text(c, a.shortName(loc)+" · "+a.size(a.metric(a.snap.Nodes[loc]))).TextColor(t.TextMuted).SingleLine().MinWidth(0).Shrink(1).Tooltip(a.pathOf(loc) + "\nDouble-click a folder to go into it; Backspace or Alt+Up goes back up.")
-		}
+		// The location and its size are in the toolbar and the tree already.
+		ui.Text(c, "Treemap").SingleLine().Tooltip("Click selects in the tree; double-click a folder to go into it, Backspace or Alt+Up goes back up.")
 		if a.tm.busy {
 			ui.Text(c, "Updating…").TextColor(t.TextMuted)
 		}
 		ui.Spacer(c)
-		metric := a.prefs.Metric
-		if ui.Select(c.Key("tm-metric"), &metric, []string{"Logical", "Allocated"}).Label("Size metric").Tooltip("Size metric for the treemap, percentages and default sorting").Width(100).Changed() {
-			a.setMetric(metric)
+		metric := a.prefs.Metric + " size"
+		if ui.Select(c.Key("tm-metric"), &metric, []string{"Logical size", "Allocated size"}).Label("Size metric").Tooltip("Size metric for the treemap, percentages and default sorting").Width(124).Changed() {
+			a.setMetric(strings.TrimSuffix(metric, " size"))
 		}
 		colors := map[string]string{"Extension": "Color by extension", "Folder": "Color by folder", "Mono": "Monochrome"}
 		choice := colors[a.prefs.TreemapColors]
@@ -585,14 +704,16 @@ func (a *App) statusBar(c *ui.Context, pal palette) {
 		color := t.Text
 		if a.errorMsg {
 			color = t.Danger
-		} else if !a.messageAt.IsZero() && time.Since(a.messageAt) > 5*time.Second {
+		} else if a.scanning || !a.messageAt.IsZero() && time.Since(a.messageAt) > 5*time.Second {
 			msg = ""
+		}
+		if msg == "" && a.scanning && a.snap != nil { // a first scan shows it on the page
+			ui.Spinner(c).Size(12, 12).Shrink(0)
+			msg = a.progressText()
 		}
 		if msg == "" {
 			color = t.TextMuted
 			switch {
-			case a.scanning:
-				msg = "Scanning…"
 			case a.snap == nil:
 				msg = "Ready"
 			case a.hover != index.None && int(a.hover) < len(a.snap.Nodes):
@@ -608,7 +729,8 @@ func (a *App) statusBar(c *ui.Context, pal palette) {
 			m.Tooltip(msg)
 		}
 		ui.Spacer(c)
-		if ids := a.selected(); len(ids) > 0 && a.snap != nil {
+		// One selected item is already on the left; a count helps for more.
+		if ids := a.selected(); len(ids) > 1 && a.snap != nil {
 			ui.Text(c, fmt.Sprintf("%s selected · %s", count(uint64(len(ids))), a.size(a.facts().total))).TextColor(t.TextMuted).SingleLine()
 		}
 		if a.snap != nil {
@@ -621,6 +743,9 @@ func (a *App) statusBar(c *ui.Context, pal palette) {
 					tip += "\nOptions → Restart as Administrator enables it for NTFS drives."
 				}
 			}
+			if bytes, ok := a.metadataBytes(); ok {
+				tip += fmt.Sprintf("\nNTFS metadata ($MFT, $LogFile, $BadClus, $Extend…, %s) is not listed or counted; Options → Show NTFS Metadata Files lists it.", a.size(bytes))
+			}
 			engine.Tooltip(tip)
 			if s.Errors > 0 {
 				b := ui.ButtonBase(c.Key("issues")).Padding(0, 2).Gap(4).AlignItems(ui.Center).Label("Scan issues").Tooltip("Some items could not be read; totals may be incomplete. Click for details.")
@@ -631,6 +756,10 @@ func (a *App) statusBar(c *ui.Context, pal palette) {
 				if b.Clicked() {
 					a.dlg.issues = true
 				}
+			}
+			// Free space is what a cleanup is for; it updates after deletions.
+			if d, ok := a.driveOf(s.Root); ok && a.source == "" {
+				ui.Text(c, fmt.Sprintf("%s %s free", strings.TrimSuffix(d.Path, `\`), a.size(d.Free))).TextColor(t.TextMuted).SingleLine().Tooltip(fmt.Sprintf("Volume %s: %s used of %s (%s)", d.Path, a.size(d.Total-d.Free), a.size(d.Total), percentText(percent(d.Total-d.Free, d.Total))))
 			}
 		}
 	})
@@ -659,16 +788,37 @@ func (a *App) scanningPage(c *ui.Context) {
 	t := c.Theme()
 	ui.Column(c).Fill().Center().Gap(10).Children(func() {
 		ui.Text(c, "Scanning "+a.target+"…").FontSize(14)
-		ui.Progress(c, -1).Width(280)
-		ui.Text(c, "Press Esc or Stop to cancel. Results appear when the scan finishes.").TextColor(t.TextMuted)
+		value := -1.0
+		if p := a.progress; p != nil && p.TotalRecords.Load() > 0 {
+			value = float64(p.Records.Load()) / float64(p.TotalRecords.Load())
+		}
+		ui.Progress(c, value).Width(280)
+		if p := a.progress; p != nil {
+			line := fmt.Sprintf("%s files, %s folders · %s", count(p.Files.Load()), count(p.Folders.Load()), duration(time.Since(a.scanStart)))
+			if e := p.Errors.Load(); e > 0 {
+				line += " · " + plural(e, "inaccessible item", "inaccessible items")
+			}
+			ui.Text(c, line).TextColor(t.TextMuted)
+		}
+		ui.Text(c, "Esc stops the scan.").TextColor(t.TextMuted)
 	})
 }
 
+// startPage lists what can be scanned: the drives, then recent folders.
+// The toolbar's Scan menu and location bar cover everything else.
 func (a *App) startPage(c *ui.Context, pal palette) {
 	t := c.Theme()
-	ui.Column(c).Fill().Padding(16, 20).Gap(10).Children(func() {
-		ui.Text(c, "Choose a drive or folder to analyze").FontSize(14)
-		ui.Text(c, "Double-click a drive, type a path in the toolbar, or drop a folder onto this window.").TextColor(t.TextMuted)
+	row := func(key, label string, children func()) bool {
+		b := ui.ButtonBase(c.Key(key)).Height(30).Padding(0, 8).Radius(4).Gap(8).AlignItems(ui.Center).Justify(ui.Start).Label(label).Tooltip(label)
+		if b.Pressed() {
+			b.Background(t.SurfacePressed)
+		} else if b.Hovered() {
+			b.Background(t.SurfaceHover)
+		}
+		b.Children(children)
+		return b.Clicked()
+	}
+	ui.Column(c).Fill().Padding(14, 16).Gap(2).Children(func() {
 		cols := []ui.TableColumn{{Title: "Drive", Width: 70}, {Title: "Label", Width: 180}, {Title: "File system", Width: 90}, {Title: "Capacity", Width: 90, Align: ui.End}, {Title: "Used", Width: 160}, {Title: "Free", Width: 90, Align: ui.End}}
 		a.dlg.driveList.Selected = &a.dlg.driveRow
 		table := ui.Table(c.Key("drives"), &a.dlg.driveList, cols, len(a.drives), func(row, col int) {
@@ -696,48 +846,40 @@ func (a *App) startPage(c *ui.Context, pal palette) {
 			case 5:
 				ui.Text(c, a.size(d.Free))
 			}
-		}).Height(float32(28 + 26*max(1, len(a.drives)))).MaxHeight(260)
+		}).Height(float32(28 + 26*max(1, len(a.drives)))).MaxHeight(260).MaxWidth(720).Tooltip("Double-click or press Enter to scan")
 		if table.Submitted() && a.dlg.driveRow >= 0 && a.dlg.driveRow < len(a.drives) {
 			a.scanPath(a.drives[a.dlg.driveRow].Path)
 		}
-		ui.Row(c).Gap(8).Children(func() {
-			if textButton(c, "start-scan", "Scan Selected Drive", "", a.dlg.driveRow >= 0).Clicked() && a.dlg.driveRow < len(a.drives) {
-				a.scanPath(a.drives[a.dlg.driveRow].Path)
+		var recent []string
+		for _, r := range a.prefs.Recent {
+			if len(filepath.Clean(r)) > 3 { // drive roots are listed above
+				recent = append(recent, r)
 			}
-			if textButton(c, "start-folder", "Scan Folder…", "Ctrl+O", true).Clicked() {
-				a.chooseFolder()
-			}
-			if textButton(c, "start-open", "Open Saved Scan…", "", true).Clicked() {
-				a.openSnapshotDialog()
-			}
-		})
-		if !a.admin {
-			ui.Text(c, "Quarry is not running as administrator, so it enumerates folders. Restarting as administrator lets it read the NTFS master file table directly, which is much faster on large drives.").TextColor(t.TextMuted).MaxWidth(720)
-			ui.Row(c).Children(func() {
-				if textButton(c, "start-admin", "Restart as Administrator", "", true).Clicked() {
-					a.restartElevated()
-				}
-			})
 		}
-		if len(a.prefs.Recent) > 0 {
-			ui.Text(c, "Recent locations").Margin(8, 0, 0, 0)
-			ui.Column(c).Gap(0).Children(func() {
-				for _, r := range a.prefs.Recent {
+		if len(recent) > 0 {
+			ui.Text(c, "Recent").TextColor(t.TextMuted).Margin(12, 8, 4, 8)
+			ui.Column(c).Gap(2).MaxWidth(720).Children(func() {
+				for _, r := range recent {
 					r := r
-					b := ui.ButtonBase(c.Key("recent"+r)).Height(24).Padding(0, 6).Radius(3).AlignItems(ui.Center).Justify(ui.Start).AlignSelf(ui.Start).MinWidth(320).Gap(6).Label("Scan " + r)
-					if b.Hovered() {
-						b.Background(t.SurfaceHover)
-					}
-					b.Children(func() {
+					if row("recent"+r, "Scan "+r, func() {
 						if bm := shellIcons["folder"]; bm != nil {
-							ui.Image(c, bm).Size(16, 16)
+							ui.Image(c, bm).Size(16, 16).Shrink(0)
 						}
-						ui.Text(c, r).SingleLine()
-					})
-					if b.Clicked() {
+						ui.Text(c, r).SingleLine().MinWidth(0).Shrink(1)
+					}) {
 						a.scanPath(r)
 					}
 				}
+			})
+		}
+		if !a.admin {
+			ui.Row(c).Margin(14, 8, 0, 8).Gap(4).AlignItems(ui.Center).Children(func() {
+				b := ui.ButtonBase(c.Key("start-admin")).Label("Restart as administrator").Tooltip("Reads the NTFS master file table directly instead of enumerating folders")
+				b.Children(func() { ui.Text(c, "Restart as administrator").TextColor(t.Focus).Underline() })
+				if b.Clicked() {
+					a.restartElevated()
+				}
+				ui.Text(c, "for much faster scans of NTFS drives.").TextColor(t.TextMuted).SingleLine()
 			})
 		}
 	})

@@ -83,6 +83,7 @@ func newCommands() map[string]*command {
 		"nav.back":         {label: "Back", keys: "Alt+Left", mods: ui.Alt, key: ui.KeyLeft, inText: true, enabled: (*App).canBack, run: (*App).back},
 		"nav.forward":      {label: "Forward", keys: "Alt+Right", mods: ui.Alt, key: ui.KeyRight, inText: true, enabled: (*App).canForward, run: (*App).forward},
 		"nav.up":           {label: "Up One Level", keys: "Alt+Up", mods: ui.Alt, key: ui.KeyUp, inText: true, enabled: (*App).canUp, run: (*App).up},
+		"nav.location":     {label: "Edit Location", keys: "Ctrl+L", mods: ui.Ctrl, key: ui.KeyL, inText: true, run: (*App).editLocation},
 		"nav.root":         {label: "Go to Scan Root", keys: "Alt+Home", mods: ui.Alt, key: ui.KeyHome, inText: true, enabled: (*App).canUp, run: func(a *App) { a.navigate(0) }},
 		"tree.expandLevel": {label: "Expand One Level", keys: "Ctrl+Shift+Right", mods: ui.Ctrl | ui.Shift, key: ui.KeyRight, enabled: inTree, run: func(a *App) { a.tree.expandLevel() }},
 		"tree.collapseLvl": {label: "Collapse One Level", keys: "Ctrl+Shift+Left", mods: ui.Ctrl | ui.Shift, key: ui.KeyLeft, enabled: inTree, run: func(a *App) { a.tree.collapseLevel() }},
@@ -90,7 +91,6 @@ func newCommands() map[string]*command {
 		"view.treemap":     {label: "Treemap", keys: "Ctrl+T", mods: ui.Ctrl, key: ui.KeyT, inText: true, checked: func(a *App) bool { return a.prefs.ShowTreemap }, run: func(a *App) { a.prefs.ShowTreemap = !a.prefs.ShowTreemap; a.tm.maximized = false }},
 		"view.maxTreemap":  {label: "Maximize Treemap", keys: "Ctrl+Shift+M", mods: ui.Ctrl | ui.Shift, key: ui.KeyM, inText: true, checked: func(a *App) bool { return a.tm.maximized }, enabled: hasScan, run: func(a *App) { a.tm.maximized = !a.tm.maximized; a.prefs.ShowTreemap = true }},
 		"view.resetLayout": {label: "Restore Default Layout", run: (*App).resetLayout},
-		"view.info":        {label: "Information Bar", checked: func(a *App) bool { return a.prefs.ShowInfo }, run: func(a *App) { a.prefs.ShowInfo = !a.prefs.ShowInfo }},
 		"metric.logical":   {label: "Logical Size", checked: func(a *App) bool { return !a.metricAllocated() }, radio: true, run: func(a *App) { a.setMetric("Logical") }},
 		"metric.allocated": {label: "Allocated Size", checked: func(a *App) bool { return a.metricAllocated() }, radio: true, run: func(a *App) { a.setMetric("Allocated") }},
 		"color.ext":        {label: "By Extension", checked: func(a *App) bool { return a.prefs.TreemapColors == "Extension" }, radio: true, run: func(a *App) { a.prefs.TreemapColors = "Extension" }},
@@ -292,7 +292,7 @@ func (a *App) buildMenu() *menuBar {
 	file = append(file, list("-", "item.open", "item.explorer", "item.properties", "-", "file.openScan", "file.saveScan")...)
 	file = append(file, sub("Export", export))
 	file = append(file, list("-", "file.newWindow", "-", "file.exit")...)
-	view := list("view.tree", "view.files", "view.ext", "-", "nav.back", "nav.forward", "nav.up", "nav.root", "-", "tree.expandLevel", "tree.collapseLvl", "tree.collapseAll", "-", "view.treemap", "view.maxTreemap", "view.info", "view.resetLayout", "-")
+	view := list("view.tree", "view.files", "view.ext", "-", "nav.back", "nav.forward", "nav.up", "nav.root", "nav.location", "-", "tree.expandLevel", "tree.collapseLvl", "tree.collapseAll", "-", "view.treemap", "view.maxTreemap", "view.resetLayout", "-")
 	view = append(view, sub("Size Metric", list("metric.logical", "metric.allocated")), sub("Treemap Colors", list("color.ext", "color.folder", "color.mono")), sub("Size Units", list("units.binary", "units.decimal")))
 	view = append(view, list("-", "zoom.in", "zoom.out", "zoom.reset", "view.compact")...)
 	view = append(view, sub("Theme", list("theme.system", "theme.dark", "theme.light")))

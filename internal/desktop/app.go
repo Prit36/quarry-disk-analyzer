@@ -40,7 +40,7 @@ type App struct {
 	drives []platform.Drive
 
 	// Scanning.
-	target     string // the scan target box
+	target     string // the folder the last scan was started on
 	scanning   bool
 	progress   *scan.Progress
 	scanStart  time.Time
@@ -74,7 +74,11 @@ type App struct {
 
 	search       string
 	searchHandle ui.Handle
-	targetHandle ui.Handle
+	targetHandle ui.Handle // the location bar while it is a text box
+	locText      string
+	locEdit      bool // the location bar is a text box
+	locArmed     bool // ...and has had the focus, so losing it ends editing
+	wantLoc      bool // focus the location text box in the next frame
 	focusTable   bool
 	wantSearch   bool
 	extFilter    string

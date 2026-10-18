@@ -486,6 +486,10 @@ func (a *App) afterDelete(ids []index.ID, paths []string, permanent, aborted boo
 		next := a.base.Clone()
 		next.Remove(gone...)
 		a.replaceBase(next)
+		go func() { // the status bar's free space
+			drives := platform.Drives()
+			a.post(func() { a.drives = drives })
+		}()
 	}
 	verb := "Moved %s (%s) to the Recycle Bin."
 	if permanent {
