@@ -22,6 +22,7 @@ type Summary struct {
 
 func (s *Snapshot) Summarize(ctx context.Context) (Summary, error) {
 	types := make(map[string]*FileType)
+	byExt := make(map[string]*FileType)
 	for i, n := range s.Nodes {
 		if i%4096 == 0 {
 			if err := ctx.Err(); err != nil {
@@ -31,14 +32,19 @@ func (s *Snapshot) Summarize(ctx context.Context) (Summary, error) {
 		if n.IsDir() {
 			continue
 		}
-		ext := strings.ToLower(filepath.Ext(s.NameView(ID(i))))
-		if ext == "" {
-			ext = "(no extension)"
-		}
-		v := types[ext]
+		raw := filepath.Ext(s.NameView(ID(i)))
+		v := byExt[raw]
 		if v == nil {
-			v = &FileType{Extension: ext}
-			types[ext] = v
+			ext := strings.ToLower(raw)
+			if ext == "" {
+				ext = "(no extension)"
+			}
+			v = types[ext]
+			if v == nil {
+				v = &FileType{Extension: ext}
+				types[ext] = v
+			}
+			byExt[raw] = v
 		}
 		v.Bytes += n.Size
 		v.Allocated += n.Allocated
@@ -199,20 +205,13 @@ func (s *Snapshot) matchEntry(id ID, f *Filter, ancestorOK []bool) bool {
 // searchPiece is a part of a search, in index order: either the whole subtree
 // of id (walk), or the matched entries already collected in ids.
 type searchPiece struct {
-	id     ID
-	last   ID // inclusive end of a consecutive run of siblings
-	walk   bool
-	weight uint64
-	ids    []ID
-}
-
-func (s *Snapshot) searchPieceOf(id ID) searchPiece {
-	n := s.Nodes[id]
-	weight := uint64(1)
-	if n.IsDir() {
-		weight += uint64(n.Files) + uint64(n.Dirs)
-	}
-	return searchPiece{id: id, last: id, walk: true, weight: weight}
+	id      ID
+	last    ID // inclusive end of a consecutive run of siblings
+	walk    bool
+	weight  uint64
+	files   uint64
+	reserve int
+	ids     []ID
 }
 
 // Batch small sibling subtrees together. A flat folder can contain millions
@@ -220,26 +219,34 @@ func (s *Snapshot) searchPieceOf(id ID) searchPiece {
 // than matching them. Large subtrees remain individually splittable.
 func (s *Snapshot) searchPieces(ctx context.Context, parent ID, target uint64) ([]searchPiece, error) {
 	var pieces []searchPiece
-	var batch searchPiece
+	first, last := None, None
+	var weight uint64
+	var files uint64
 	count := 0
 	for c := s.Nodes[parent].FirstChild; c != None; c = s.Nodes[c].NextSibling {
 		if count&4095 == 0 && ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
 		count++
-		p := s.searchPieceOf(c)
-		if batch.walk && batch.weight+p.weight > target {
-			pieces = append(pieces, batch)
-			batch = searchPiece{}
+		n := &s.Nodes[c]
+		w := uint64(1)
+		fileCount := uint64(1)
+		if n.IsDir() {
+			w += uint64(n.Files) + uint64(n.Dirs)
+			fileCount = uint64(n.Files)
 		}
-		if !batch.walk {
-			batch = p
-		} else {
-			batch.last, batch.weight = c, batch.weight+p.weight
+		if first != None && weight+w > target {
+			pieces = append(pieces, searchPiece{id: first, last: last, walk: true, weight: weight, files: files})
+			first, weight, files = None, 0, 0
 		}
+		if first == None {
+			first = c
+		}
+		last, weight = c, weight+w
+		files += fileCount
 	}
-	if batch.walk {
-		pieces = append(pieces, batch)
+	if first != None {
+		pieces = append(pieces, searchPiece{id: first, last: last, walk: true, weight: weight, files: files})
 	}
 	return pieces, nil
 }
@@ -278,6 +285,29 @@ func (s *Snapshot) searchParallel(ctx context.Context, root ID, f *Filter, ances
 		pieces = slices.Replace(pieces, best, best+1, split...)
 	}
 	errs := make([]error, len(pieces))
+	unrestricted := *f
+	unrestricted.Kind = KindAny
+	reserve := unrestricted.Empty()
+	if reserve {
+		// Counts are hints, including on imported snapshots. Bound all
+		// reservations together so bad totals cannot multiply allocations.
+		remaining := uint64(len(s.Nodes))
+		for i := range pieces {
+			p := &pieces[i]
+			if !p.walk {
+				continue
+			}
+			capacity := p.weight
+			if f.Kind == KindFiles {
+				capacity = p.files
+			}
+			if f.Kind == KindFolders {
+				capacity -= p.files
+			}
+			p.reserve = int(min(capacity, remaining))
+			remaining -= uint64(p.reserve)
+		}
+	}
 	var next atomic.Int64
 	var wg sync.WaitGroup
 	for range min(workers, len(pieces)) {
@@ -291,8 +321,23 @@ func (s *Snapshot) searchParallel(ctx context.Context, root ID, f *Filter, ances
 				}
 				if pieces[i].walk {
 					p := &pieces[i]
+					if reserve {
+						p.ids = make([]ID, 0, p.reserve)
+					}
+					count := 0
 					for c := p.id; ; c = s.Nodes[c].NextSibling {
-						p.ids, errs[i] = s.searchSubtree(ctx, c, root, f, ancestorOK, p.ids)
+						if count&4095 == 0 && ctx.Err() != nil {
+							errs[i] = ctx.Err()
+							break
+						}
+						count++
+						if s.Nodes[c].FirstChild == None {
+							if s.matchEntry(c, f, ancestorOK) {
+								p.ids = append(p.ids, c)
+							}
+						} else {
+							p.ids, errs[i] = s.searchSubtree(ctx, c, root, f, ancestorOK, p.ids)
+						}
 						if errs[i] != nil || c == p.last {
 							break
 						}

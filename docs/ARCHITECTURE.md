@@ -20,7 +20,8 @@ A directory scan grows its index in fixed-size chunks (`Builder`) and assembles 
 
 Snapshots are shared with background goroutines and never mutated in place. A delete, rename, exclusion or analysis filter produces a copy with the same IDs (`Clone`, `Remove`, `Restore`, `Rename`, `Prune`, `Filtered`, `Reaggregate`), so selections, expansion and history survive. `Compact` renumbers a copy for saving.
 
-`SortContext` radix-sorts numeric orders using one-word keys and separate ID arrays (20 scratch bytes per entry, plus histograms). Name orders use two-word keys from the first sixteen case-folded bytes, comparing in full only where those are equal. Both give the same order as `Compare`.
+`SortContext` radix-sorts numeric orders using one-word keys and separate ID arrays (20 scratch bytes per entry, plus histograms) across parallel workers in stable 8-bit passes. Name orders use two-word keys from the first sixteen case-folded bytes, sorting in parallel and comparing in full only where those are equal. Both give the same order as `Compare`.
+
 
 `ParseFilter` compiles the search syntax (wildcards, quoted phrases, negation, `ext:`, `size:`, `modified:`, `path:`, `type:`, `regex:` with Go's linear-time RE2) into a `Filter`; `Search` walks a scope without recursion and evaluates `path:` terms incrementally per folder rather than by building paths. Prefix, suffix and contains wildcards match ASCII names without backtracking. Scopes of 32,768 entries or more are divided into subtrees searched on all cores and concatenated in index order. Small adjacent sibling subtrees share tasks, keeping wide folders from allocating a descriptor and result slice for every file.
 
@@ -38,7 +39,8 @@ Saved scans keep the original format: 52-byte little-endian records, gzip. They 
 - `tree.go` - Tree View model: flattened rows of the expanded tree below the location, spliced on expand/collapse, keyed by index ID; bounded subtree expansion.
 - `files.go`, `extensions.go` - File View and Extensions: queries and sorts on goroutines with generation counters; results are applied on the UI thread, and a query already running for the shown snapshot is not restarted by later frames. Sort changes reuse matching immutable query results and totals. Typing cancels obsolete work before debounce expires; model resets reject already queued completions. Explorer type names are resolved in parallel after the Extensions table is shown.
 - `treemap.go` - hierarchy built off-thread (6,000 tiles, 7 levels, "Smaller items" aggregates), dominant extension per aggregated block, geometry cached per size, tile colors and labels cached per layout and setting.
-- `selection.go` - selected entries in row order and facts about them (all on disk, total size), cached between frames and rebuilt when a fingerprint of the selection changes; commands always recompute them before running.
+- `selection.go` - selected entries in row order and facts about them (all on disk, total size), cached between frames and invalidated directly on table input changes (`Table.Changed()`) rather than rescanning selections on idle frames; commands always recompute them before running.
+
 - `ops.go` - file operations through `internal/platform`, each re-validating the on-disk entry first, then updating the index copy-on-write.
 - `view.go`, `tables.go`, `dialogs.go` - layout, grids and modal dialogs.
 - `prefs.go` - persisted settings (atomic write on close).

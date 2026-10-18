@@ -104,6 +104,45 @@ func TestOriginalOutputParity(t *testing.T) {
 		}
 		a := newApp()
 		a.setBase(s, "", nil, false)
+		summary, err := s.Summarize(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		record(fixtureKey+"/summary", summary)
+		a.tm.ensure()
+		tmDeadline := time.Now().Add(10 * time.Second)
+		for a.tm.busy {
+			if time.Now().After(tmDeadline) {
+				t.Fatal("treemap timed out")
+			}
+			a.drain()
+			runtime.Gosched()
+		}
+		type dominantEntry struct {
+			ID        index.ID
+			Other     bool
+			Extension string
+		}
+		var dominant []dominantEntry
+		for key, ext := range a.tm.dominant {
+			dominant = append(dominant, dominantEntry{key.id, key.other, ext})
+		}
+		slices.SortFunc(dominant, func(x, y dominantEntry) int {
+			if x.ID < y.ID {
+				return -1
+			}
+			if x.ID > y.ID {
+				return 1
+			}
+			if x.Other == y.Other {
+				return 0
+			}
+			if !x.Other {
+				return -1
+			}
+			return 1
+		})
+		record(fixtureKey+"/treemap", []any{a.tm.branches, dominant, a.tm.ranks, a.tm.total})
 		wait := func() {
 			deadline := time.Now().Add(10 * time.Second)
 			for a.files.busy {

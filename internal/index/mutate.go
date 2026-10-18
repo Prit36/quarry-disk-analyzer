@@ -255,6 +255,62 @@ func (s *Snapshot) relink(drop []bool) {
 // Reaggregate recomputes folder totals from the reachable files. Folders own
 // no bytes in either scan engine; their totals are their children's.
 func (s *Snapshot) Reaggregate() {
+	if len(s.Nodes) == 0 {
+		return
+	}
+	if !s.Nodes[0].IsDir() {
+		s.reaggregateAll()
+		return
+	}
+	// Accumulate into the current folder's frame, then write its node once.
+	// Normal trees need only a small stack, rather than one ID per entry.
+	type frame struct {
+		id, next        ID
+		size, allocated uint64
+		files, dirs     uint32
+	}
+	var local [64]frame
+	stack := local[:1]
+	stack[0] = frame{id: 0, next: s.Nodes[0].FirstChild}
+	for len(stack) > 0 {
+		top := &stack[len(stack)-1]
+		if top.next == None {
+			value := *top
+			n := &s.Nodes[value.id]
+			n.Size, n.Allocated, n.Files, n.Dirs = value.size, value.allocated, value.files, value.dirs
+			stack = stack[:len(stack)-1]
+			if len(stack) > 0 {
+				parent := &stack[len(stack)-1]
+				parent.size += value.size
+				parent.allocated += value.allocated
+				parent.files += value.files
+				parent.dirs += value.dirs + 1
+			}
+			continue
+		}
+		id := top.next
+		n := &s.Nodes[id]
+		top.next = n.NextSibling
+		if n.IsDir() {
+			if len(stack) == 256 {
+				s.reaggregateAll()
+				return
+			}
+			stack = append(stack, frame{id: id, next: n.FirstChild})
+		} else if n.FirstChild != None {
+			// Preserve pathologically deep and unusual imported trees with
+			// the original algorithm. File values have not been modified.
+			s.reaggregateAll()
+			return
+		} else {
+			top.size += n.Size
+			top.allocated += n.Allocated
+			top.files++
+		}
+	}
+}
+
+func (s *Snapshot) reaggregateAll() {
 	order := make([]ID, 0, len(s.Nodes))
 	_ = s.walk(context.Background(), 0, func(id ID) (bool, error) {
 		order = append(order, id)

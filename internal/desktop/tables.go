@@ -356,7 +356,10 @@ func (a *App) treeTable(c *ui.Context, pal palette) {
 		}
 	}).Grow(1).MinHeight(0).Background(pal.grid)
 	restore()
-	tr.selCache.checkpoint() // the table may have changed the selection
+	if table.Changed() {
+		tr.selCache.invalidate()
+		c.Invalidate() // refresh the native menu after the input was applied
+	}
 	a.trackFocus(c, "tree", &tr.list)
 	if a.focusTable && a.prefs.View == viewTree {
 		if tr.list.Focus(c) {
@@ -572,7 +575,10 @@ func (a *App) fileTable(c *ui.Context, pal palette) {
 		}
 	})
 	restore()
-	f.selCache.checkpoint() // the table may have changed the selection
+	if table.Changed() {
+		f.selCache.invalidate()
+		c.Invalidate()
+	}
 	a.trackFocus(c, "files", &f.list)
 	if a.focusTable && a.prefs.View == viewFiles {
 		if f.list.Focus(c) {

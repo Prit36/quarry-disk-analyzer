@@ -152,3 +152,69 @@ Go vet, MyGO lifetime checks and the portable build also pass. The raw parity
 digests, benchmark output and verification summary are retained under `build/`
 as `parity-*.json` and `verification-*.txt`. GPU presentation, real-drive scan
 throughput and race-detector execution were not verified in this follow-up.
+
+## Round 2 optimization audit — baseline commit 32438ee
+
+A second round of profiling targeted remaining costs identified in commit `32438ee`:
+large selection verification overhead during idle frames, sorting data movements,
+redundant string casing during extension operations, and memory churn in search
+and aggregation.
+
+### Findings and applied changes
+
+- **Parallel multi-worker radix sorter (`numeric.go`, `words.go`):**
+  Single-word numeric and two-word name/derived keys now use cache-friendly
+  8-bit radix passes with parallel counting and scattering across workers.
+  Pointer-free, separate key and ID arrays eliminate 24-byte record movement.
+  Digit passes only run for differing bit positions. Ties are resolved in
+  deterministic Compare order.
+- **Event-driven selection caching (`selection.go`, `tables.go`, `view.go`):**
+  Selected row lists are invalidated directly by `Table.Changed()`. Unchanged
+  frames check row generation, cardinality and snapshot pointers, completely
+  skipping linear fingerprint scans over hundreds of thousands of selected items.
+- **Fast ancestor classification for mutability (`mutable.go`, `ops.go`):**
+  Menu and command enablement (`App.mutable`) classifies parent chains once
+  per selection without building full path strings or invoking cleaning logic
+  for ordinary safe paths.
+- **Bounded search reservations & direct sibling walk (`query.go`):**
+  Unrestricted searches pre-reserve slice capacities based on node counts,
+  capping total allocation across workers. Sibling chains in wide folders match
+  directly without extra function-call overhead.
+- **Stack-based folder reaggregation (`mutate.go`):**
+  Recomputing directory totals uses a bounded local stack frame accumulator,
+  eliminating the slice allocation of the full-tree visitor order (0 B allocation).
+- **String interning in derived extension sort & summaries (`files.go`, `query.go`, `treemap.go`):**
+  Extension ranking interns the original string and folds case once per distinct
+  spelling, eliminating repeated `.ToLower()` string allocations across 500,000 files.
+
+### Measured results against commit 32438ee
+
+Three-sample median benchmarks on the same test hardware:
+
+| Benchmark | Baseline (`32438ee`) | Round 2 Optimized | Speedup | Allocations before → after |
+| --- | ---: | ---: | ---: | ---: |
+| Selected frames (495k selection) | 5.26 ms | 0.94 ms | **5.60×** | 548 → 548 allocs |
+| Selection availability check | 156.08 ms | 30.28 ms | **5.16×** | 36.96 MB (1,072,499 allocs) → 0.15 MB (46 allocs) |
+| Sort by size (500k entries) | 14.78 ms | 6.07 ms | **2.43×** | 11.33 MB → 10.03 MB |
+| Sort by modified date | 11.63 ms | 4.66 ms | **2.49×** | 11.07 MB → 10.03 MB |
+| Sort by name | 33.54 ms | 17.93 ms | **1.87×** | 26.63 MB → 18.04 MB |
+| Derived extension sort | 34.59 ms | 16.43 ms | **2.11×** | 26.41 MB (165,023 allocs) → 17.84 MB (154 allocs) |
+| Derived folder sort | 19.20 ms | 13.62 ms | **1.41×** | 27.36 MB → 20.38 MB |
+| File View resort by size | 20.93 ms | 13.03 ms | **1.61×** | 12.94 MB → 11.91 MB |
+| File View resort by modified date | 15.85 ms | 10.04 ms | **1.58×** | 12.94 MB → 11.91 MB |
+| Flat search (`ext:log`) | 8.36 ms | 4.74 ms | **1.76×** | 11.55 MB → 11.55 MB |
+| Flat search (`missing`) | 8.10 ms | 4.20 ms | **1.93×** | 0.010 MB → 0.012 MB |
+| Extension summary (`Summarize`) | 16.34 ms | 11.74 ms | **1.39×** | 0.88 MB (109,684 allocs) → 0.001 MB (14 allocs) |
+| Unrestricted search | 1.50 ms | 1.22 ms | **1.23×** | 9.05 MB (874 allocs) → 4.04 MB (74 allocs) |
+| Folder reaggregation (`Reaggregate`) | 36.62 ms | 34.31 ms | **1.07×** | 2.01 MB (1 alloc) → 0 B (0 allocs) |
+
+### Parity verification
+
+The parity verification suite (`TestOriginalOutputParity`) was updated to cover
+treemap geometry & dominant extension data, extension summary records, and
+additional cursor edge cases.
+
+- **484 complete-output SHA-256 digests matched 100%** against the baseline.
+- `go test ./...` passed across all packages.
+- Static verification (`go vet` and `mygo vet`) passed with 0 issues.
+- The portable build was rebuilt and tested.

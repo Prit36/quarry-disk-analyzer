@@ -123,8 +123,7 @@ func (a *App) blocked(id index.ID) string {
 	}
 	dir, name := filepath.Dir(path), strings.ToLower(filepath.Base(path))
 	if len(dir) == 3 && dir[1] == ':' {
-		switch name {
-		case "system volume information", "pagefile.sys", "hiberfil.sys", "swapfile.sys", "$recycle.bin", "windows", "boot", "recovery", "$windows.~bt", "$winreagent":
+		if protectedDriveName(name) {
 			return "a Windows system location"
 		}
 	}
@@ -149,12 +148,7 @@ func (a *App) mutable() bool {
 		return false
 	}
 	ids := a.selected()
-	for _, id := range ids {
-		if a.blocked(id) != "" {
-			return false
-		}
-	}
-	return len(ids) > 0
+	return a.mutableSelection(ids)
 }
 
 // verify confirms that the entry on disk is still the one in the index, so

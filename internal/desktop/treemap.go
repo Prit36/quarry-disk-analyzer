@@ -112,6 +112,7 @@ func (m *treemapModel) ensureStyles(s *index.Snapshot, dark bool) {
 func dominantExtensions(ctx context.Context, s *index.Snapshot, branches []treemap.Branch, allocated bool) map[tileKey]string {
 	out := map[tileKey]string{}
 	tally := map[string]uint64{}
+	extensions := map[string]string{}
 	add := func(root index.ID) {
 		_ = s.Visit(ctx, root, func(id index.ID) error {
 			n := s.Nodes[id]
@@ -122,7 +123,13 @@ func dominantExtensions(ctx context.Context, s *index.Snapshot, branches []treem
 			if allocated {
 				v = n.Allocated
 			}
-			tally[strings.ToLower(filepath.Ext(s.NameView(id)))] += v
+			raw := filepath.Ext(s.NameView(id))
+			ext, ok := extensions[raw]
+			if !ok {
+				ext = strings.ToLower(raw)
+				extensions[raw] = ext
+			}
+			tally[ext] += v
 			return nil
 		})
 	}

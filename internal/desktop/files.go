@@ -298,9 +298,19 @@ func sortEntries(ctx context.Context, s *index.Snapshot, ids []index.ID, order u
 		name := func(id index.ID) uint64 { return s.NameKey(id, 0) }
 		return s.SortByKeys(ctx, ids, folderKey, name, &index.Sort{Column: "Name"})
 	case "Extension":
+		// Intern by the borrowed, original spelling first. Case folding once
+		// per distinct spelling avoids allocating ".TXT" -> ".txt" per file.
+		rawRanks := map[string]uint32{}
 		ranks := map[string]uint32{}
-		for _, id := range ids {
-			ranks[extOf(s, id)] = 0
+		for i, id := range ids {
+			if i&4095 == 0 && ctx.Err() != nil {
+				return ctx.Err()
+			}
+			raw := rawExtOf(s, id)
+			if _, ok := rawRanks[raw]; !ok {
+				rawRanks[raw] = 0
+				ranks[strings.ToLower(raw)] = 0
+			}
 		}
 		exts := make([]string, 0, len(ranks))
 		for e := range ranks {
@@ -310,7 +320,10 @@ func sortEntries(ctx context.Context, s *index.Snapshot, ids []index.ID, order u
 		for i, e := range exts {
 			ranks[e] = uint32(i)
 		}
-		extensionKey := func(id index.ID) uint64 { return keyOf(ranks[extOf(s, id)]) }
+		for raw := range rawRanks {
+			rawRanks[raw] = ranks[strings.ToLower(raw)]
+		}
+		extensionKey := func(id index.ID) uint64 { return keyOf(rawRanks[rawExtOf(s, id)]) }
 		// Within an extension, largest first, then by ID: exactly as
 		// Compare with Sort{Desc: true} orders them.
 		largest := func(id index.ID) uint64 {
@@ -329,10 +342,14 @@ func sortEntries(ctx context.Context, s *index.Snapshot, ids []index.ID, order u
 }
 
 func extOf(s *index.Snapshot, id index.ID) string {
+	return strings.ToLower(rawExtOf(s, id))
+}
+
+func rawExtOf(s *index.Snapshot, id index.ID) string {
 	if s.Nodes[id].IsDir() {
 		return ""
 	}
-	return strings.ToLower(filepath.Ext(s.NameView(id)))
+	return filepath.Ext(s.NameView(id))
 }
 
 func (f *fileModel) cursorID() index.ID {
