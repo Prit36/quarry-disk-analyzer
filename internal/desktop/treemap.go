@@ -60,9 +60,9 @@ type cellStyle struct {
 	// lightEnd and darkEnd are the tile's gradient ends for color, so the
 	// paint loop does not derive them for every tile on every frame.
 	lightEnd, darkEnd ui.Color
-	name  string // the label: a group's includes its size
-	size  string
-	ext   string // cellExt
+	name              string // the label: a group's includes its size
+	size              string
+	ext               string // cellExt
 }
 
 type styleKey struct {
@@ -337,44 +337,64 @@ func (m *treemapModel) cellExt(s *index.Snapshot, cell treemap.Cell) string {
 	return ext
 }
 
-// hoverLines describes a tile for the pointer tip: a title and details.
-func (a *App) hoverLines(s *index.Snapshot, cell treemap.Cell) (string, []string) {
+// tipInfo is what the pointer tip shows for a tile: a heading, the size and
+// its share of the map, a few labelled facts and an optional hint.
+type tipInfo struct {
+	title, kind string
+	size, share string
+	pct         float64
+	rows        [][2]string
+	hint        string
+}
+
+// hoverInfo describes a tile for the pointer tip.
+func (a *App) hoverInfo(s *index.Snapshot, cell treemap.Cell) tipInfo {
 	m := &a.tm
+	of := " of " + a.shortName(m.root)
 	if cell.Tile.Other {
-		lines := []string{a.size(cell.Tile.Bytes) + " · " + percentText(percent(cell.Tile.Bytes, m.total)) + " of " + a.shortName(m.root)}
-		if ext, ok := m.dominant[tileKey{cell.Tile.ID, true}]; ok {
-			lines = append(lines, "Mostly "+ext)
+		info := tipInfo{
+			title: "Smaller items",
+			kind:  "Grouped in " + a.name(cell.Tile.ID),
+			size:  a.size(cell.Tile.Bytes),
+			pct:   percent(cell.Tile.Bytes, m.total),
+			hint:  "Too small to draw one by one.\nDouble-click to open the folder.",
 		}
-		lines = append(lines, "Too small to draw one by one. Double-click to open the folder.")
-		return "Smaller items in " + a.name(cell.Tile.ID), lines
+		info.share = percentText(info.pct) + of
+		if ext, ok := m.dominant[tileKey{cell.Tile.ID, true}]; ok {
+			info.rows = append(info.rows, [2]string{"Mostly", ext})
+		}
+		return info
 	}
 	id := cell.Tile.ID
 	n := s.Nodes[id]
-	lines := []string{truncateMiddle(a.pathOf(id), 90)}
-	size := a.size(n.Size)
+	info := tipInfo{title: a.name(id), size: a.size(n.Size), pct: percent(a.metric(n), m.total)}
+	info.share = percentText(info.pct) + of
+	info.rows = append(info.rows, [2]string{"Location", truncateMiddle(a.pathOf(id), 48)})
 	if a.size(n.Allocated) != a.size(n.Size) {
-		size += "  (" + a.size(n.Allocated) + " on disk)"
+		info.rows = append(info.rows, [2]string{"On disk", a.size(n.Allocated)})
 	}
-	lines = append(lines, size+" · "+percentText(percent(a.metric(n), m.total))+" of "+a.shortName(m.root))
 	if n.IsDir() {
-		line := plural(uint64(n.Files), "file", "files") + ", " + plural(uint64(n.Dirs), "folder", "folders")
+		info.kind = "Folder"
+		info.rows = append(info.rows, [2]string{"Contains", plural(uint64(n.Files), "file", "files") + ", " + plural(uint64(n.Dirs), "folder", "folders")})
 		if ext, ok := m.dominant[tileKey{id, false}]; ok {
-			line += " · mostly " + ext
+			info.rows = append(info.rows, [2]string{"Mostly", ext})
 		}
-		lines = append(lines, line)
-	} else if ext := m.cellExt(s, cell); ext != "" {
-		if tn := platform.FileTypeName(ext); tn != "" {
-			ext += " (" + tn + ")"
+	} else {
+		info.kind = "File"
+		if ext := m.cellExt(s, cell); ext != "" {
+			if tn := platform.FileTypeName(ext); tn != "" {
+				info.kind = tn
+			}
+			info.rows = append(info.rows, [2]string{"Type", ext})
 		}
-		lines = append(lines, ext)
 	}
 	if d := dateText(n.ModTime()); d != "" {
-		lines = append(lines, "Modified "+d)
+		info.rows = append(info.rows, [2]string{"Modified", d})
 	}
 	if s.IsMetadata(id) {
-		lines = append(lines, "NTFS metadata: reserved by the filesystem, not reclaimable.")
+		info.hint = "NTFS metadata: reserved by the\nfilesystem, not reclaimable."
 	}
-	return a.name(id), lines
+	return info
 }
 
 // treemapView draws the map. Click selects the item in Tree View, a double
@@ -473,10 +493,9 @@ func (a *App) treemapView(c *ui.Context, pal palette) {
 	if a.prefs.View == viewExtensions {
 		focusExt, _ = a.ext.currentExt()
 	}
-	var tipTitle string
-	var tipLines []string
+	var tip tipInfo
 	if hover >= 0 {
-		tipTitle, tipLines = a.hoverLines(s, m.cells[hover])
+		tip = a.hoverInfo(s, m.cells[hover])
 	}
 	cells := m.cells
 	m.ensureStyles(s, t.Dark)
@@ -556,15 +575,28 @@ func (a *App) treemapView(c *ui.Context, pal palette) {
 		r := cells[hover].Tile.Rect
 		rect := ui.Rect{X: origin.X + r.X + 1, Y: origin.Y + r.Y + 1, W: max(1, r.W-2), H: max(1, r.H-2)}
 		p.Stroke(rect, t.Focus, 0, 2)
-		const pad, line = 8, 16
-		titleSpan := ui.Span{Text: tipTitle, Size: 12, Weight: 600, Color: t.Text}
+		const pad, rowH, labelW, maxW = 12, 17, 62, 340
+		titleSpan := ui.Span{Text: tip.title, Size: 13, Weight: 600, Color: t.Text}
+		sizeSpan := ui.Span{Text: tip.size, Size: 17, Weight: 600, Color: t.Text}
 		w, _ := p.MeasureText(0, titleSpan)
-		for _, l := range tipLines {
-			lw, _ := p.MeasureText(0, ui.Span{Text: l, Size: 11.5})
-			w = max(w, lw)
+		w += 18 // swatch
+		sw, _ := p.MeasureText(0, sizeSpan)
+		shw, _ := p.MeasureText(0, ui.Span{Text: tip.share, Size: 11.5})
+		w = max(w, sw+16+shw, 240)
+		for _, r := range tip.rows {
+			vw, _ := p.MeasureText(0, ui.Span{Text: r[1], Size: 11.5})
+			w = max(w, labelW+vw)
 		}
-		w = min(w+2*pad, max(120, origin.W-8))
-		h := float32(pad*2 + line*(1+len(tipLines)))
+		w = min(w+2*pad, min(maxW, max(160, origin.W-8)))
+		h := float32(pad*2 + 18 + 15 + 8 + 26 + 10 + 4)
+		h += float32(len(tip.rows) * rowH)
+		if len(tip.rows) > 0 {
+			h += 8
+		}
+		hint := strings.Split(tip.hint, "\n")
+		if tip.hint != "" {
+			h += float32(8 + 14*len(hint))
+		}
 		x, y := origin.X+px+16, origin.Y+py+18
 		if x+w > origin.X+origin.W-4 {
 			x = origin.X + px - w - 12
@@ -574,22 +606,52 @@ func (a *App) treemapView(c *ui.Context, pal palette) {
 		}
 		x = max(origin.X+4, x)
 		y = max(origin.Y+4, y)
-		tip := ui.Rect{X: x, Y: y, W: w, H: h}
-		bg, border := ui.Hex("#2B2B2B"), ui.Hex("#454545")
+		card := ui.Rect{X: x, Y: y, W: w, H: h}
+		bg, border, track := ui.Hex("#2B2B2B"), ui.Hex("#454545"), ui.Hex("#FFFFFF").Alpha(.12)
 		if !dark {
-			bg, border = ui.Hex("#FFFFFF"), ui.Hex("#C8C8C8")
+			bg, border, track = ui.Hex("#FFFFFF"), ui.Hex("#C8C8C8"), ui.Hex("#000000").Alpha(.10)
 		}
-		p.Shadow(tip, 6, 0, 3, 12, 0, ui.RGBA(0, 0, 0, 0.35))
-		p.Fill(tip, bg, 6)
-		p.Stroke(tip, border, 6, 1)
-		p.Clip(ui.Rect{X: x + pad, Y: y, W: w - 2*pad, H: h}, 0, func() {
-			p.RichText(x+pad, y+pad-1, 0, titleSpan)
-			for i, l := range tipLines {
-				color := t.TextMuted
-				if i == 1 {
-					color = t.Text // the size line
+		p.Shadow(card, 8, 0, 4, 14, 0, ui.RGBA(0, 0, 0, 0.35))
+		p.Fill(card, bg, 8)
+		p.Stroke(card, border, 8, 1)
+		accent := styles[hover].color
+		cx, cy, cw := x+pad, y+pad, w-2*pad
+		p.Clip(ui.Rect{X: x, Y: y, W: w, H: h}, 0, func() {
+			// Heading: colour swatch matching the tile, name, then what it is.
+			p.Fill(ui.Rect{X: cx, Y: cy + 3, W: 10, H: 10}, accent, 3)
+			p.Clip(ui.Rect{X: cx + 18, Y: cy - 2, W: cw - 18, H: 22}, 0, func() {
+				p.RichText(cx+18, cy-1, 0, titleSpan)
+			})
+			cy += 18
+			p.Clip(ui.Rect{X: cx, Y: cy, W: cw, H: 16}, 0, func() {
+				p.Text(cx, cy, tip.kind, 11, t.TextMuted)
+			})
+			cy += 15 + 8
+			// Size and share, with a bar showing the share of the whole map.
+			p.RichText(cx, cy, 0, sizeSpan)
+			p.Text(cx+cw-shw, cy+4, tip.share, 11.5, t.TextMuted)
+			cy += 26
+			bar := ui.Rect{X: cx, Y: cy, W: cw, H: 4}
+			p.Fill(bar, track, 2)
+			p.Fill(ui.Rect{X: cx, Y: cy, W: max(3, cw*float32(min(tip.pct, 100))/100), H: 4}, accent, 2)
+			cy += 10 + 4
+			if len(tip.rows) > 0 {
+				p.Fill(ui.Rect{X: cx, Y: cy - 2, W: cw, H: 1}, border, 0)
+				cy += 6
+			}
+			for _, r := range tip.rows {
+				p.Text(cx, cy, r[0], 11.5, t.TextMuted)
+				p.Clip(ui.Rect{X: cx + labelW, Y: cy, W: cw - labelW, H: rowH}, 0, func() {
+					p.Text(cx+labelW, cy, r[1], 11.5, t.Text)
+				})
+				cy += rowH
+			}
+			if tip.hint != "" {
+				cy += 4
+				for _, l := range hint {
+					p.Text(cx, cy, l, 11, t.TextMuted)
+					cy += 14
 				}
-				p.Text(x+pad, y+pad+float32(line*(i+1)), l, 11.5, color)
 			}
 		})
 	})
