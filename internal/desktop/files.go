@@ -257,6 +257,12 @@ func (f *fileModel) run() {
 // are radix-sorted by rank: comparing derived strings per comparison took
 // over a second for a million files.
 func sortEntries(ctx context.Context, s *index.Snapshot, ids []index.ID, order ui.SortOrder, allocated bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if len(ids) < 2 {
+		return ctx.Err()
+	}
 	desc := order.Descending
 	keyOf := func(rank uint32) uint64 {
 		k := uint64(rank)
@@ -267,23 +273,29 @@ func sortEntries(ctx context.Context, s *index.Snapshot, ids []index.ID, order u
 	}
 	switch order.Column {
 	case "Folder":
-		parentSeen := make([]bool, len(s.Nodes))
+		parentRanks := make([]uint32, len(s.Nodes))
 		var parents []index.ID
-		for _, id := range ids {
-			if p := s.Nodes[id].Parent; p != index.None && !parentSeen[p] {
-				parentSeen[p] = true
+		for i, id := range ids {
+			if i&4095 == 0 && ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if p := s.Nodes[id].Parent; p != index.None && parentRanks[p] == 0 {
+				parentRanks[p] = 1
 				parents = append(parents, p)
 			}
 		}
 		type parentPath struct {
-			id   index.ID
-			path string
+			id         index.ID
+			arena      uint32
+			start, end int
 		}
 		parentList := make([]parentPath, len(parents))
 		for i, p := range parents {
 			parentList[i].id = p
 		}
 		workers := min(runtime.GOMAXPROCS(0), max(1, len(parentList)/64))
+		arenas := make([]string, 0, workers)
+		var arenaLock sync.Mutex
 		var wg sync.WaitGroup
 		for w := 0; w < workers; w++ {
 			wg.Add(1)
@@ -291,8 +303,61 @@ func sortEntries(ctx context.Context, s *index.Snapshot, ids []index.ID, order u
 				defer wg.Done()
 				start := len(parentList) * w / workers
 				end := len(parentList) * (w + 1) / workers
+				chunkSize := max(4096, min(1<<20, (end-start)*128))
+				var scratch []byte
+				var arena strings.Builder
+				chunkStart := start
+				publish := func(end int) {
+					arenaLock.Lock()
+					id := uint32(len(arenas))
+					arenas = append(arenas, arena.String())
+					arenaLock.Unlock()
+					for i := chunkStart; i < end; i++ {
+						parentList[i].arena = id
+					}
+					chunkStart = end
+					arena = strings.Builder{}
+				}
 				for i := start; i < end; i++ {
-					parentList[i].path = strings.ToLower(s.Path(parentList[i].id))
+					if i&1023 == 0 && ctx.Err() != nil {
+						return
+					}
+					scratch = s.AppendPath(scratch[:0], parentList[i].id)
+					ascii := true
+					for j, ch := range scratch {
+						if ch >= 128 {
+							ascii = false
+							break
+						}
+						if ch >= 'A' && ch <= 'Z' {
+							scratch[j] = ch + 32
+						}
+					}
+					var unicodePath string
+					length := len(scratch)
+					if !ascii {
+						unicodePath = strings.ToLower(string(scratch))
+						length = len(unicodePath)
+					}
+					// Fixed chunks bound unused capacity and avoid copying a large
+					// arena when a path-length estimate turns out too small.
+					if arena.Len() > 0 && arena.Cap()-arena.Len() < length {
+						publish(i)
+					}
+					if arena.Len() == 0 {
+						arena.Grow(max(chunkSize, length))
+					}
+					p := &parentList[i]
+					p.start = arena.Len()
+					if ascii {
+						arena.Write(scratch)
+					} else {
+						arena.WriteString(unicodePath)
+					}
+					p.end = arena.Len()
+				}
+				if chunkStart < end {
+					publish(end)
 				}
 			}(w)
 		}
@@ -300,19 +365,19 @@ func sortEntries(ctx context.Context, s *index.Snapshot, ids []index.ID, order u
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		slices.SortFunc(parentList, func(x, y parentPath) int { return strings.Compare(x.path, y.path) })
-		parentKeys := make([]uint64, len(s.Nodes))
+		pathOf := func(p parentPath) string { return arenas[p.arena][p.start:p.end] }
+		slices.SortFunc(parentList, func(x, y parentPath) int { return strings.Compare(pathOf(x), pathOf(y)) })
 		rank := uint32(0)
 		for i, pp := range parentList {
-			if i == 0 || pp.path != parentList[i-1].path {
+			if i == 0 || pathOf(pp) != pathOf(parentList[i-1]) {
 				rank++
 			}
-			parentKeys[pp.id] = keyOf(rank)
+			parentRanks[pp.id] = rank
 		}
 		zeroKey := keyOf(0)
 		folderKey := func(id index.ID) uint64 {
 			if p := s.Nodes[id].Parent; p != index.None {
-				return parentKeys[p]
+				return keyOf(parentRanks[p])
 			}
 			return zeroKey
 		}

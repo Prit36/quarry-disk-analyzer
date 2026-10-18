@@ -108,17 +108,89 @@ func (a *App) facts() *selectionFacts {
 		return f
 	}
 	*f = selectionFacts{view: a.prefs.View, version: a.selectionVersion(), snap: a.snap, allocated: a.metricAllocated(), ok: true}
-	f.onDisk = true
-	for _, id := range ids {
-		if a.snap.IsMetadata(id) {
-			f.onDisk = false
-			break
-		}
+	f.onDisk = a.selectionOnDisk(ids)
+	if a.prefs.View == viewFiles && a.files.forSnap == a.snap && len(ids) == len(a.files.ids) && a.files.shownAllocated == a.metricAllocated() && a.files.err == "" {
+		// The complete result set's non-overlapping total was already computed
+		// by the query worker. Select All should not sum a million nodes again.
+		f.total = a.files.total
+		return f
 	}
 	for _, id := range a.topLevel(ids) {
 		f.total += a.metric(a.snap.Nodes[id])
 	}
 	return f
+}
+
+// selectionOnDisk preserves IsMetadata's rules while classifying each ancestor
+// once. Walking to the root for every selected file stalls the first frame
+// after Select All on a whole-drive scan.
+func (a *App) selectionOnDisk(ids []index.ID) bool {
+	s := a.snap
+	if len(ids) < 64 {
+		for _, id := range ids {
+			if s.IsMetadata(id) {
+				return false
+			}
+		}
+		return true
+	}
+	buffer := mutStatesPool.Get().(*[]uint8)
+	states := *buffer
+	if cap(states) < len(s.Nodes) {
+		states = make([]uint8, len(s.Nodes))
+	} else {
+		states = states[:len(s.Nodes)]
+		clear(states)
+	}
+	defer func() {
+		*buffer = states
+		mutStatesPool.Put(buffer)
+	}()
+	states[0] = stateKnown
+	var local [64]index.ID
+	stack := local[:0]
+	classify := func(id index.ID, parent uint8) uint8 {
+		n := s.Nodes[id]
+		if parent&pathBlocked != 0 || n.Flags&index.Unplaced != 0 || n.Parent == 0 && s.IsMetadata(id) {
+			return stateKnown | pathBlocked
+		}
+		return stateKnown
+	}
+	for _, id := range ids {
+		if id == 0 || id == index.None || int(id) >= len(s.Nodes) {
+			continue // IsMetadata also returns false for these entries
+		}
+		if states[id]&stateKnown != 0 {
+			if states[id]&pathBlocked != 0 {
+				return false
+			}
+			continue
+		}
+		stack = stack[:0]
+		for p := s.Nodes[id].Parent; p != index.None && states[p]&stateKnown == 0; p = s.Nodes[p].Parent {
+			stack = append(stack, p)
+		}
+		for i := len(stack) - 1; i >= 0; i-- {
+			p := stack[i]
+			parent := uint8(0)
+			if ancestor := s.Nodes[p].Parent; ancestor != index.None {
+				parent = states[ancestor]
+			}
+			states[p] = classify(p, parent)
+		}
+		parent := uint8(0)
+		if p := s.Nodes[id].Parent; p != index.None {
+			parent = states[p]
+		}
+		state := classify(id, parent)
+		if state&pathBlocked != 0 {
+			return false
+		}
+		if s.Nodes[id].IsDir() {
+			states[id] = state
+		}
+	}
+	return true
 }
 
 // invalidateSelections makes the next questions about the selections exact:

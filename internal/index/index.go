@@ -118,26 +118,48 @@ func (s *Snapshot) Path(id ID) string {
 	if id == 0 {
 		return s.Root
 	}
+	b, ok := s.appendRegularPath(nil, id)
+	if !ok {
+		return s.joinPath(id)
+	}
+	return unsafe.String(unsafe.SliceData(b), len(b))
+}
+
+// AppendPath appends Path(id) into caller-owned storage. Batch consumers can
+// reuse their scratch buffer instead of allocating a string per folder.
+func (s *Snapshot) AppendPath(dst []byte, id ID) []byte {
+	if id == 0 {
+		return append(dst, s.Root...)
+	}
+	if b, ok := s.appendRegularPath(dst, id); ok {
+		return b
+	}
+	return append(dst, s.joinPath(id)...)
+}
+
+func (s *Snapshot) appendRegularPath(dst []byte, id ID) ([]byte, bool) {
 	size, depth := 0, 0
 	for cur := id; cur != 0; depth++ {
 		if cur == None || depth >= len(s.Nodes) || s.Nodes[cur].Flags&Unplaced != 0 {
-			return s.joinPath(id)
+			return nil, false
 		}
 		name := s.NameView(cur)
 		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `\/`) {
-			return s.joinPath(id)
+			return nil, false
 		}
 		size += len(name) + 1
 		cur = s.Nodes[cur].Parent
 	}
 	root := s.Root
 	if !cleanRoot(root) {
-		return s.joinPath(id)
+		return nil, false
 	}
 	if strings.HasSuffix(root, `\`) {
 		size--
 	}
-	b := make([]byte, len(root)+size)
+	start := len(dst)
+	dst = append(dst, make([]byte, len(root)+size)...)
+	b := dst[start:]
 	copy(b, root)
 	end := len(b)
 	for cur := id; cur != 0; cur = s.Nodes[cur].Parent {
@@ -150,12 +172,12 @@ func (s *Snapshot) Path(id ID) string {
 		}
 	}
 	if end != len(root) && end != len(root)+1 {
-		return s.joinPath(id)
+		return nil, false
 	}
 	if end == len(root)+1 {
 		b[len(root)] = '\\'
 	}
-	return unsafe.String(&b[0], len(b))
+	return dst, true
 }
 
 // cleanRoot reports whether filepath.Join leaves root and the separator

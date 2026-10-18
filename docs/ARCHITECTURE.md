@@ -1,5 +1,8 @@
 # Architecture
 
+The latest interaction measurements and their current-build baseline are in
+[PERFORMANCE-FOLLOWUP.md](PERFORMANCE-FOLLOWUP.md).
+
 ```
 main.go                 command line, or desktop.Run
 internal/scan           MFT reader (ntfs) and directory enumerator; exclusions

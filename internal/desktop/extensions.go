@@ -85,7 +85,7 @@ func (e *extModel) run() {
 	}
 	go func() {
 		defer cancel()
-		analysis, err := s.Analyze(ctx, scope, allocated, 0)
+		analysis, err := s.SummarizeScope(ctx, scope, allocated)
 		var total index.FileType
 		for _, t := range analysis.Types {
 			total.Bytes += t.Bytes

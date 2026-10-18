@@ -178,29 +178,46 @@ func (s *Snapshot) sortWordKeys(ctx context.Context, ids []ID, key func(ID) word
 		keys = srcKeys
 	}
 	if tie != nil {
-		nextCheck := 0
-		for start := 0; start < len(ids); {
-			if start >= nextCheck {
-				if err := ctx.Err(); err != nil {
-					return err
+		// Prefix ties are independent. Real scans have many long shared names
+		// (assemblies and package files), so resolving every tie on one core
+		// can cost more than the parallel radix passes themselves.
+		bounds := make([]int, workers+1)
+		bounds[workers] = len(ids)
+		for w := 1; w < workers; w++ {
+			position := max(len(ids)*w/workers, bounds[w-1])
+			for position < len(ids) && position > 0 && keys[position] == keys[position-1] {
+				if position&4095 == 0 && ctx.Err() != nil {
+					return ctx.Err()
 				}
-				nextCheck = start + 4096
+				position++
 			}
-			end := start + 1
-			for end < len(ids) && keys[end] == keys[start] {
-				end++
-			}
-			if end-start > 1 {
-				if end-start >= 4096 {
-					if err := s.sortCompare(ctx, ids[start:end], *tie); err != nil {
-						return err
-					}
-				} else {
-					slices.SortFunc(ids[start:end], func(a, b ID) int { return s.Compare(a, b, *tie) })
-				}
-			}
-			start = end
+			bounds[w] = position
 		}
+		run(func(w, _, _ int) {
+			nextCheck := bounds[w]
+			for start := bounds[w]; start < bounds[w+1]; {
+				if start >= nextCheck {
+					if err := ctx.Err(); err != nil {
+						return
+					}
+					nextCheck = start + 4096
+				}
+				end := start + 1
+				for end < len(ids) && keys[end] == keys[start] {
+					end++
+				}
+				if end-start > 1 {
+					if end-start >= 4096 {
+						if err := s.sortCompare(ctx, ids[start:end], *tie); err != nil {
+							return
+						}
+					} else {
+						slices.SortFunc(ids[start:end], func(a, b ID) int { return s.Compare(a, b, *tie) })
+					}
+				}
+				start = end
+			}
+		})
 	}
 	return ctx.Err()
 }
