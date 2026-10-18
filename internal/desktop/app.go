@@ -56,11 +56,12 @@ type App struct {
 	// meta lists base's top-level NTFS metadata entries. While metaHidden,
 	// they are detached from base itself (index.Remove), so hiding them
 	// costs no second copy of the index; Restore brings them back.
-	meta       []index.ID
-	metaHidden bool
-	filter     analysisFilter
-	filterBusy bool
-	filterGen  uint64
+	meta         []index.ID
+	metaHidden   bool
+	filter       analysisFilter
+	filterBusy   bool
+	filterGen    uint64
+	filterCancel context.CancelFunc
 
 	// Navigation: one history shared by the tree and the treemap.
 	location index.ID
@@ -90,6 +91,8 @@ type App struct {
 	message   string // transient status-bar message
 	messageAt time.Time
 	errorMsg  bool
+
+	trimPending bool // a scan's transient memory is to be released after display
 
 	selFacts selectionFacts // cached facts about the active selection
 	mutMemo  mutableMemo    // cached answer of mutable for the active selection
@@ -157,7 +160,7 @@ func (a *App) shutdown() {
 	a.closed = true
 	a.prefs.Target = a.target
 	_ = a.savePrefs()
-	for _, cancel := range []context.CancelFunc{a.cancelScan, a.files.cancel, a.ext.cancel, a.tm.cancel, a.dlg.dup.cancel} {
+	for _, cancel := range []context.CancelFunc{a.cancelScan, a.filterCancel, a.files.cancel, a.ext.cancel, a.tm.cancel, a.dlg.dup.cancel} {
 		if cancel != nil {
 			cancel()
 		}
@@ -244,16 +247,11 @@ func (a *App) startScan() {
 		if err == nil {
 			meta = hideMetadata(s, hide) // off the UI thread
 		}
-		// Return the scan's transient buffers to Windows now: otherwise the
-		// working set stays near the scan's peak until the runtime gets to it.
-		debug.FreeOSMemory()
-		drives := platform.Drives()
 		a.post(func() {
 			if gen != a.scanGen {
 				return
 			}
 			a.scanning, a.cancelScan = false, nil
-			a.drives = drives
 			if a.win != nil {
 				a.win.SetProgressBar(mygo.ProgressBar{})
 			}
@@ -268,6 +266,7 @@ func (a *App) startScan() {
 			a.prefs.Recent = remember(a.prefs.Recent, s.Root, 12)
 			a.menu.recentChanged = true
 			a.setBase(s, "", meta, hide)
+			a.trimPending = true
 			switch {
 			case s.Cancelled:
 				a.notify("Scan stopped after %s. Results are partial.", duration(s.Elapsed))
@@ -275,7 +274,21 @@ func (a *App) startScan() {
 				a.notify("Scan completed in %s.", duration(s.Elapsed))
 			}
 		})
+		// Free space may have changed; the results are shown first.
+		drives := platform.Drives()
+		a.post(func() { a.drives = drives })
 	}()
+}
+
+// trimAfterShown returns the scan's transient buffers to Windows once its
+// results are on screen, treemap included: otherwise the working set stays
+// near the scan's peak until the runtime gets to it, but doing it before
+// would delay the display.
+func (a *App) trimAfterShown() {
+	if a.trimPending && a.snap != nil && !a.filterBusy && !a.tm.busy {
+		a.trimPending = false
+		go debug.FreeOSMemory()
+	}
 }
 
 func (a *App) stopScan() {
@@ -375,6 +388,9 @@ func (a *App) replaceBase(s *index.Snapshot) {
 // applyFilter derives the view snapshot from base: NTFS metadata detached
 // or attached as the option says, then the analysis filter.
 func (a *App) applyFilter() {
+	if a.filterCancel != nil {
+		a.filterCancel()
+	}
 	a.filterGen++
 	if a.base == nil {
 		return
@@ -388,9 +404,13 @@ func (a *App) applyFilter() {
 		return
 	}
 	gen, base, f, meta := a.filterGen, a.base, a.filter, a.meta
+	ctx, cancel := context.WithCancel(context.Background())
+	a.filterCancel = cancel
 	a.filterBusy = true
 	go func() {
-		ctx := context.Background()
+		if ctx.Err() != nil {
+			return
+		}
 		if toggle {
 			base = base.Clone()
 			if hide {
@@ -402,6 +422,9 @@ func (a *App) applyFilter() {
 		view, stats, err := base, index.FilterStats{}, error(nil)
 		if f.active() {
 			view, stats, err = f.apply(ctx, base)
+		}
+		if ctx.Err() != nil {
+			return
 		}
 		a.post(func() {
 			if gen != a.filterGen {

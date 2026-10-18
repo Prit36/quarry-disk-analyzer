@@ -43,6 +43,8 @@ func (e *extModel) reset() {
 	if e.cancel != nil {
 		e.cancel()
 	}
+	e.gen++
+	e.runFor = nil
 	cols := e.list.Columns
 	e.list = ui.ListState{Columns: cols}
 	e.types, e.shown, e.total, e.busy, e.err, e.forSnap = nil, nil, index.FileType{}, false, "", nil

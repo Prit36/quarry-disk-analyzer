@@ -1,6 +1,7 @@
 package desktop
 
 import (
+	"context"
 	"slices"
 
 	"github.com/egoist/mygo/ui"
@@ -75,7 +76,7 @@ func (t *treeModel) children(id index.ID) []index.ID {
 	}
 	s := t.snap()
 	k := s.Children(id)
-	s.Sort(k, t.order())
+	_ = s.SortContext(context.Background(), k, t.order())
 	t.kids[id] = k
 	return k
 }
@@ -205,9 +206,15 @@ func (t *treeModel) selectedIDs() []index.ID {
 				}
 			}
 		} else if n > 1 {
-			for _, r := range t.rows {
-				if t.sel.Has(r.id) {
+			if n == len(t.rows) {
+				for _, r := range t.rows {
 					out = append(out, r.id)
+				}
+			} else {
+				for _, r := range t.rows {
+					if t.sel.Has(r.id) {
+						out = append(out, r.id)
+					}
 				}
 			}
 		}

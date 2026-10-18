@@ -22,32 +22,6 @@ const (
 	helpAbout
 )
 
-// CLIUsage documents the command line (Help → Command Line and -help).
-const CLIUsage = `Usage:
-  Quarry.exe [folder | drive | file.quarry]
-      Open the window and analyze the folder, or open a saved scan.
-
-  Quarry.exe -scan <folder> [-csv out.csv] [-save out.quarry] [-json]
-              [-exclude pattern]... [-walk] [-quiet]
-      Scan without a window.
-      -csv      write every entry (path, sizes in bytes, counts, modified time)
-      -save     write a Quarry scan that the app can open later
-      -json     print a summary as JSON to standard output
-      -exclude  skip a folder path or a name pattern (repeatable), e.g. -exclude node_modules
-      -walk     enumerate folders even when direct MFT reading is possible
-      -quiet    print nothing except errors
-
-Exit codes:
-  0  success
-  1  the scan or an output file failed
-  2  invalid arguments
-  3  the scan completed but some items could not be read (results are incomplete)
-
-Examples:
-  Quarry.exe -scan "C:\Projects" -csv projects.csv
-  Quarry.exe -scan D:\ -save d-drive.quarry -exclude "$RECYCLE.BIN"
-  Quarry.exe d-drive.quarry`
-
 type renameDialog struct {
 	open           bool
 	id             index.ID
@@ -147,7 +121,7 @@ func (a *App) dialogs(c *ui.Context, pal palette) {
 	// Rename (F2).
 	ui.Modal(c.Key("rename"), &d.rename.open, func() {
 		r := &d.rename
-		ui.Column(c).Width(420).Padding(16).Gap(8).Children(func() {
+		ui.Column(c).Width(420).Padding(8).Gap(8).Children(func() {
 			dialogTitle(c, "Rename")
 			in := ui.TextInput(c.Key("rename-input"), &r.name).AutoFocus().Label("New name").SingleLine()
 			if !r.selected {
@@ -184,7 +158,7 @@ func (a *App) dialogs(c *ui.Context, pal palette) {
 	// Analysis filter.
 	ui.Modal(c.Key("filter"), &d.filter.open, func() {
 		f := &d.filter
-		ui.Column(c).Width(560).Padding(16).Gap(8).Children(func() {
+		ui.Column(c).Width(560).Padding(8).Gap(8).Children(func() {
 			dialogTitle(c, "Analysis Filter")
 			ui.Text(c, "Hides entries already in the scan; nothing is rescanned. Totals and percentages are recalculated for what remains.").TextColor(t.TextMuted).MaxWidth(520)
 			field(c, "Show only files", &f.include, "e.g. ext:log;txt size:>100MB modified:<2024-01-01")
@@ -220,7 +194,7 @@ func (a *App) dialogs(c *ui.Context, pal palette) {
 	// Advanced search builds a query in the search syntax.
 	ui.Modal(c.Key("search"), &d.search.open, func() {
 		s := &d.search
-		ui.Column(c).Width(560).Padding(16).Gap(6).Children(func() {
+		ui.Column(c).Width(560).Padding(8).Gap(6).Children(func() {
 			dialogTitle(c, "Advanced Search")
 			field(c, "Name", &s.name, "words or wildcards, e.g. *.mp4 or backup*")
 			field(c, "Path contains", &s.path, "e.g. node_modules")
@@ -275,7 +249,7 @@ func (a *App) dialogs(c *ui.Context, pal palette) {
 	// Scan exclusions.
 	ui.Modal(c.Key("exclusions"), &d.exclusions.open, func() {
 		e := &d.exclusions
-		ui.Column(c).Width(560).Padding(16).Gap(8).Children(func() {
+		ui.Column(c).Width(560).Padding(8).Gap(8).Children(func() {
 			dialogTitle(c, "Scan Exclusions")
 			ui.Text(c, "Entries matching these patterns are skipped by future scans. Use a full folder path (C:\\Users\\me\\AppData\\Local\\Temp) or a name or wildcard (node_modules, *.tmp), one per line.").TextColor(t.TextMuted).MaxWidth(520)
 			ui.TextArea(c.Key("excl-text"), &e.text).Height(160).Font("Consolas").Label("Exclusion patterns")
@@ -302,7 +276,7 @@ func (a *App) dialogs(c *ui.Context, pal palette) {
 
 	// Scan issues.
 	ui.Modal(c.Key("issues"), &d.issues, func() {
-		ui.Column(c).Width(760).Height(440).Padding(16).Gap(8).Children(func() {
+		ui.Column(c).Width(760).MaxWidthPercent(100).Height(440).MaxHeightPercent(100).Padding(8).Gap(8).Children(func() {
 			dialogTitle(c, "Scan Issues")
 			if a.snap == nil {
 				return
@@ -336,7 +310,7 @@ func (a *App) dialogs(c *ui.Context, pal palette) {
 
 	// Scan information and space accounting.
 	ui.Modal(c.Key("info"), &d.info, func() {
-		ui.Column(c).Width(600).Padding(16).Gap(4).Children(func() {
+		ui.Column(c).Width(600).Padding(8).Gap(4).Children(func() {
 			dialogTitle(c, "Scan Information")
 			if a.snap == nil {
 				return
@@ -388,7 +362,7 @@ func (a *App) dialogs(c *ui.Context, pal palette) {
 	// Comparison.
 	ui.Modal(c.Key("compare"), &d.compare.open, func() {
 		cmpd := &d.compare
-		ui.Column(c).Width(640).Height(440).Padding(16).Gap(8).Children(func() {
+		ui.Column(c).Width(640).MaxWidthPercent(100).Height(440).MaxHeightPercent(100).Padding(8).Gap(8).Children(func() {
 			dialogTitle(c, "Changes since "+cmpd.label)
 			ui.Text(c, "Top-level folders of the scan root, by "+strings.ToLower(a.prefs.Metric)+" size.").TextColor(t.TextMuted)
 			ui.Table(c.Key("compare-table"), &cmpd.list, []ui.TableColumn{{Title: "Name", MinWidth: 160}, {Title: "Before", Width: 100, Align: ui.End}, {Title: "Now", Width: 100, Align: ui.End}, {Title: "Change", Width: 110, Align: ui.End}}, len(cmpd.changes), func(row, col int) {
@@ -422,24 +396,28 @@ func (a *App) dialogs(c *ui.Context, pal palette) {
 	// Help.
 	open := d.help != helpNone
 	ui.Modal(c.Key("help"), &open, func() {
-		ui.Column(c).Width(620).MaxHeight(560).Padding(16).Gap(8).Children(func() {
-			title, body := "", ""
+		ui.Column(c).Width(640).MaxHeight(660).Padding(8).Gap(8).Children(func() {
+			var title string
+			var sections []helpSection
 			switch d.help {
 			case helpKeys:
-				title, body = "Keyboard Shortcuts", a.shortcutList()
+				title, sections = "Keyboard Shortcuts", a.shortcutHelp()
 			case helpSyntax:
-				title, body = "Search Syntax", index.SearchSyntax
+				title, sections = "Search Syntax", searchHelp
 			case helpCLI:
-				title, body = "Command Line", CLIUsage
+				title, sections = "Command Line", cliHelp
 			case helpAbout:
 				title = "About Quarry"
-				body = "Quarry " + Version + "\nA disk space analyzer for Windows.\n\nReads the NTFS master file table directly when running as administrator, and enumerates folders otherwise. Sizes are computed from the index in memory; nothing is uploaded or sent anywhere.\n\nSettings are stored in " + configDir() + "."
+				sections = []helpSection{{note: "Quarry " + Version + "\nA disk space analyzer for Windows.\n\nReads the NTFS master file table directly when running as administrator, and enumerates folders otherwise. Sizes are computed from the index in memory; nothing is uploaded or sent anywhere.\n\nSettings are stored in " + configDir() + "."}}
 			}
 			dialogTitle(c, title)
 			ui.Scroll(c).Grow(1).MinHeight(0).Children(func() {
-				ui.Text(c, body).Font("Consolas").FontSize(12).Selectable()
+				helpBody(c, sections)
 			})
 			buttons(c, func() {
+				if d.help == helpCLI && ui.Button(c, "Copy").Clicked() {
+					a.copyText(strings.Split(CLIUsage, "\n"), "command line reference")
+				}
 				if ui.PrimaryButton(c, "Close").Clicked() {
 					open = false
 				}
@@ -506,17 +484,6 @@ func (d *dialogs) openFilter(a *App) {
 
 func (d *dialogs) openExclusions(a *App) {
 	d.exclusions = exclusionsDialog{open: true, text: strings.Join(a.prefs.Exclusions, "\r\n"), use: a.prefs.UseExclusions}
-}
-
-func (a *App) shortcutList() string {
-	order := []string{"edit.find", "tools.search", "scan.folder", "scan.rescan", "scan.stop", "view.tree", "view.files", "view.ext", "nav.back", "nav.forward", "nav.up", "nav.root", "item.open", "item.goInto", "item.explorer", "item.properties", "item.reveal", "edit.copy", "edit.cut", "edit.copyPath", "edit.copyRows", "edit.selectAll", "edit.rename", "edit.delete", "edit.deletePerm", "export.view", "file.saveScan", "tools.filter", "tree.expandAll", "tree.collapseSub", "tree.expandLevel", "tree.collapseLvl", "tree.collapseAll", "view.treemap", "view.maxTreemap", "zoom.in", "zoom.out", "zoom.reset", "file.newWindow", "help.keys"}
-	var b strings.Builder
-	for _, id := range order {
-		cmd := a.cmds[id]
-		fmt.Fprintf(&b, "%-20s %s\n", cmd.keys, strings.TrimSuffix(cmd.label, "…"))
-	}
-	b.WriteString("\nIn Tree View: Right expands or moves to the first child, Left collapses or moves to the parent,\nEnter or double-click expands a folder or opens a file, Backspace goes up.\nCtrl+mouse wheel changes the text size of the lists. Mouse back/forward buttons navigate.\nRight-click a column header to show, hide or fit columns.")
-	return b.String()
 }
 
 // Duplicates.
@@ -620,7 +587,7 @@ func (a *App) duplicatesDialog(c *ui.Context, pal palette) {
 		c.After(200 * time.Millisecond)
 	}
 	ui.Modal(c.Key("dups"), &dd.isOpen, func() {
-		ui.Column(c).Width(860).Height(560).Padding(16).Gap(8).Children(func() {
+		ui.Column(c).Width(860).MaxWidthPercent(100).Height(560).MaxHeightPercent(100).Padding(8).Gap(8).Children(func() {
 			dialogTitle(c, "Find Duplicates")
 			ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
 				ui.Text(c, "Files of at least").TextColor(t.TextMuted)
@@ -680,7 +647,7 @@ func (a *App) duplicatesDialog(c *ui.Context, pal palette) {
 			}
 			dd.list.Selected = &dd.cursor
 			s := dd.forSnap
-			table := ui.Table(c.Key("dup-table"), &dd.list, []ui.TableColumn{{Title: "Name", Width: 240, MinWidth: 120}, {Title: "Folder", MinWidth: 200}, {Title: "Size", Width: 90, Align: ui.End}, {Title: "Modified", Width: 120}}, len(dd.rows), func(row, col int) {
+			table := ui.Table(c.Key("dup-table"), &dd.list, []ui.TableColumn{{Title: "Name", Width: 240, MinWidth: 120}, {Title: "Folder", MinWidth: 200}, {Title: "Size", Width: 90, Align: ui.End}, {Title: "Modified", Width: 144}}, len(dd.rows), func(row, col int) {
 				r := dd.rows[row]
 				g := dd.result.Groups[r.group]
 				if r.id == index.None {

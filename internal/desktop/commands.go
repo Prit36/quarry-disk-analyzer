@@ -28,8 +28,31 @@ func always(*App) bool { return true }
 
 func hasScan(a *App) bool     { return a.snap != nil }
 func idle(a *App) bool        { return !a.scanning }
-func hasItems(a *App) bool    { return len(a.selected()) > 0 }
-func singleItem(a *App) bool  { return len(a.selected()) == 1 }
+func hasItems(a *App) bool {
+	if a.snap == nil {
+		return false
+	}
+	switch a.prefs.View {
+	case viewTree:
+		return a.tree.sel.Len() > 0
+	case viewFiles:
+		return a.files.sel.Len() > 0
+	}
+	return false
+}
+
+func singleItem(a *App) bool {
+	if a.snap == nil {
+		return false
+	}
+	switch a.prefs.View {
+	case viewTree:
+		return a.tree.sel.Len() == 1
+	case viewFiles:
+		return a.files.sel.Len() == 1
+	}
+	return false
+}
 func inTree(a *App) bool      { return a.prefs.View == viewTree && a.snap != nil }
 func liveScan(a *App) bool    { return a.snap != nil && a.source == "" }
 func itemsOnDisk(a *App) bool { return hasItems(a) && liveScan(a) && a.allPaths() }

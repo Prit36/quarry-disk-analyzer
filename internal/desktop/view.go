@@ -20,8 +20,6 @@ func (a *App) view(c *ui.Context) {
 	}
 	t, pal := a.appTheme()
 	c.SetTheme(t)
-	a.tree.selCache.checkpoint()
-	a.files.selCache.checkpoint()
 	a.hover, a.hoverOther = index.None, false
 	a.syncMenu()
 	a.shortcuts(c)
@@ -74,6 +72,7 @@ func (a *App) view(c *ui.Context) {
 		a.statusBar(c, pal)
 	})
 	a.dialogs(c, pal)
+	a.trimAfterShown()
 }
 
 func (a *App) scanProgress() {

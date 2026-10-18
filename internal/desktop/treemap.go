@@ -1,9 +1,14 @@
 package desktop
 
 import (
+	"cmp"
 	"context"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/egoist/mygo/ui"
 	"quarry/internal/index"
@@ -55,8 +60,9 @@ type tileKey struct {
 }
 
 type cellStyle struct {
-	color ui.Color // tile fill, or a group's frame
-	text  ui.Color
+	color     ui.Color // tile fill, or a group's frame
+	text      ui.Color
+	textAlpha ui.Color
 	// lightEnd and darkEnd are the tile's gradient ends for color, so the
 	// paint loop does not derive them for every tile on every frame.
 	lightEnd, darkEnd ui.Color
@@ -93,10 +99,12 @@ func (m *treemapModel) ensureStyles(s *index.Snapshot, dark bool) {
 				}
 			}
 			st.color, st.text = frame, readableOn(frame)
+			st.textAlpha = st.text.Alpha(.8)
 			st.name = a.name(cell.Tile.ID) + "  " + a.size(cell.Tile.Bytes)
 			continue
 		}
 		st.color, st.text = col, readableOn(col)
+		st.textAlpha = st.text.Alpha(.8)
 		st.lightEnd, st.darkEnd = col.Mix(ui.Hex("#FFFFFF"), .10), col.Mix(ui.Hex("#000000"), .18)
 		st.name = "Smaller items"
 		if !cell.Tile.Other {
@@ -108,39 +116,56 @@ func (m *treemapModel) ensureStyles(s *index.Snapshot, dark bool) {
 }
 
 // dominantExtensions finds, for every aggregated block, the extension that
-// holds the most bytes inside it. Each entry is visited at most once.
+// holds the most bytes inside it. Each entry is visited at most once. The
+// blocks' subtrees are cut into units of similar size, tallied on all
+// cores and merged per block; sums are exact, so the split does not change
+// the result.
 func dominantExtensions(ctx context.Context, s *index.Snapshot, branches []treemap.Branch, allocated bool) map[tileKey]string {
-	out := map[tileKey]string{}
-	tally := map[string]uint64{}
-	add := func(root index.ID) {
-		_ = s.Visit(ctx, root, func(id index.ID) error {
-			n := s.Nodes[id]
-			if n.IsDir() {
-				return nil
-			}
-			v := n.Size
-			if allocated {
-				v = n.Allocated
-			}
-			tally[strings.ToLower(filepath.Ext(s.NameView(id)))] += v
-			return nil
-		})
+	type unit struct {
+		block  int
+		roots  []index.ID
+		weight uint64
 	}
-	best := func() string {
-		ext, top := "", uint64(0)
-		for e, v := range tally {
-			if v > top || v == top && e < ext {
-				ext, top = e, v
+	var blocks []tileKey
+	var units []unit
+	weight := func(id index.ID) uint64 {
+		n := s.Nodes[id]
+		if n.IsDir() {
+			return uint64(n.Files) + uint64(n.Dirs) + 1
+		}
+		return 1
+	}
+	// Half the cores, less one for the interface: the extension ranks are
+	// computed beside this.
+	workers := max(1, (runtime.GOMAXPROCS(0)-1)/2)
+	limit := uint64(4096)
+	if total := uint64(s.Nodes[0].Files) + uint64(s.Nodes[0].Dirs); total/uint64(8*workers) > limit {
+		limit = total / uint64(8*workers)
+	}
+	// add groups roots into units of about limit entries; a folder larger
+	// than that is replaced by its children.
+	var add func(block int, roots []index.ID)
+	add = func(block int, roots []index.ID) {
+		var batch []index.ID
+		var w uint64
+		for _, r := range roots {
+			rw := weight(r)
+			if rw > limit && s.Nodes[r].FirstChild != index.None {
+				add(block, s.Children(r))
+				continue
+			}
+			batch = append(batch, r)
+			if w += rw; w >= limit {
+				units = append(units, unit{block, batch, w})
+				batch, w = nil, 0
 			}
 		}
-		clear(tally)
-		if ext == "" {
-			ext = "(no extension)"
+		if len(batch) > 0 {
+			units = append(units, unit{block, batch, w})
 		}
-		return ext
 	}
-	var walk func(level []treemap.Branch, parent index.ID)
-	walk = func(level []treemap.Branch, parent index.ID) {
+	var walk func(level []treemap.Branch)
+	walk = func(level []treemap.Branch) {
 		shown := map[index.ID]bool{}
 		for _, b := range level {
 			if !b.Item.Other {
@@ -148,26 +173,98 @@ func dominantExtensions(ctx context.Context, s *index.Snapshot, branches []treem
 			}
 		}
 		for _, b := range level {
-			if ctx.Err() != nil {
-				return
-			}
 			switch {
 			case b.Item.Other:
+				var rest []index.ID
 				for c := s.Nodes[b.Item.ID].FirstChild; c != index.None; c = s.Nodes[c].NextSibling {
 					if !shown[c] {
-						add(c)
+						rest = append(rest, c)
 					}
 				}
-				out[tileKey{b.Item.ID, true}] = best()
+				blocks = append(blocks, tileKey{b.Item.ID, true})
+				add(len(blocks)-1, rest)
 			case len(b.Children) > 0:
-				walk(b.Children, b.Item.ID)
+				walk(b.Children)
 			case s.Nodes[b.Item.ID].IsDir():
-				add(b.Item.ID)
-				out[tileKey{b.Item.ID, false}] = best()
+				blocks = append(blocks, tileKey{b.Item.ID, false})
+				add(len(blocks)-1, []index.ID{b.Item.ID})
 			}
 		}
 	}
-	walk(branches, index.None)
+	walk(branches)
+	// Largest units first, so the last to finish are small.
+	slices.SortStableFunc(units, func(a, b unit) int { return cmp.Compare(b.weight, a.weight) })
+
+	type extBytes struct {
+		ext   string
+		bytes uint64
+	}
+	tallies := make([][]extBytes, len(units))
+	var next atomic.Int64
+	var group sync.WaitGroup
+	for range min(workers, max(1, len(units))) {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			tally := map[string]uint64{}
+			extensions := map[string]string{}
+			for u := int(next.Add(1) - 1); u < len(units) && ctx.Err() == nil; u = int(next.Add(1) - 1) {
+				for _, root := range units[u].roots {
+					_ = s.Visit(ctx, root, func(id index.ID) error {
+						n := &s.Nodes[id]
+						if n.IsDir() {
+							return nil
+						}
+						v := n.Size
+						if allocated {
+							v = n.Allocated
+						}
+						raw := filepath.Ext(s.NameView(id))
+						ext, ok := extensions[raw]
+						if !ok {
+							ext = strings.ToLower(raw)
+							extensions[raw] = ext
+						}
+						tally[ext] += v
+						return nil
+					})
+				}
+				out := make([]extBytes, 0, len(tally))
+				for e, v := range tally {
+					out = append(out, extBytes{e, v})
+				}
+				tallies[u] = out
+				clear(tally)
+			}
+		}()
+	}
+	group.Wait()
+	if ctx.Err() != nil {
+		return map[tileKey]string{}
+	}
+	sums := make([]map[string]uint64, len(blocks))
+	for u, t := range tallies {
+		b := units[u].block
+		if sums[b] == nil {
+			sums[b] = map[string]uint64{}
+		}
+		for _, e := range t {
+			sums[b][e.ext] += e.bytes
+		}
+	}
+	out := make(map[tileKey]string, len(blocks))
+	for b, key := range blocks {
+		ext, top := "", uint64(0)
+		for e, v := range sums[b] {
+			if v > top || v == top && e < ext {
+				ext, top = e, v
+			}
+		}
+		if ext == "" {
+			ext = "(no extension)"
+		}
+		out[key] = ext
+	}
 	return out
 }
 
@@ -176,7 +273,7 @@ func (m *treemapModel) reset() {
 		m.cancel()
 	}
 	a := m.a
-	*m = treemapModel{dirty: true, highlight: index.None, maximized: m.maximized}
+	*m = treemapModel{dirty: true, highlight: index.None, maximized: m.maximized, gen: m.gen + 1}
 	m.a = a
 }
 
@@ -208,10 +305,15 @@ func (m *treemapModel) ensure() {
 	needRanks := m.rankFor != s
 	allocated := m.allocated
 	go func() {
-		branches := treemap.Hierarchy(ctx, s, root, allocated, 6000)
-		dominant := dominantExtensions(ctx, s, branches, allocated)
+		// The color ranks need a pass over the whole index and the
+		// dominant extensions one over the blocks: run them side by side.
 		var ranks map[string]int
-		if needRanks {
+		ranked := make(chan struct{})
+		go func() {
+			defer close(ranked)
+			if !needRanks {
+				return
+			}
 			if summary, err := s.Summarize(ctx); err == nil {
 				ranks = map[string]int{}
 				for i, t := range summary.Types {
@@ -221,7 +323,10 @@ func (m *treemapModel) ensure() {
 					ranks[t.Extension] = i
 				}
 			}
-		}
+		}()
+		branches := treemap.Hierarchy(ctx, s, root, allocated, 6000)
+		dominant := dominantExtensions(ctx, s, branches, allocated)
+		<-ranked
 		if ctx.Err() != nil {
 			return
 		}
@@ -314,7 +419,7 @@ func (m *treemapModel) color(s *index.Snapshot, cell treemap.Cell, dark bool) ui
 	if n.IsDir() {
 		return neutral
 	}
-	ext := strings.ToLower(filepath.Ext(s.NameView(id)))
+	ext := strings.ToLower(rawExtOf(s, id))
 	if ext == "" {
 		ext = "(no extension)"
 	}
@@ -330,19 +435,19 @@ func (m *treemapModel) cellExt(s *index.Snapshot, cell treemap.Cell) string {
 	if cell.Tile.Other || cell.Group || s.Nodes[cell.Tile.ID].IsDir() {
 		return ""
 	}
-	ext := strings.ToLower(filepath.Ext(s.NameView(cell.Tile.ID)))
+	ext := strings.ToLower(rawExtOf(s, cell.Tile.ID))
 	if ext == "" {
 		ext = "(no extension)"
 	}
 	return ext
 }
 
-// tipInfo is what the pointer tip shows for a tile: a heading, the size and
-// its share of the map, a few labelled facts and an optional hint.
+// tipInfo is what the pointer tip shows for a tile: a title, what kind of
+// item it is with its share of the map on the right, labelled facts in
+// reading order, and an optional note.
 type tipInfo struct {
 	title, kind string
-	size, share string
-	pct         float64
+	aside       string
 	rows        [][2]string
 	hint        string
 }
@@ -355,11 +460,10 @@ func (a *App) hoverInfo(s *index.Snapshot, cell treemap.Cell) tipInfo {
 		info := tipInfo{
 			title: "Smaller items",
 			kind:  "Grouped in " + a.name(cell.Tile.ID),
-			size:  a.size(cell.Tile.Bytes),
-			pct:   percent(cell.Tile.Bytes, m.total),
+			aside: percentText(percent(cell.Tile.Bytes, m.total)) + of,
 			hint:  "Too small to draw one by one.\nDouble-click to open the folder.",
 		}
-		info.share = percentText(info.pct) + of
+		info.rows = append(info.rows, [2]string{"Size", a.size(cell.Tile.Bytes)})
 		if ext, ok := m.dominant[tileKey{cell.Tile.ID, true}]; ok {
 			info.rows = append(info.rows, [2]string{"Mostly", ext})
 		}
@@ -367,9 +471,8 @@ func (a *App) hoverInfo(s *index.Snapshot, cell treemap.Cell) tipInfo {
 	}
 	id := cell.Tile.ID
 	n := s.Nodes[id]
-	info := tipInfo{title: a.name(id), size: a.size(n.Size), pct: percent(a.metric(n), m.total)}
-	info.share = percentText(info.pct) + of
-	info.rows = append(info.rows, [2]string{"Location", truncateMiddle(a.pathOf(id), 48)})
+	info := tipInfo{title: a.name(id), aside: percentText(percent(a.metric(n), m.total)) + of}
+	info.rows = append(info.rows, [2]string{"Size", a.size(n.Size)})
 	if a.size(n.Allocated) != a.size(n.Size) {
 		info.rows = append(info.rows, [2]string{"On disk", a.size(n.Allocated)})
 	}
@@ -395,6 +498,38 @@ func (a *App) hoverInfo(s *index.Snapshot, cell treemap.Cell) tipInfo {
 		info.hint = "NTFS metadata: reserved by the\nfilesystem, not reclaimable."
 	}
 	return info
+}
+
+// fitMiddle shortens s with an ellipsis in the middle until it measures at
+// most maxW at the given size, so a path keeps its start and its end.
+func fitMiddle(p *ui.Painter, s string, size, maxW float32) string {
+	return fitMiddleText(s, maxW, func(text string) float32 {
+		w, _ := p.MeasureText(0, ui.Span{Text: text, Size: size})
+		return w
+	})
+}
+
+// Measure logarithmically many candidates and decode Unicode only once.
+// The previous loop shaped and allocated every shorter version of a long
+// filename on every pointer frame. Keep a measured, fitting candidate even
+// when kerning makes widths slightly non-monotonic.
+func fitMiddleText(s string, maxW float32, measure func(string) float32) string {
+	if measure(s) <= maxW {
+		return s
+	}
+	runes := []rune(s)
+	best := "…"
+	lo, hi := 1, (len(runes)-1)/2
+	for lo <= hi {
+		half := lo + (hi-lo)/2
+		candidate := string(runes[:half]) + "…" + string(runes[len(runes)-half:])
+		if measure(candidate) <= maxW {
+			best, lo = candidate, half+1
+		} else {
+			hi = half - 1
+		}
+	}
+	return best
 }
 
 // treemapView draws the map. Click selects the item in Tree View, a double
@@ -557,7 +692,7 @@ func (a *App) treemapView(c *ui.Context, pal palette) {
 				p.Clip(ui.Rect{X: rect.X + 2, Y: rect.Y, W: rect.W - 4, H: rect.H}, 0, func() {
 					p.Text(rect.X+4, rect.Y+2, st.name, 11, fg)
 					if rect.H > 32 {
-						p.Text(rect.X+4, rect.Y+16, st.size, 11, fg.Alpha(.8))
+						p.Text(rect.X+4, rect.Y+16, st.size, 11, st.textAlpha)
 					}
 				})
 			}
@@ -575,26 +710,31 @@ func (a *App) treemapView(c *ui.Context, pal palette) {
 		r := cells[hover].Tile.Rect
 		rect := ui.Rect{X: origin.X + r.X + 1, Y: origin.Y + r.Y + 1, W: max(1, r.W-2), H: max(1, r.H-2)}
 		p.Stroke(rect, t.Focus, 0, 2)
-		const pad, rowH, labelW, maxW = 12, 17, 62, 340
-		titleSpan := ui.Span{Text: tip.title, Size: 13, Weight: 600, Color: t.Text}
-		sizeSpan := ui.Span{Text: tip.size, Size: 17, Weight: 600, Color: t.Text}
+		// A plain card: title, kind, a rule, then aligned label and value rows.
+		const pad, rowH, labelW, maxW = 10, 17, 60, 300
+		titleSpan := ui.Span{Text: tip.title, Size: 12.5, Weight: 600, Color: t.Text}
 		w, _ := p.MeasureText(0, titleSpan)
-		w += 18 // swatch
-		sw, _ := p.MeasureText(0, sizeSpan)
-		shw, _ := p.MeasureText(0, ui.Span{Text: tip.share, Size: 11.5})
-		w = max(w, sw+16+shw, 240)
+		kindW, _ := p.MeasureText(0, ui.Span{Text: tip.kind, Size: 11.5})
+		asideW, _ := p.MeasureText(0, ui.Span{Text: tip.aside, Size: 11.5})
+		w = max(w, kindW+asideW+12, 200)
 		for _, r := range tip.rows {
 			vw, _ := p.MeasureText(0, ui.Span{Text: r[1], Size: 11.5})
-			w = max(w, labelW+vw)
-		}
-		w = min(w+2*pad, min(maxW, max(160, origin.W-8)))
-		h := float32(pad*2 + 18 + 15 + 8 + 26 + 10 + 4)
-		h += float32(len(tip.rows) * rowH)
-		if len(tip.rows) > 0 {
-			h += 8
+			w = max(w, labelW+min(vw, maxW-2*pad-labelW))
 		}
 		hint := strings.Split(tip.hint, "\n")
-		if tip.hint != "" {
+		if tip.hint == "" {
+			hint = nil
+		}
+		for _, l := range hint {
+			lw, _ := p.MeasureText(0, ui.Span{Text: l, Size: 11})
+			w = max(w, lw)
+		}
+		w = min(w+2*pad, min(maxW, max(180, origin.W-8)))
+		h := float32(pad*2 + 17 + 15)
+		if len(tip.rows) > 0 {
+			h += float32(9 + len(tip.rows)*rowH)
+		}
+		if len(hint) > 0 {
 			h += float32(8 + 14*len(hint))
 		}
 		x, y := origin.X+px+16, origin.Y+py+18
@@ -607,47 +747,40 @@ func (a *App) treemapView(c *ui.Context, pal palette) {
 		x = max(origin.X+4, x)
 		y = max(origin.Y+4, y)
 		card := ui.Rect{X: x, Y: y, W: w, H: h}
-		bg, border, track := ui.Hex("#2B2B2B"), ui.Hex("#454545"), ui.Hex("#FFFFFF").Alpha(.12)
+		bg, border := ui.Hex("#2B2B2B"), ui.Hex("#4A4A4A")
 		if !dark {
-			bg, border, track = ui.Hex("#FFFFFF"), ui.Hex("#C8C8C8"), ui.Hex("#000000").Alpha(.10)
+			bg, border = ui.Hex("#FFFFFF"), ui.Hex("#C8C8C8")
 		}
-		p.Shadow(card, 8, 0, 4, 14, 0, ui.RGBA(0, 0, 0, 0.35))
-		p.Fill(card, bg, 8)
-		p.Stroke(card, border, 8, 1)
-		accent := styles[hover].color
+		p.Shadow(card, 4, 0, 2, 8, 0, ui.RGBA(0, 0, 0, 0.25))
+		p.Fill(card, bg, 4)
+		p.Stroke(card, border, 4, 1)
 		cx, cy, cw := x+pad, y+pad, w-2*pad
-		p.Clip(ui.Rect{X: x, Y: y, W: w, H: h}, 0, func() {
-			// Heading: colour swatch matching the tile, name, then what it is.
-			p.Fill(ui.Rect{X: cx, Y: cy + 3, W: 10, H: 10}, accent, 3)
-			p.Clip(ui.Rect{X: cx + 18, Y: cy - 2, W: cw - 18, H: 22}, 0, func() {
-				p.RichText(cx+18, cy-1, 0, titleSpan)
+		valueW := cw - labelW
+		title := titleSpan
+		title.Text = fitMiddle(p, tip.title, 12.5, cw)
+		p.Clip(card, 0, func() {
+			p.Clip(ui.Rect{X: cx, Y: cy - 2, W: cw, H: 20}, 0, func() {
+				p.RichText(cx, cy-1, 0, title)
 			})
-			cy += 18
-			p.Clip(ui.Rect{X: cx, Y: cy, W: cw, H: 16}, 0, func() {
-				p.Text(cx, cy, tip.kind, 11, t.TextMuted)
+			cy += 17
+			p.Clip(ui.Rect{X: cx, Y: cy, W: cw - asideW - 12, H: 16}, 0, func() {
+				p.Text(cx, cy, tip.kind, 11.5, t.TextMuted)
 			})
-			cy += 15 + 8
-			// Size and share, with a bar showing the share of the whole map.
-			p.RichText(cx, cy, 0, sizeSpan)
-			p.Text(cx+cw-shw, cy+4, tip.share, 11.5, t.TextMuted)
-			cy += 26
-			bar := ui.Rect{X: cx, Y: cy, W: cw, H: 4}
-			p.Fill(bar, track, 2)
-			p.Fill(ui.Rect{X: cx, Y: cy, W: max(3, cw*float32(min(tip.pct, 100))/100), H: 4}, accent, 2)
-			cy += 10 + 4
+			p.Text(cx+cw-asideW, cy, tip.aside, 11.5, t.TextMuted)
+			cy += 15
 			if len(tip.rows) > 0 {
-				p.Fill(ui.Rect{X: cx, Y: cy - 2, W: cw, H: 1}, border, 0)
-				cy += 6
+				p.Fill(ui.Rect{X: cx, Y: cy + 3, W: cw, H: 1}, border, 0)
+				cy += 9
 			}
 			for _, r := range tip.rows {
 				p.Text(cx, cy, r[0], 11.5, t.TextMuted)
 				p.Clip(ui.Rect{X: cx + labelW, Y: cy, W: cw - labelW, H: rowH}, 0, func() {
-					p.Text(cx+labelW, cy, r[1], 11.5, t.Text)
+					p.Text(cx+labelW, cy, fitMiddle(p, r[1], 11.5, valueW), 11.5, t.Text)
 				})
 				cy += rowH
 			}
-			if tip.hint != "" {
-				cy += 4
+			if len(hint) > 0 {
+				cy += 8
 				for _, l := range hint {
 					p.Text(cx, cy, l, 11, t.TextMuted)
 					cy += 14

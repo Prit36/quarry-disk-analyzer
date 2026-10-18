@@ -5,14 +5,10 @@ import (
 	"quarry/internal/index"
 )
 
-// The tables change their selections themselves, so a view cannot know when
-// its selection changed. Selected entries, in row order, are kept between
-// frames and rebuilt only when a fingerprint of the selection differs: its
-// size, an order-independent mix of its IDs, the rows and the snapshot. The
-// fingerprint is taken at most once per check point (the start of a frame
-// and after the table is built), so menus, shortcuts and the status bar
-// asking many times per frame cost nothing after the first. With a million
-// entries selected, rebuilding the list on every question took seconds.
+// Application mutations and Table.Changed invalidate the selected-ID cache.
+// Unchanged frames check only cardinality, row generation and snapshot;
+// they do not walk a large selection. Fingerprints are retained for explicit
+// checkpoints, and commands still invalidate before acting on a selection.
 type selectionKey struct {
 	n        int
 	sum, mix uint64
@@ -48,18 +44,31 @@ func (c *selectionCache) checkpoint() { c.checked = false }
 // get returns the cached list, rebuilding it with build when the selection
 // may have changed.
 func (c *selectionCache) get(sel *ui.Selection[index.ID], rows uint64, s *index.Snapshot, build func([]index.ID) []index.ID) []index.ID {
-	if c.valid && c.checked {
+	if c.valid && c.checked && c.key.n == sel.Len() && c.key.rows == rows && c.key.snap == s {
 		return c.ids
 	}
-	k := fingerprint(sel, rows, s)
-	c.checked = true
-	if c.valid && k == c.key {
-		return c.ids
+	if c.valid {
+		k := fingerprint(sel, rows, s)
+		c.checked = true
+		if k == c.key {
+			return c.ids
+		}
 	}
 	c.ids = build(c.ids[:0])
-	c.key, c.valid = k, true
+	c.key = fingerprintSlice(c.ids, rows, s)
+	c.valid, c.checked = true, true
 	c.version++
 	return c.ids
+}
+
+func fingerprintSlice(ids []index.ID, rows uint64, s *index.Snapshot) selectionKey {
+	k := selectionKey{n: len(ids), rows: rows, snap: s}
+	for _, id := range ids {
+		v := uint64(id) + 1
+		k.sum += v * 0x9e3779b97f4a7c15
+		k.mix ^= (v ^ v>>17) * 0xc2b2ae3d27d4eb4f
+	}
+	return k
 }
 
 // selectionFacts are derived from one version of the active selection.

@@ -33,15 +33,16 @@ func items(ctx context.Context, s *index.Snapshot, dir index.ID, allocated bool,
 	if limit < 2 {
 		limit = 2
 	}
-	h := make(itemHeap, 0, min(limit-1, 128))
+	h := make(itemHeap, 0, min(limit, 128))
 	var other uint64
 	visited := 0
+	isMFT := strings.Contains(s.Engine, "MFT")
 	for id := s.Nodes[dir].FirstChild; id != index.None; id = s.Nodes[id].NextSibling {
 		visited++
 		if visited&4095 == 0 && ctx.Err() != nil {
 			return nil
 		}
-		if !showMetadata && dir == 0 && strings.Contains(s.Engine, "MFT") && strings.HasPrefix(s.NameView(id), "$") {
+		if !showMetadata && dir == 0 && isMFT && strings.HasPrefix(s.NameView(id), "$") {
 			continue
 		}
 		n := s.Nodes[id]
@@ -112,15 +113,19 @@ func (h itemHeap) down(i int) {
 
 // Layout creates geometry only; callers cache it until the bounds/items change.
 func Layout(items []Item, bounds Rect) []Tile {
+	return LayoutAppend(items, bounds, make([]Tile, 0, len(items)))
+}
+
+// LayoutAppend appends squarified tiles to dst.
+func LayoutAppend(items []Item, bounds Rect, tiles []Tile) []Tile {
 	var total float64
 	for _, i := range items {
 		total += float64(i.Bytes)
 	}
 	if total <= 0 || bounds.W <= 0 || bounds.H <= 0 {
-		return nil
+		return tiles
 	}
 	scale := float64(bounds.W) * float64(bounds.H) / total
-	tiles := make([]Tile, 0, len(items))
 	remaining := bounds
 	for start := 0; start < len(items); {
 		end := start + 1
