@@ -244,7 +244,7 @@ func walk(ctx context.Context, root string, opts Options, p *Progress) (*index.S
 				dir := e.flags&index.Directory != 0
 				if !excl.Empty() {
 					full := ""
-					if dir && excl.needsPaths() {
+					if dir && excl.NeedsPaths() {
 						full = filepath.Join(t.path, name)
 					}
 					if excl.Match(name, full, dir) {

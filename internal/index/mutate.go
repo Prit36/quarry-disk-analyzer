@@ -167,6 +167,9 @@ type FilterStats struct {
 // folders not rejected by dropFolder. With isolate, folders left without any
 // file are removed too. Totals are recomputed so proportions stay meaningful.
 func (s *Snapshot) Filtered(ctx context.Context, keepFile func(ID) bool, dropFolder func(ID) bool, isolate bool) (*Snapshot, FilterStats, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, FilterStats{}, err
+	}
 	c := s.Clone()
 	stats := FilterStats{}
 	drop := make([]bool, len(c.Nodes))

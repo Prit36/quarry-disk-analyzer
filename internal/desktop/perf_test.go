@@ -3,10 +3,12 @@ package desktop
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"runtime"
 	"runtime/debug"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,8 +24,9 @@ import (
 // display list) and exclude GPU presentation.
 func TestPerfReport(t *testing.T) {
 	path := os.Getenv("QUARRY_PERF_SNAPSHOT")
-	if path == "" {
-		t.Skip("QUARRY_PERF_SNAPSHOT not set")
+	synthetic := os.Getenv("QUARRY_PERF_SYNTHETIC") == "1"
+	if path == "" && !synthetic {
+		t.Skip("set QUARRY_PERF_SNAPSHOT or QUARRY_PERF_SYNTHETIC=1")
 	}
 	t.Setenv("QUARRY_CONFIG_DIR", t.TempDir())
 	report := map[string]any{}
@@ -37,11 +40,19 @@ func TestPerfReport(t *testing.T) {
 	report["heap_before_mb"] = heap()
 
 	start := time.Now()
-	s, err := index.LoadSnapshot(context.Background(), path)
-	if err != nil {
-		t.Fatal(err)
+	var s *index.Snapshot
+	if synthetic && path == "" {
+		s = syntheticUISnapshot()
+		report["source"] = "synthetic 500k nodes (no disk I/O or GPU presentation)"
+		report["snapshot_prepare_ms"] = ms(time.Since(start))
+	} else {
+		var err error
+		s, err = index.LoadSnapshot(context.Background(), path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		report["load_snapshot_ms"] = ms(time.Since(start))
 	}
-	report["load_snapshot_ms"] = ms(time.Since(start))
 	report["nodes"] = len(s.Nodes)
 
 	a := newApp()
@@ -222,6 +233,88 @@ func until(tt *ui.Tester, done func() bool) {
 }
 
 var testedApp *App
+
+func syntheticUISnapshot() *index.Snapshot {
+	s := index.New(`C:\perf`)
+	exts := []string{"dll", "TXT", "log", "zip", "jpg", "exe"}
+	for i := range 50 {
+		top := s.Add(0, fmt.Sprintf("area%02d", i), 0, 0, 0, index.Directory)
+		for j := range 100 {
+			dir := s.Add(top, fmt.Sprintf("folder%03d", j), 0, 0, 0, index.Directory)
+			for k := range 99 {
+				size := uint64((i*7919+j*104729+k*15485863)%(1<<30)) + 1
+				s.Add(dir, fmt.Sprintf("file-%03d.%s", k, exts[(i+j+k)%len(exts)]), size, size+4096, int64(1600000000+k*3600), 0)
+			}
+		}
+	}
+	s.Finalize()
+	return s
+}
+
+// Exercise real text shaping, including unusually long Unicode filenames.
+func BenchmarkTreemapTooltipText(b *testing.B) {
+	name := strings.Repeat("résumé-backup-", 18) + ".zip"
+	tt := ui.NewTester(func(c *ui.Context) {
+		ui.Box(c).Size(300, 60).Draw(func(p *ui.Painter, r ui.Rect) {
+			p.Text(r.X, r.Y, fitMiddle(p, name, 12.5, 220), 12.5, ui.Hex("#FFFFFF"))
+		})
+	}, 400, 100)
+	tt.Frame()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		tt.Frame()
+	}
+}
+
+func BenchmarkDerivedSorts(b *testing.B) {
+	s := syntheticUISnapshot()
+	f, _ := index.ParseFilter("type:file")
+	base, err := s.Search(context.Background(), 0, &f)
+	if err != nil {
+		b.Fatal(err)
+	}
+	ids := make([]index.ID, len(base))
+	for _, column := range []string{"Folder", "Extension"} {
+		b.Run(column, func(b *testing.B) {
+			b.ReportAllocs()
+			for range b.N {
+				copy(ids, base)
+				if err := sortEntries(context.Background(), s, ids, ui.SortOrder{Column: column}, false); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkFileResort(b *testing.B) {
+	b.Setenv("QUARRY_CONFIG_DIR", b.TempDir())
+	a := newApp()
+	a.setBase(syntheticUISnapshot(), "", nil, false)
+	wait := func() {
+		deadline := time.Now().Add(10 * time.Second)
+		for a.files.busy {
+			if time.Now().After(deadline) {
+				b.Fatal("file model timed out")
+			}
+			a.drain()
+			runtime.Gosched()
+		}
+	}
+	a.files.run()
+	wait()
+	for _, column := range []string{"Size", "Modified"} {
+		b.Run(column, func(b *testing.B) {
+			b.ReportAllocs()
+			for range b.N {
+				a.files.sort = ui.SortOrder{Column: column, Descending: true}
+				a.files.run()
+				wait()
+			}
+		})
+	}
+}
 
 // menuSync is the per-frame cost of updating the menu bar's enabled and
 // checked states (syncMenu without a native window).

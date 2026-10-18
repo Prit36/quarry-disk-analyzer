@@ -1,6 +1,7 @@
 package desktop
 
 import (
+	"context"
 	"slices"
 
 	"github.com/egoist/mygo/ui"
@@ -75,7 +76,7 @@ func (t *treeModel) children(id index.ID) []index.ID {
 	}
 	s := t.snap()
 	k := s.Children(id)
-	s.Sort(k, t.order())
+	_ = s.SortContext(context.Background(), k, t.order())
 	t.kids[id] = k
 	return k
 }

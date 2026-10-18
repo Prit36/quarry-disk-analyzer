@@ -16,19 +16,21 @@ import (
 // a search also matches folders unless it says type:file. Every match is
 // kept; the virtualized table only builds rows in view.
 type fileModel struct {
-	a       *App
-	ids     []index.ID
-	total   uint64
-	busy    bool
-	err     string
-	gen     uint64
-	cancel  context.CancelFunc
-	dirty   bool
-	due     time.Time
-	forSnap *index.Snapshot // snapshot of the shown results
-	runFor  *index.Snapshot // snapshot of the running query
-	ran     string          // query of the shown results
-	scope   index.ID
+	a              *App
+	ids            []index.ID
+	total          uint64
+	busy           bool
+	err            string
+	gen            uint64
+	cancel         context.CancelFunc
+	dirty          bool
+	due            time.Time
+	forSnap        *index.Snapshot // snapshot of the shown results
+	runFor         *index.Snapshot // snapshot of the running query
+	ran            string          // query of the shown results
+	scope          index.ID
+	shownScope     index.ID
+	shownAllocated bool
 
 	list   ui.ListState
 	sel    ui.Selection[index.ID]
@@ -50,6 +52,8 @@ func (f *fileModel) reset() {
 	if f.cancel != nil {
 		f.cancel()
 	}
+	f.gen++ // reject completions already posted before cancellation
+	f.runFor, f.due = nil, time.Time{}
 	cols := f.list.Columns
 	f.list = ui.ListState{Columns: cols}
 	f.ids, f.total, f.busy, f.err, f.forSnap, f.ran = nil, 0, false, "", nil, ""
@@ -82,6 +86,11 @@ func (f *fileModel) ensure() {
 
 // queryChanged debounces typing.
 func (f *fileModel) queryChanged(now time.Time) {
+	if f.cancel != nil {
+		f.cancel()
+	}
+	f.gen++
+	f.busy, f.runFor = false, nil
 	f.dirty = true
 	f.due = now.Add(150 * time.Millisecond)
 }
@@ -130,11 +139,17 @@ func (f *fileModel) run() {
 	f.cancel = cancel
 	f.busy, f.dirty, f.due, f.runFor = true, false, time.Time{}, a.snap
 	s, query, scope, order, allocated := a.snap, strings.TrimSpace(a.search), f.scope, f.sort, a.metricAllocated()
+	// Results remain immutable while a worker sorts its own copy. Changing
+	// order or size metric need not search the same snapshot and scope again.
+	reuse := f.forSnap == s && f.ran == query && f.shownScope == scope && f.err == ""
+	previous, previousTotal, sameMetric := f.ids, f.total, f.shownAllocated == allocated
 	go func() {
 		filter, err := index.ParseFilter(query)
 		var ids []index.ID
 		var total uint64
-		if err == nil {
+		if err == nil && reuse {
+			ids = slices.Clone(previous)
+		} else if err == nil {
 			if filter.Kind == index.KindAny && query == "" {
 				filter.Kind = index.KindFiles
 			}
@@ -143,29 +158,42 @@ func (f *fileModel) run() {
 		if err == nil {
 			err = sortEntries(ctx, s, ids, order, allocated)
 		}
-		// Count each matched byte once: skip matches inside a matched folder.
-		matchedDirs := map[index.ID]bool{}
-		for _, id := range ids {
-			if s.Nodes[id].IsDir() {
-				matchedDirs[id] = true
-			}
+		if ctx.Err() != nil {
+			return
 		}
-		for _, id := range ids {
-			n := s.Nodes[id]
-			nested := false
-			for p := n.Parent; p != index.None && len(matchedDirs) > 0; p = s.Nodes[p].Parent {
-				if matchedDirs[p] {
-					nested = true
-					break
+		if err == nil && reuse && sameMetric {
+			total = previousTotal
+		} else if err == nil {
+			// Count each matched byte once: skip matches inside a matched folder.
+			matchedDirs := map[index.ID]bool{}
+			for i, id := range ids {
+				if i&4095 == 0 && ctx.Err() != nil {
+					return
+				}
+				if s.Nodes[id].IsDir() {
+					matchedDirs[id] = true
 				}
 			}
-			if nested {
-				continue
-			}
-			if allocated {
-				total += n.Allocated
-			} else {
-				total += n.Size
+			for i, id := range ids {
+				if i&4095 == 0 && ctx.Err() != nil {
+					return
+				}
+				n := s.Nodes[id]
+				nested := false
+				for p := n.Parent; p != index.None && len(matchedDirs) > 0; p = s.Nodes[p].Parent {
+					if matchedDirs[p] {
+						nested = true
+						break
+					}
+				}
+				if nested {
+					continue
+				}
+				if allocated {
+					total += n.Allocated
+				} else {
+					total += n.Size
+				}
 			}
 		}
 		if ctx.Err() != nil {
@@ -186,7 +214,11 @@ func (f *fileModel) run() {
 			// Checked before the selection is cleared, without a map copy.
 			var kept []index.ID
 			cursor := -1
-			if f.sel.Len() > 0 {
+			if reuse {
+				if f.sel.Has(cid) {
+					cursor = slices.Index(ids, cid)
+				}
+			} else if f.sel.Len() > 0 {
 				for i, id := range ids {
 					if f.sel.Has(id) {
 						kept = append(kept, id)
@@ -197,11 +229,14 @@ func (f *fileModel) run() {
 				}
 			}
 			f.ids, f.total = ids, total
+			f.shownScope, f.shownAllocated = scope, allocated
 			f.idsGen++
-			f.sel.Clear()
 			f.cursor = cursor
-			for _, id := range kept {
-				f.sel.Add(id)
+			if !reuse {
+				f.sel.Clear()
+				for _, id := range kept {
+					f.sel.Add(id)
+				}
 			}
 			f.selCache.invalidate()
 			if f.cursor < 0 {
@@ -220,14 +255,12 @@ func (f *fileModel) run() {
 // over a second for a million files.
 func sortEntries(ctx context.Context, s *index.Snapshot, ids []index.ID, order ui.SortOrder, allocated bool) error {
 	desc := order.Descending
-	keyOf := func(rank []uint32) func(index.ID) uint64 {
-		return func(id index.ID) uint64 {
-			k := uint64(rank[id])
-			if desc {
-				k = ^k
-			}
-			return k
+	keyOf := func(rank uint32) uint64 {
+		k := uint64(rank)
+		if desc {
+			k = ^k
 		}
+		return k
 	}
 	switch order.Column {
 	case "Folder":
@@ -254,16 +287,16 @@ func sortEntries(ctx context.Context, s *index.Snapshot, ids []index.ID, order u
 			}
 			parentRank[p] = rank
 		}
-		entryRank := make([]uint32, len(s.Nodes))
-		for _, id := range ids {
+		folderKey := func(id index.ID) uint64 {
 			if p := s.Nodes[id].Parent; p != index.None {
-				entryRank[id] = parentRank[p]
+				return keyOf(parentRank[p])
 			}
+			return keyOf(0)
 		}
 		// Within a folder, by name: the first eight name bytes in the key, the
 		// rest compared where those are equal.
 		name := func(id index.ID) uint64 { return s.NameKey(id, 0) }
-		return s.SortByKeys(ctx, ids, keyOf(entryRank), name, &index.Sort{Column: "Name"})
+		return s.SortByKeys(ctx, ids, folderKey, name, &index.Sort{Column: "Name"})
 	case "Extension":
 		ranks := map[string]uint32{}
 		for _, id := range ids {
@@ -277,10 +310,7 @@ func sortEntries(ctx context.Context, s *index.Snapshot, ids []index.ID, order u
 		for i, e := range exts {
 			ranks[e] = uint32(i)
 		}
-		entryRank := make([]uint32, len(s.Nodes))
-		for _, id := range ids {
-			entryRank[id] = ranks[extOf(s, id)]
-		}
+		extensionKey := func(id index.ID) uint64 { return keyOf(ranks[extOf(s, id)]) }
 		// Within an extension, largest first, then by ID: exactly as
 		// Compare with Sort{Desc: true} orders them.
 		largest := func(id index.ID) uint64 {
@@ -289,7 +319,7 @@ func sortEntries(ctx context.Context, s *index.Snapshot, ids []index.ID, order u
 			}
 			return ^s.Nodes[id].Size
 		}
-		return s.SortByKeys(ctx, ids, keyOf(entryRank), largest, nil)
+		return s.SortByKeys(ctx, ids, extensionKey, largest, nil)
 	}
 	column := order.Column
 	if column == "% of Scan" {

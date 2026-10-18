@@ -56,11 +56,12 @@ type App struct {
 	// meta lists base's top-level NTFS metadata entries. While metaHidden,
 	// they are detached from base itself (index.Remove), so hiding them
 	// costs no second copy of the index; Restore brings them back.
-	meta       []index.ID
-	metaHidden bool
-	filter     analysisFilter
-	filterBusy bool
-	filterGen  uint64
+	meta         []index.ID
+	metaHidden   bool
+	filter       analysisFilter
+	filterBusy   bool
+	filterGen    uint64
+	filterCancel context.CancelFunc
 
 	// Navigation: one history shared by the tree and the treemap.
 	location index.ID
@@ -157,7 +158,7 @@ func (a *App) shutdown() {
 	a.closed = true
 	a.prefs.Target = a.target
 	_ = a.savePrefs()
-	for _, cancel := range []context.CancelFunc{a.cancelScan, a.files.cancel, a.ext.cancel, a.tm.cancel, a.dlg.dup.cancel} {
+	for _, cancel := range []context.CancelFunc{a.cancelScan, a.filterCancel, a.files.cancel, a.ext.cancel, a.tm.cancel, a.dlg.dup.cancel} {
 		if cancel != nil {
 			cancel()
 		}
@@ -375,6 +376,9 @@ func (a *App) replaceBase(s *index.Snapshot) {
 // applyFilter derives the view snapshot from base: NTFS metadata detached
 // or attached as the option says, then the analysis filter.
 func (a *App) applyFilter() {
+	if a.filterCancel != nil {
+		a.filterCancel()
+	}
 	a.filterGen++
 	if a.base == nil {
 		return
@@ -388,9 +392,13 @@ func (a *App) applyFilter() {
 		return
 	}
 	gen, base, f, meta := a.filterGen, a.base, a.filter, a.meta
+	ctx, cancel := context.WithCancel(context.Background())
+	a.filterCancel = cancel
 	a.filterBusy = true
 	go func() {
-		ctx := context.Background()
+		if ctx.Err() != nil {
+			return
+		}
 		if toggle {
 			base = base.Clone()
 			if hide {
@@ -402,6 +410,9 @@ func (a *App) applyFilter() {
 		view, stats, err := base, index.FilterStats{}, error(nil)
 		if f.active() {
 			view, stats, err = f.apply(ctx, base)
+		}
+		if ctx.Err() != nil {
+			return
 		}
 		a.post(func() {
 			if gen != a.filterGen {

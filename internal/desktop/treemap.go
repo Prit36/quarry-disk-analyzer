@@ -176,7 +176,7 @@ func (m *treemapModel) reset() {
 		m.cancel()
 	}
 	a := m.a
-	*m = treemapModel{dirty: true, highlight: index.None, maximized: m.maximized}
+	*m = treemapModel{dirty: true, highlight: index.None, maximized: m.maximized, gen: m.gen + 1}
 	m.a = a
 }
 
@@ -398,13 +398,33 @@ func (a *App) hoverInfo(s *index.Snapshot, cell treemap.Cell) tipInfo {
 // fitMiddle shortens s with an ellipsis in the middle until it measures at
 // most maxW at the given size, so a path keeps its start and its end.
 func fitMiddle(p *ui.Painter, s string, size, maxW float32) string {
-	for n := len([]rune(s)); n > 1; n-- {
-		c := truncateMiddle(s, n)
-		if w, _ := p.MeasureText(0, ui.Span{Text: c, Size: size}); w <= maxW {
-			return c
+	return fitMiddleText(s, maxW, func(text string) float32 {
+		w, _ := p.MeasureText(0, ui.Span{Text: text, Size: size})
+		return w
+	})
+}
+
+// Measure logarithmically many candidates and decode Unicode only once.
+// The previous loop shaped and allocated every shorter version of a long
+// filename on every pointer frame. Keep a measured, fitting candidate even
+// when kerning makes widths slightly non-monotonic.
+func fitMiddleText(s string, maxW float32, measure func(string) float32) string {
+	if measure(s) <= maxW {
+		return s
+	}
+	runes := []rune(s)
+	best := "…"
+	lo, hi := 1, (len(runes)-1)/2
+	for lo <= hi {
+		half := lo + (hi-lo)/2
+		candidate := string(runes[:half]) + "…" + string(runes[len(runes)-half:])
+		if measure(candidate) <= maxW {
+			best, lo = candidate, half+1
+		} else {
+			hi = half - 1
 		}
 	}
-	return "…"
+	return best
 }
 
 // treemapView draws the map. Click selects the item in Tree View, a double
