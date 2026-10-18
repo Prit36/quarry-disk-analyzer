@@ -20,7 +20,12 @@ import (
 )
 
 var getFileInfo = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetFileInformationByHandleEx")
-var directoryBuffers = sync.Pool{New: func() any { return make([]uint64, 8192) }}
+// directoryBufferWords sizes the query buffer at 256 KiB: a large folder takes a
+// quarter of the queries, and small folders fill only what they use. Pooled as a
+// pointer to an array, so taking one allocates nothing.
+const directoryBufferWords = 32768
+
+var directoryBuffers = sync.Pool{New: func() any { return new([directoryBufferWords]uint64) }}
 
 func extendedPath(path string) string {
 	if strings.HasPrefix(path, `\\?\`) {
@@ -73,7 +78,7 @@ func enumerate(ctx context.Context, path string, emit func(*dirBatch) error) err
 		return err
 	}
 	defer windows.CloseHandle(h)
-	buffer := directoryBuffers.Get().([]uint64) // aligned as required by Windows
+	buffer := directoryBuffers.Get().(*[directoryBufferWords]uint64) // aligned as required by Windows
 	defer directoryBuffers.Put(buffer)
 	b := unsafe.Slice((*byte)(unsafe.Pointer(&buffer[0])), len(buffer)*8)
 	class := uintptr(11) // FileIdBothDirectoryRestartInfo

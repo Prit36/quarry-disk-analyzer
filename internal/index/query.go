@@ -5,8 +5,11 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 )
 
 type FileType struct {
@@ -137,7 +140,6 @@ func (s *Snapshot) Search(ctx context.Context, root ID, f *Filter) ([]ID, error)
 	if root == None || int(root) >= len(s.Nodes) {
 		return nil, fmt.Errorf("invalid search scope")
 	}
-	ids := make([]ID, 0, 1024)
 	var ancestorOK []bool
 	if f.AncestorTerms() {
 		ancestorOK = make([]bool, len(s.Nodes))
@@ -152,25 +154,123 @@ func (s *Snapshot) Search(ctx context.Context, root ID, f *Filter) ([]ID, error)
 			ancestorOK[root] = true
 		}
 	}
-	err := s.Visit(ctx, root, func(id ID) error {
-		if id == root {
+	workers := runtime.GOMAXPROCS(0)
+	if workers < 2 || uint64(s.Nodes[root].Files)+uint64(s.Nodes[root].Dirs) < parallelSearchEntries {
+		return s.searchSubtree(ctx, root, root, f, ancestorOK, make([]ID, 0, 1024))
+	}
+	return s.searchParallel(ctx, root, f, ancestorOK, workers)
+}
+
+// parallelSearchEntries is the scope size from which Search divides the walk
+// between goroutines.
+const parallelSearchEntries = 1 << 15
+
+// searchSubtree appends the matches in the subtree of top to ids, in index
+// order. skip is left out.
+func (s *Snapshot) searchSubtree(ctx context.Context, top, skip ID, f *Filter, ancestorOK []bool, ids []ID) ([]ID, error) {
+	err := s.Visit(ctx, top, func(id ID) error {
+		if id == skip {
 			return nil
 		}
-		n := s.Nodes[id]
-		name := s.NameView(id)
-		inherited := false
-		if ancestorOK != nil {
-			inherited = ancestorOK[n.Parent]
-			if n.IsDir() {
-				ancestorOK[id] = inherited || f.MatchPathComponent(name)
-			}
-		}
-		if f.MatchNode(name, n, func() string { return s.Path(id) }, inherited) {
+		if s.matchEntry(id, f, ancestorOK) {
 			ids = append(ids, id)
 		}
 		return nil
 	})
 	return ids, err
+}
+
+// matchEntry tests one entry, after its parent has been tested. For folders it
+// records in ancestorOK whether the folder or an ancestor satisfies every
+// path: term, which is what its descendants inherit.
+func (s *Snapshot) matchEntry(id ID, f *Filter, ancestorOK []bool) bool {
+	n := s.Nodes[id]
+	name := s.NameView(id)
+	inherited := false
+	if ancestorOK != nil {
+		inherited = ancestorOK[n.Parent]
+		if n.IsDir() {
+			ancestorOK[id] = inherited || f.MatchPathComponent(name)
+		}
+	}
+	return f.MatchNode(name, n, func() string { return s.Path(id) }, inherited)
+}
+
+// searchPiece is a part of a search, in index order: either the whole subtree
+// of id (walk), or the matched entries already collected in ids.
+type searchPiece struct {
+	id     ID
+	walk   bool
+	weight uint64
+	ids    []ID
+}
+
+func (s *Snapshot) searchPieceOf(id ID) searchPiece {
+	n := s.Nodes[id]
+	return searchPiece{id: id, walk: true, weight: uint64(n.Files) + uint64(n.Dirs)}
+}
+
+// searchParallel walks the children of root on several goroutines. Folders
+// are split until there are enough pieces to share out; a split folder is
+// matched here and its children become pieces in its place, so the pieces
+// concatenated in order are exactly the index order of a single walk. Pieces
+// touch disjoint entries of ancestorOK, which keeps the workers race free.
+func (s *Snapshot) searchParallel(ctx context.Context, root ID, f *Filter, ancestorOK []bool, workers int) ([]ID, error) {
+	var pieces []searchPiece
+	for c := s.Nodes[root].FirstChild; c != None; c = s.Nodes[c].NextSibling {
+		pieces = append(pieces, s.searchPieceOf(c))
+	}
+	for len(pieces) < 4*workers {
+		best := -1
+		for i, p := range pieces {
+			if p.walk && s.Nodes[p.id].IsDir() && s.Nodes[p.id].FirstChild != None && (best < 0 || p.weight > pieces[best].weight) {
+				best = i
+			}
+		}
+		if best < 0 {
+			break
+		}
+		id := pieces[best].id
+		split := []searchPiece{{}}
+		if s.matchEntry(id, f, ancestorOK) {
+			split[0].ids = []ID{id}
+		}
+		for c := s.Nodes[id].FirstChild; c != None; c = s.Nodes[c].NextSibling {
+			split = append(split, s.searchPieceOf(c))
+		}
+		pieces = slices.Replace(pieces, best, best+1, split...)
+	}
+	errs := make([]error, len(pieces))
+	var next atomic.Int64
+	var wg sync.WaitGroup
+	for range min(workers, len(pieces)) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				i := int(next.Add(1) - 1)
+				if i >= len(pieces) {
+					return
+				}
+				if pieces[i].walk {
+					pieces[i].ids, errs[i] = s.searchSubtree(ctx, pieces[i].id, root, f, ancestorOK, nil)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	total := 0
+	for i, p := range pieces {
+		if errs[i] != nil {
+			return nil, errs[i]
+		}
+		total += len(p.ids)
+	}
+	ids := make([]ID, 0, total)
+	for _, p := range pieces {
+		ids = append(ids, p.ids...)
+	}
+	return ids, nil
 }
 
 // displayName is the name shown for an entry; the scan root shows its path.

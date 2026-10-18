@@ -72,6 +72,9 @@ func (f *fileModel) invalidate() {
 // query already running for the shown snapshot is left to finish: every
 // frame (a pointer move is enough) would otherwise restart it.
 func (f *fileModel) ensure() {
+	if !f.due.IsZero() {
+		return // a typed query is still debouncing; tick runs it when due
+	}
 	if f.dirty || f.forSnap != f.a.snap && !(f.busy && f.runFor == f.a.snap) {
 		f.run()
 	}
@@ -179,23 +182,26 @@ func (f *fileModel) run() {
 			}
 			f.err = ""
 			cid := f.cursorID()
-			keep := map[index.ID]bool{}
-			for id := range f.sel.All() {
-				keep[id] = true
+			// Keep the selected entries that the new results still contain.
+			// Checked before the selection is cleared, without a map copy.
+			var kept []index.ID
+			cursor := -1
+			if f.sel.Len() > 0 {
+				for i, id := range ids {
+					if f.sel.Has(id) {
+						kept = append(kept, id)
+						if id == cid {
+							cursor = i
+						}
+					}
+				}
 			}
 			f.ids, f.total = ids, total
 			f.idsGen++
 			f.sel.Clear()
-			f.cursor = -1
-			if len(keep) > 0 {
-				for i, id := range ids {
-					if keep[id] {
-						f.sel.Add(id)
-						if id == cid {
-							f.cursor = i
-						}
-					}
-				}
+			f.cursor = cursor
+			for _, id := range kept {
+				f.sel.Add(id)
 			}
 			f.selCache.invalidate()
 			if f.cursor < 0 {

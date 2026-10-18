@@ -154,3 +154,61 @@ func TestLargeSnapshotRoundTrip(t *testing.T) {
 		t.Fatal("round trip changed the index")
 	}
 }
+
+// benchSnapshot builds a synthetic index of about n entries: folders of
+// files with mixed-case extensions and varied sizes, dates and names.
+func benchSnapshot(n int) *Snapshot {
+	r := rand.New(rand.NewPCG(3, 4))
+	s := New(`C:\bench`)
+	exts := []string{".dll", ".TXT", ".exe", ".Log", ".pdf", "", ".jpg", ".zip"}
+	dirs := []ID{0}
+	for len(s.Nodes) < n {
+		parent := dirs[r.IntN(len(dirs))]
+		if r.IntN(8) == 0 {
+			dirs = append(dirs, s.Add(parent, fmt.Sprintf("folder-%07d", r.IntN(10000000)), 0, 0, 0, Directory))
+			continue
+		}
+		size := uint64(r.IntN(1 << 24))
+		name := fmt.Sprintf("file-%08x%s", r.Uint32(), exts[r.IntN(len(exts))])
+		s.Add(parent, name, size, size+uint64(r.IntN(4))*4096, int64(r.IntN(1<<30))-1<<29, 0)
+	}
+	s.Finalize()
+	return s
+}
+
+func BenchmarkSortContext(b *testing.B) {
+	s := benchSnapshot(500000)
+	base := make([]ID, 0, len(s.Nodes))
+	for i := range s.Nodes {
+		base = append(base, ID(i))
+	}
+	ids := make([]ID, len(base))
+	for _, by := range []Sort{{Column: "Size", Desc: true}, {Column: "Modified"}, {Column: "Name"}} {
+		b.Run(by.Column, func(b *testing.B) {
+			for range b.N {
+				copy(ids, base)
+				if err := s.SortContext(context.Background(), ids, by); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkAnalyze(b *testing.B) {
+	s := benchSnapshot(500000)
+	b.ResetTimer()
+	for range b.N {
+		if _, err := s.Analyze(context.Background(), 0, false, 100); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkClone(b *testing.B) {
+	s := benchSnapshot(500000)
+	b.ResetTimer()
+	for range b.N {
+		s.Clone()
+	}
+}

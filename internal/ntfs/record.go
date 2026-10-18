@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"unicode/utf16"
+	"unicode/utf8"
 )
 
 var le = binary.LittleEndian
@@ -43,13 +45,14 @@ func Fixup(b []byte, sector int) error {
 	if off < 8 || count != len(b)/sector+1 || off+count*2 > len(b) {
 		return fmt.Errorf("%w: update sequence bounds", ErrRecord)
 	}
-	marker := le.Uint16(b[off:])
+	// Byte stores rather than copy: a two-byte copy costs a runtime call per sector.
+	m0, m1 := b[off], b[off+1]
 	for i := 1; i < count; i++ {
-		end := i*sector - 2
-		if le.Uint16(b[end:]) != marker {
+		end, src := i*sector-2, off+i*2
+		if b[end] != m0 || b[end+1] != m1 {
 			return fmt.Errorf("%w: torn sector", ErrRecord)
 		}
-		copy(b[end:end+2], b[off+i*2:off+i*2+2])
+		b[end], b[end+1] = b[src], b[src+1]
 	}
 	return nil
 }
@@ -102,13 +105,28 @@ func (a Attribute) Value() ([]byte, error) {
 func Parse(b []byte, number uint64) (Record, bool, error) {
 	r, inUse, err := ParseRaw(b, number)
 	if len(r.RawName) > 0 {
-		name := make([]uint16, len(r.RawName)/2)
-		for i := range name {
-			name[i] = le.Uint16(r.RawName[i*2:])
-		}
-		r.Name = string(utf16.Decode(name))
+		r.Name = decodeName(r.RawName)
 	}
 	return r, inUse, err
+}
+
+// decodeName converts UTF-16LE name bytes to a string. Plain ASCII, nearly
+// every name, takes one allocation; anything else takes the general decoder.
+func decodeName(b []byte) string {
+	var sb strings.Builder
+	sb.Grow(len(b) / 2)
+	for i := 0; i+1 < len(b); i += 2 {
+		u := le.Uint16(b[i:])
+		if u >= utf8.RuneSelf {
+			units := make([]uint16, len(b)/2)
+			for j := range units {
+				units[j] = le.Uint16(b[j*2:])
+			}
+			return string(utf16.Decode(units))
+		}
+		sb.WriteByte(byte(u))
+	}
+	return sb.String()
 }
 
 // ParseRaw is Parse without decoding the name: it allocates nothing, and

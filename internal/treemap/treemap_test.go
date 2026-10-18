@@ -170,3 +170,43 @@ func TestMetadataVisibilityPreservesSnapshot(t *testing.T) {
 		t.Fatal("metadata scope or global totals wrong")
 	}
 }
+
+// benchSnapshot is a tree of folders holding many files of varied sizes, large
+// enough that the hierarchy reaches its 6,000-tile budget.
+func benchSnapshot() *index.Snapshot {
+	s := index.New(`C:\bench`)
+	for d := 0; d < 300; d++ {
+		dir := s.Add(0, "folder", 0, 0, 0, index.Directory)
+		for i := 0; i < 400; i++ {
+			size := uint64((d*7919+i*104729)%100000 + 1)
+			s.Add(dir, "file.bin", size, size, 0, 0)
+		}
+		for i := 0; i < 8; i++ {
+			sub := s.Add(dir, "sub", 0, 0, 0, index.Directory)
+			for j := 0; j < 50; j++ {
+				size := uint64((i*31+j*17+d)%5000 + 1)
+				s.Add(sub, "leaf.txt", size, size, 0, 0)
+			}
+		}
+	}
+	s.Finalize()
+	return s
+}
+
+func BenchmarkHierarchy(b *testing.B) {
+	s := benchSnapshot()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		Hierarchy(context.Background(), s, 0, false, 6000)
+	}
+}
+
+func BenchmarkNestedLayout(b *testing.B) {
+	s := benchSnapshot()
+	branches := Hierarchy(context.Background(), s, 0, false, 6000)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		NestedLayout(branches, Rect{W: 1400, H: 800})
+	}
+}

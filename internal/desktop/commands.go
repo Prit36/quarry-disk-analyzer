@@ -5,6 +5,7 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+	"quarry/internal/index"
 	"quarry/internal/platform"
 )
 
@@ -54,16 +55,16 @@ func newCommands() map[string]*command {
 
 		// Edit
 		"edit.copy":       {label: "Copy", keys: "Ctrl+C", mods: ui.Ctrl, key: ui.KeyC, enabled: itemsOnDisk, run: func(a *App) { a.clipboardFiles(false) }},
-		"edit.cut":        {label: "Cut", keys: "Ctrl+X", mods: ui.Ctrl, key: ui.KeyX, enabled: func(a *App) bool { return itemsOnDisk(a) && a.mutable() }, run: func(a *App) { a.clipboardFiles(true) }},
+		"edit.cut":        {label: "Cut", keys: "Ctrl+X", mods: ui.Ctrl, key: ui.KeyX, enabled: func(a *App) bool { return itemsOnDisk(a) && a.mutableCached() }, run: func(a *App) { a.clipboardFiles(true) }},
 		"edit.copyPath":   {label: "Copy Full Path", keys: "Ctrl+Alt+C", mods: ui.Ctrl | ui.Alt, key: ui.KeyC, enabled: hasItems, run: (*App).copyPaths},
 		"edit.copyName":   {label: "Copy Name", enabled: hasItems, run: (*App).copyNames},
 		"edit.copySize":   {label: "Copy Size", enabled: hasItems, run: (*App).copySizes},
 		"edit.copyRows":   {label: "Copy Rows as Text", keys: "Ctrl+Shift+C", mods: ui.Ctrl | ui.Shift, key: ui.KeyC, enabled: hasItems, run: (*App).copyRows},
 		"edit.selectAll":  {label: "Select All", keys: "Ctrl+A", mods: ui.Ctrl, key: ui.KeyA, enabled: hasScan, run: (*App).selectAll},
 		"edit.find":       {label: "Find", keys: "Ctrl+F", mods: ui.Ctrl, key: ui.KeyF, inText: true, run: (*App).focusSearch},
-		"edit.rename":     {label: "Rename…", keys: "F2", key: ui.KeyF2, visible: func(a *App) bool { return a.mutable() }, enabled: func(a *App) bool { return singleItem(a) && itemsOnDisk(a) && a.mutable() }, run: (*App).beginRename},
-		"edit.delete":     {label: "Delete", keys: "Del", key: ui.KeyDelete, visible: func(a *App) bool { return a.mutable() }, enabled: func(a *App) bool { return itemsOnDisk(a) && a.mutable() }, run: func(a *App) { a.deleteItems(false) }},
-		"edit.deletePerm": {label: "Delete Permanently…", keys: "Shift+Del", mods: ui.Shift, key: ui.KeyDelete, visible: func(a *App) bool { return a.mutable() }, enabled: func(a *App) bool { return itemsOnDisk(a) && a.mutable() }, run: func(a *App) { a.deleteItems(true) }},
+		"edit.rename":     {label: "Rename…", keys: "F2", key: ui.KeyF2, visible: func(a *App) bool { return a.mutableCached() }, enabled: func(a *App) bool { return singleItem(a) && itemsOnDisk(a) && a.mutableCached() }, run: (*App).beginRename},
+		"edit.delete":     {label: "Delete", keys: "Del", key: ui.KeyDelete, visible: func(a *App) bool { return a.mutableCached() }, enabled: func(a *App) bool { return itemsOnDisk(a) && a.mutableCached() }, run: func(a *App) { a.deleteItems(false) }},
+		"edit.deletePerm": {label: "Delete Permanently…", keys: "Shift+Del", mods: ui.Shift, key: ui.KeyDelete, visible: func(a *App) bool { return a.mutableCached() }, enabled: func(a *App) bool { return itemsOnDisk(a) && a.mutableCached() }, run: func(a *App) { a.deleteItems(true) }},
 
 		// Item navigation (context menus)
 		"item.reveal":      {label: "Reveal in Tree", keys: "Ctrl+Shift+T", mods: ui.Ctrl | ui.Shift, key: ui.KeyT, visible: func(a *App) bool { return a.prefs.View != viewTree }, enabled: singleItem, run: func(a *App) { a.reveal(a.current()) }},
@@ -135,6 +136,30 @@ func newCommands() map[string]*command {
 func (a *App) can(id string) bool {
 	cmd := a.cmds[id]
 	return cmd != nil && (cmd.enabled == nil || cmd.enabled(a))
+}
+
+// mutableMemo remembers mutable for one selection. mutable checks every
+// selected path, and the menu asks about four commands every frame.
+type mutableMemo struct {
+	valid   bool
+	view    int
+	version uint64
+	snap    *index.Snapshot
+	source  string
+	ok      bool
+}
+
+// mutableCached is mutable, recomputed only when the selection (its
+// version) or the scan changes.
+func (a *App) mutableCached() bool {
+	a.selected() // refreshes the selection version for this frame
+	m := &a.mutMemo
+	v := a.selectionVersion()
+	if m.valid && m.view == a.prefs.View && m.version == v && m.snap == a.snap && m.source == a.source {
+		return m.ok
+	}
+	*m = mutableMemo{valid: true, view: a.prefs.View, version: v, snap: a.snap, source: a.source, ok: a.mutable()}
+	return m.ok
 }
 
 // exec runs a command if it is currently available.

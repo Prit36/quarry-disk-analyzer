@@ -1,10 +1,12 @@
 package index
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -108,16 +110,34 @@ func readSnapshotHeader(reader io.Reader) (snapshotHeader, SnapshotInfo, error) 
 }
 
 func LoadSnapshot(ctx context.Context, path string) (*Snapshot, error) {
-	file, err := os.Open(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
-	compressed, err := gzip.NewReader(file)
-	if err != nil {
-		return nil, err
+	snapshot, err := loadSnapshot(ctx, data, true)
+	if errors.Is(err, errSnapshotSegment) {
+		// Not decodable member by member: read it serially for the real error.
+		snapshot, err = loadSnapshot(ctx, data, false)
 	}
-	defer compressed.Close()
+	return snapshot, err
+}
+
+// loadSnapshot decodes a saved scan from its file contents. Files written by
+// this version are decoded member by member in parallel when parallel is set.
+func loadSnapshot(ctx context.Context, data []byte, parallel bool) (*Snapshot, error) {
+	var compressed io.Reader
+	if starts := gzipMemberStarts(data); parallel && len(starts) > 1 {
+		segments := newSegmentStream(data, starts)
+		defer segments.Close()
+		compressed = segments
+	} else {
+		reader, err := gzip.NewReader(bytes.NewReader(data))
+		if err != nil {
+			return nil, err
+		}
+		defer reader.Close()
+		compressed = reader
+	}
 	header, info, err := readSnapshotHeader(compressed)
 	if err != nil {
 		return nil, err

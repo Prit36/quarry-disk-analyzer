@@ -198,3 +198,20 @@ func BenchmarkRecordParse(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkRecordParseRaw is the scanner's path: fixup and ParseRaw, without
+// decoding the name.
+func BenchmarkRecordParseRaw(b *testing.B) {
+	raw := record(fileName("benchmark-file.bin", 1, 5), resident(0x80, make([]byte, 512)))
+	buffer := make([]byte, 1024)
+	b.ReportAllocs()
+	b.SetBytes(1024)
+	for range b.N {
+		copy(buffer, raw)
+		_ = Fixup(buffer, 512)
+		r, _, err := ParseRaw(buffer, 100)
+		if err != nil || r.Size != 512 {
+			b.Fatal(err)
+		}
+	}
+}

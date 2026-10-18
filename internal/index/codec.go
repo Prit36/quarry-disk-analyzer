@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/binary"
+	"errors"
+	"fmt"
 	"io"
 	"runtime"
 	"sync"
@@ -154,4 +156,109 @@ func (z *parallelGzip) Close() error {
 	err := <-z.done
 	z.workers.Wait()
 	return err
+}
+
+// errSnapshotSegment marks a failure while decoding members in parallel;
+// the caller then reads the file serially, which reports the real problem.
+var errSnapshotSegment = errors.New("snapshot member")
+
+// gzipMemberStarts finds where the parallel writer's gzip members begin:
+// a member header with no name, comment or extra field and zero modification
+// time, right after a previous member whose trailer records exactly one
+// block of uncompressed data. The result is a guide, not a proof: a wrong
+// start fails to decode and the caller falls back to a serial read.
+func gzipMemberStarts(data []byte) []int {
+	const header = "\x1f\x8b\x08\x00\x00\x00\x00\x00"
+	var isize [4]byte
+	binary.LittleEndian.PutUint32(isize[:], gzipBlockSize)
+	starts := []int{0}
+	for offset := 1; offset < len(data); {
+		i := bytes.Index(data[offset:], []byte(header))
+		if i < 0 {
+			break
+		}
+		p := offset + i
+		if p >= 4 && string(data[p-4:p]) == string(isize[:]) {
+			starts = append(starts, p)
+		}
+		offset = p + 1
+	}
+	return starts
+}
+
+// segmentStream decodes consecutive gzip segments on several cores and
+// yields their output in order. At most about two segments per core are
+// decoded or waiting, so memory stays bounded.
+type segmentStream struct {
+	results chan *segmentResult
+	stop    chan struct{}
+	current []byte
+	err     error
+}
+
+type segmentResult struct {
+	data []byte
+	err  error
+	done chan struct{}
+}
+
+func newSegmentStream(data []byte, starts []int) *segmentStream {
+	s := &segmentStream{results: make(chan *segmentResult, 2*max(1, min(8, runtime.NumCPU()))), stop: make(chan struct{})}
+	go func() {
+		defer close(s.results)
+		for i, start := range starts {
+			end := len(data)
+			if i+1 < len(starts) {
+				end = starts[i+1]
+			}
+			r := &segmentResult{done: make(chan struct{})}
+			go func(segment []byte) {
+				defer close(r.done)
+				r.data, r.err = decodeGzipSegment(segment)
+			}(data[start:end])
+			select {
+			case s.results <- r:
+			case <-s.stop:
+				return
+			}
+		}
+	}()
+	return s
+}
+
+func decodeGzipSegment(segment []byte) ([]byte, error) {
+	zr, err := gzip.NewReader(bytes.NewReader(segment))
+	if err != nil {
+		return nil, err
+	}
+	var out bytes.Buffer
+	out.Grow(gzipBlockSize + bytes.MinRead) // one member's output, so ReadFrom never regrows
+	_, err = out.ReadFrom(zr)
+	return out.Bytes(), err
+}
+
+func (s *segmentStream) Read(p []byte) (int, error) {
+	for len(s.current) == 0 {
+		if s.err != nil {
+			return 0, s.err
+		}
+		r, ok := <-s.results
+		if !ok {
+			return 0, io.EOF
+		}
+		<-r.done
+		if r.err != nil {
+			s.err = fmt.Errorf("%w: %v", errSnapshotSegment, r.err)
+			return 0, s.err
+		}
+		s.current = r.data
+	}
+	n := copy(p, s.current)
+	s.current = s.current[n:]
+	return n, nil
+}
+
+// Close stops the decoding goroutines that have not been started yet.
+func (s *segmentStream) Close() {
+	close(s.stop)
 }

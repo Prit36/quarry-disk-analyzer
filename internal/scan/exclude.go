@@ -15,8 +15,21 @@ import (
 // "node_modules" or "*.tmp". Matching is case-insensitive.
 type Exclusions struct {
 	paths []string // cleaned, lower case, without trailing separator
+	words []string // plain names, compared case-insensitively without a regex
 	names []index.Filter
 	raw   []string
+}
+
+// plainName reports whether a pattern is a literal name made only of characters
+// whose case-insensitive regex match is exactly strings.EqualFold.
+func plainName(p string) bool {
+	for i := 0; i < len(p); i++ {
+		c := p[i]
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-' || c == '.') {
+			return false
+		}
+	}
+	return true
 }
 
 func NewExclusions(patterns []string) Exclusions {
@@ -29,6 +42,10 @@ func NewExclusions(patterns []string) Exclusions {
 		e.raw = append(e.raw, p)
 		if strings.ContainsAny(p, `\/`) {
 			e.paths = append(e.paths, strings.ToLower(strings.TrimRight(filepath.Clean(p), `\`)))
+			continue
+		}
+		if plainName(p) {
+			e.words = append(e.words, p)
 			continue
 		}
 		query := `regex:"^` + regexp.QuoteMeta(p) + `$"` // a plain word must match the whole name
@@ -50,6 +67,11 @@ func (e Exclusions) needsPaths() bool { return len(e.paths) > 0 }
 
 // Match reports whether an entry with this name and full path is excluded.
 func (e Exclusions) Match(name, path string, dir bool) bool {
+	for _, w := range e.words {
+		if strings.EqualFold(name, w) {
+			return true
+		}
+	}
 	for _, f := range e.names {
 		if f.MatchNode(name, index.Node{}, nil, false) {
 			return true

@@ -88,6 +88,7 @@ type App struct {
 	errorMsg  bool
 
 	selFacts selectionFacts // cached facts about the active selection
+	mutMemo  mutableMemo    // cached answer of mutable for the active selection
 
 	dlg dialogs
 }

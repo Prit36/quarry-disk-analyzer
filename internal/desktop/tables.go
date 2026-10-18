@@ -48,8 +48,8 @@ var extColumns = []ui.TableColumn{
 
 // visibleColumns returns the shown columns and their titles.
 func visibleColumns(all []column, hidden map[string]bool) ([]ui.TableColumn, []string) {
-	var cols []ui.TableColumn
-	var ids []string
+	cols := make([]ui.TableColumn, 0, len(all))
+	ids := make([]string, 0, len(all))
 	for _, c := range all {
 		if c.hideable && hidden[c.Title] {
 			continue
@@ -415,7 +415,46 @@ func (a *App) fileActivate(row int) {
 	}
 }
 
+// maxCellText bounds cellTextCache; past it the cache starts again.
+const maxCellText = 1 << 15
+
+// cellTextCache holds the formatted text of grid cells for one snapshot and
+// the display settings that format them. Snapshots are immutable, so an entry
+// stays valid until the snapshot, the size units or the size metric change.
+// Both grids share it: a cell's text depends only on those inputs.
+type cellTextCache struct {
+	snap      *index.Snapshot
+	units     string
+	allocated bool
+	text      map[cellKey]string
+}
+
+type cellKey struct {
+	id  index.ID
+	col string
+}
+
+// treeCellText returns a cell's text, formatting it only once per snapshot
+// and setting: visible rows are painted every frame.
 func (a *App) treeCellText(id index.ID, col string) string {
+	c := &a.tree.cells
+	if c.snap != a.snap || c.units != a.prefs.Units || c.allocated != a.metricAllocated() || len(c.text) >= maxCellText {
+		c.snap, c.units, c.allocated = a.snap, a.prefs.Units, a.metricAllocated()
+		if c.text == nil {
+			c.text = map[cellKey]string{}
+		}
+		clear(c.text)
+	}
+	k := cellKey{id, col}
+	if s, ok := c.text[k]; ok {
+		return s
+	}
+	s := a.formatCellText(id, col)
+	c.text[k] = s
+	return s
+}
+
+func (a *App) formatCellText(id index.ID, col string) string {
 	s := a.snap
 	n := s.Nodes[id]
 	switch col {

@@ -2,6 +2,7 @@ package index
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"testing"
 	"time"
@@ -156,5 +157,88 @@ func TestMetadataDetection(t *testing.T) {
 	s.Finalize()
 	if !s.IsMetadata(rm) || !s.IsMetadata(bad) || s.IsMetadata(bin) || s.IsMetadata(0) {
 		t.Fatal("metadata classification")
+	}
+}
+
+// searchTree builds about 500k entries: 50 top folders, each with 100
+// subfolders holding 99 files.
+func searchTree() *Snapshot {
+	s := New(`C:\data`)
+	exts := []string{"log", "mp4", "jpg", "txt", "zip", "dll", "tmp", "cs"}
+	for i := range 50 {
+		top := s.Add(0, fmt.Sprintf("area%02d", i), 0, 0, 0, Directory)
+		for j := range 100 {
+			dir := s.Add(top, fmt.Sprintf("Folder_%03d", j), 0, 0, 0, Directory)
+			for k := range 99 {
+				ext := exts[(i+j+k)%len(exts)]
+				name := fmt.Sprintf("Report_%d_%d.%s", j, k, ext)
+				if k%7 == 0 {
+					name = fmt.Sprintf("backup-cache-%d.%s", k, ext)
+				}
+				size := uint64((i*7919+j*104729+k*15485863)%(1<<30)) + 1
+				s.Add(dir, name, size, size, int64(1_600_000_000+k*3600), 0)
+			}
+		}
+	}
+	s.Finalize()
+	return s
+}
+
+// TestParallelSearchMatchesWalk checks that the parallel split returns the
+// same entries, in the same order, as one sequential walk.
+func TestParallelSearchMatchesWalk(t *testing.T) {
+	s := searchTree()
+	for _, text := range []string{"report", "*.mp4", "ext:log", "size:>500MB", "path:folder_05", "path:area03 ext:txt", "-cache", "regex:9_\\d$", "zzzz", "folder"} {
+		f, err := ParseFilter(text)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ancestorOK []bool
+		if f.AncestorTerms() {
+			ancestorOK = make([]bool, len(s.Nodes))
+		}
+		want, err := s.searchSubtree(context.Background(), 0, 0, &f, ancestorOK, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if f.AncestorTerms() {
+			ancestorOK = make([]bool, len(s.Nodes))
+		}
+		got, err := s.searchParallel(context.Background(), 0, &f, ancestorOK, 8)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("%q: parallel search returned %d entries, sequential %d, or in another order", text, len(got), len(want))
+		}
+	}
+}
+
+func BenchmarkSearchHalfMillion(b *testing.B) {
+	s := searchTree()
+	queries := []struct{ name, text string }{
+		{"contains", "report"},
+		{"wildcard", "*.mp4"},
+		{"ext", "ext:log"},
+		{"size", "size:>500MB"},
+		{"path", "path:folder_05"},
+		{"combined", "report -cache ext:txt,mp4 size:1MB..900MB"},
+		{"regex", `regex:^Report_\d+_9\d\.`},
+		{"nomatch", "zzzz"},
+	}
+	for _, q := range queries {
+		b.Run(q.name, func(b *testing.B) {
+			f, err := ParseFilter(q.text)
+			if err != nil {
+				b.Fatal(err)
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				if _, err := s.Search(context.Background(), 0, &f); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }

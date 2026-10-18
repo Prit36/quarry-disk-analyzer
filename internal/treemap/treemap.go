@@ -3,7 +3,6 @@ package treemap
 
 import (
 	"cmp"
-	"container/heap"
 	"context"
 	"slices"
 	"strings"
@@ -34,7 +33,7 @@ func items(ctx context.Context, s *index.Snapshot, dir index.ID, allocated bool,
 	if limit < 2 {
 		limit = 2
 	}
-	h := &itemHeap{}
+	h := make(itemHeap, 0, min(limit-1, 128))
 	var other uint64
 	visited := 0
 	for id := s.Nodes[dir].FirstChild; id != index.None; id = s.Nodes[id].NextSibling {
@@ -54,17 +53,17 @@ func items(ctx context.Context, s *index.Snapshot, dir index.ID, allocated bool,
 			continue
 		}
 		item := Item{ID: id, Bytes: value}
-		if len(*h) < limit-1 {
-			heap.Push(h, item)
-		} else if value > (*h)[0].Bytes {
-			other += (*h)[0].Bytes
-			(*h)[0] = item
-			heap.Fix(h, 0)
+		if len(h) < limit-1 {
+			h.push(item)
+		} else if value > h[0].Bytes {
+			other += h[0].Bytes
+			h[0] = item
+			h.down(0)
 		} else {
 			other += value
 		}
 	}
-	items := []Item(*h)
+	items := []Item(h)
 	if other > 0 {
 		items = append(items, Item{ID: dir, Bytes: other, Other: true})
 	}
@@ -77,13 +76,39 @@ func items(ctx context.Context, s *index.Snapshot, dir index.ID, allocated bool,
 	return items
 }
 
+// itemHeap is a min-heap on Bytes. It mirrors container/heap's sift steps
+// without boxing each Item in an interface value.
 type itemHeap []Item
 
-func (h itemHeap) Len() int           { return len(h) }
-func (h itemHeap) Less(i, j int) bool { return h[i].Bytes < h[j].Bytes }
-func (h itemHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
-func (h *itemHeap) Push(x any)        { *h = append(*h, x.(Item)) }
-func (h *itemHeap) Pop() any          { x := (*h)[len(*h)-1]; *h = (*h)[:len(*h)-1]; return x }
+func (h *itemHeap) push(item Item) {
+	*h = append(*h, item)
+	s := *h
+	for j := len(s) - 1; j > 0; {
+		parent := (j - 1) / 2
+		if s[j].Bytes >= s[parent].Bytes {
+			break
+		}
+		s[j], s[parent] = s[parent], s[j]
+		j = parent
+	}
+}
+
+func (h itemHeap) down(i int) {
+	for {
+		child := 2*i + 1
+		if child >= len(h) {
+			break
+		}
+		if right := child + 1; right < len(h) && h[right].Bytes < h[child].Bytes {
+			child = right
+		}
+		if h[child].Bytes >= h[i].Bytes {
+			break
+		}
+		h[i], h[child] = h[child], h[i]
+		i = child
+	}
+}
 
 // Layout creates geometry only; callers cache it until the bounds/items change.
 func Layout(items []Item, bounds Rect) []Tile {

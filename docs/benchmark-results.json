@@ -42,5 +42,14 @@
     "Single machine; NVMe throughput varied by up to 30% between sessions, so only same-session alternating runs are compared.",
     "Headless frame costs exclude GPU presentation.",
     "No same-machine WizTree benchmark was performed."
-  ]
+  ],
+  "release_0_2_1": {
+    "method": "[0.2.0, 0.2.1] pairs. 0.2.0 (commit d79d916) against 0.2.1 on one saved directory scan of C:\\ (1,432,730 entries): scripts/bench.go -load -ops -runs 5 in five alternating process pairs, TestPerfReport in three alternating runs, medians. A parity tool hashed the ordered results of 12 searches, 12 sorts, Analyze, the treemap layout, ExportJSON and FindDuplicatesOver (20 MB) in both builds: all identical.",
+    "index_operations_ms": { "snapshot_load": [397.2, 85.6], "search_size_over_100mb": [12.1, 2.8], "search_star_log": [21.1, 7.6], "search_microsoft": [66.5, 24.5], "search_ext_dll_sorted": [25.3, 12.1], "search_path_node_modules": [85.7, 45.0], "sort_files_by_name": [256.5, 209.7], "sort_files_by_modified": [55.0, 42.8], "files_sorted_by_size": [64.7, 53.9], "extensions_analyze": [31.6, 24.7], "export_csv": [450.7, 444.5], "snapshot_save": [139.6, 139.0], "compact": [119.6, 118.4] },
+    "ui_ms": { "load_snapshot": [401.8, 92.6], "install_scan": [16.4, 25.7], "search_microsoft": [88.2, 45.0], "search_path_system32_ext_dll": [54.2, 31.3], "search_star_dll": [41.2, 26.9], "files_sort_name": [290.8, 237.0], "files_sort_folder": [383.6, 346.4], "files_sort_extension": [156.4, 143.4], "files_sort_modified": [76.5, 64.1], "extensions": [53.6, 44.2], "treemap_ready": [61.1, 61.7] },
+    "duplicates_20mb_ms": { "baseline": [30923, 29209], "optimized": [15473, 16056], "note": "96 groups, 499 checked, 3 skipped in both" },
+    "directory_scan_c_ms": { "baseline": [6746, 6693], "optimized": [6700, 6801] },
+    "mft_scan_c_ms": { "baseline": [1709, 1724], "optimized": [1714, 1704], "note": "Cold first runs excluded. CPU 578-640 ms before, 343-453 ms after." },
+    "note": "install_scan is slower because the parallel loader leaves more garbage to collect right after loading; load plus install is 418 -> 118 ms. Frame times were unchanged within noise."
+  }
 }

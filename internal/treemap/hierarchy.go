@@ -61,13 +61,25 @@ func HierarchyFiltered(ctx context.Context, s *index.Snapshot, root index.ID, al
 	return branches
 }
 
+// countBranches is the number of cells NestedLayout can produce.
+func countBranches(branches []Branch) int {
+	n := len(branches)
+	for i := range branches {
+		n += countBranches(branches[i].Children)
+	}
+	return n
+}
+
 func NestedLayout(branches []Branch, bounds Rect) []Cell {
-	cells := make([]Cell, 0, 512)
+	cells := make([]Cell, 0, countBranches(branches))
+	// items is scratch space: Layout copies what it needs into its tiles, so
+	// one buffer serves every folder, including the nested ones.
+	var items []Item
 	var layout func([]Branch, Rect, int)
 	layout = func(nodes []Branch, r Rect, depth int) {
-		items := make([]Item, len(nodes))
-		for i, n := range nodes {
-			items[i] = n.Item
+		items = items[:0]
+		for _, n := range nodes {
+			items = append(items, n.Item)
 		}
 		tiles := Layout(items, r)
 		for i, tile := range tiles {

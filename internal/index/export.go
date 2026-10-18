@@ -26,6 +26,15 @@ func (s *Snapshot) ExportJSON(ctx context.Context, writer io.Writer, root ID) er
 	encoder := json.NewEncoder(writer)
 	walker := s.newPathWalker()
 	first := true
+	// One record value is reused for every node: encoding a pointer to it
+	// does not box a fresh copy per node, and the JSON is the same.
+	var record struct {
+		Path, Name      string
+		Size, Allocated uint64
+		Files, Folders  uint32
+		Modified        int64
+		Flags           uint16
+	}
 	err = s.Visit(ctx, root, func(id ID) error {
 		if !first {
 			if _, err := io.WriteString(writer, ","); err != nil {
@@ -34,13 +43,10 @@ func (s *Snapshot) ExportJSON(ctx context.Context, writer io.Writer, root ID) er
 		}
 		first = false
 		node := s.Nodes[id]
-		return encoder.Encode(struct {
-			Path, Name      string
-			Size, Allocated uint64
-			Files, Folders  uint32
-			Modified        int64
-			Flags           uint16
-		}{walker.path(id), s.NameView(id), node.Size, node.Allocated, node.Files, node.Dirs, node.ModTime(), node.Flags})
+		record.Path, record.Name = walker.path(id), s.NameView(id)
+		record.Size, record.Allocated, record.Files, record.Folders = node.Size, node.Allocated, node.Files, node.Dirs
+		record.Modified, record.Flags = node.ModTime(), node.Flags
+		return encoder.Encode(&record)
 	})
 	if err != nil {
 		return err

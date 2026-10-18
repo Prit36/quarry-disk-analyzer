@@ -17,7 +17,7 @@ import (
 	"quarry/internal/scan"
 )
 
-const version = "0.2.0"
+const version = "0.2.1"
 
 type patterns []string
 

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.1 — 2026-10-18
+
+Faster searching, sorting, opening saved scans and duplicate verification. Measured on a saved scan of C:\ (1.43 million entries), 0.2.0 against 0.2.1, alternating runs, medians; every search, sort, analysis, treemap layout, JSON export and duplicate result was checked to be identical in both versions. Details in `docs/benchmark-results.json`.
+
+- **Opening a saved scan** 397 → 86 ms. Files written by 0.2.0 and later are decoded member by member on up to eight cores; older files, and any file that does not split cleanly, are read as before. The file format is unchanged.
+- **Search** is 2–4× faster on large scopes: the walk is divided between cores and the results keep their order. `size:>100MB` 12.1 → 2.8 ms, `*.log` 21 → 7.6 ms, `microsoft` 67 → 25 ms, `path:node_modules` 86 → 45 ms.
+- **Search as you type** runs once per pause in typing instead of once per keystroke; the 150 ms delay was being bypassed.
+- **Sorting** a million files by name 257 → 210 ms, by date 55 → 43 ms: radix passes skip digits in which every entry agrees, and name keys are computed on all cores. File View by folder 384 → 346 ms, by extension 156 → 143 ms.
+- **Extensions** analysis 32 → 25 ms, with 132 allocations instead of about 110,000.
+- **Duplicates** verification 30 → 16 s on 499 files of 20 MB or more: candidates are compared on their first 4 KiB before being read in full, and files are hashed on up to eight workers. On a hard disk, parallel reads may be slower.
+- Smaller changes with no measurable effect in this test: grid cell text and treemap tile colors are cached between frames, availability of Cut, Rename and Delete is cached per selection, plain-name scan exclusions no longer use a regular expression, and directory scans query folders with a 256 KiB buffer.
+- Directory scans (about 6.7 s) and MFT scans (about 1.7 s, with about a third less CPU) take the same time as in 0.2.0.
+
 ## 0.2.0 — 2026-10-18
 
 Performance and memory, measured on C:\ (1.09 million files) before and after; details in `docs/benchmark-results.json`.

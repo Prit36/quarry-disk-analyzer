@@ -32,7 +32,8 @@ type treeModel struct {
 	notice string
 
 	selCache selectionCache
-	rowsGen  uint64 // changes whenever rows change
+	cells    cellTextCache // formatted cell text, shared by both grids
+	rowsGen  uint64        // changes whenever rows change
 }
 
 func (t *treeModel) init(a *App) {
@@ -52,6 +53,7 @@ func (t *treeModel) reset() {
 	t.cursor = -1
 	t.notice = ""
 	t.selCache.invalidate()
+	t.cells = cellTextCache{} // drops the old snapshot too
 }
 
 func (t *treeModel) snap() *index.Snapshot { return t.a.snap }
@@ -164,6 +166,9 @@ func (t *treeModel) cursorID() index.ID {
 }
 
 func (t *treeModel) restoreCursor(id index.ID) {
+	if id != index.None && t.cursor >= 0 && t.cursor < len(t.rows) && t.rows[t.cursor].id == id {
+		return // unchanged row: IDs are unique among rows, so no scan is needed
+	}
 	t.cursor = -1
 	if id != index.None {
 		t.cursor = t.indexOf(id)

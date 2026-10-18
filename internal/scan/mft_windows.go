@@ -678,10 +678,16 @@ func readMFT(ctx context.Context, root string, p *Progress, v *volumeReader) (*i
 	// Records without any name are not entries (in use, but not listed in
 	// any folder); they stay out of the tree. Their former children are
 	// unresolved below, as before.
+	// The cycle check's colors are set in this pass (2 = done, which includes removed).
+	color := make([]byte, len(s.Nodes))
+	color[0] = 2
 	for i := 1; i < len(s.Nodes); i++ {
 		if s.Nodes[i].NameLength == 0 {
 			s.Nodes[i].Parent = index.None
 			s.Nodes[i].Flags |= index.Removed
+		}
+		if s.Nodes[i].Flags&index.Removed != 0 {
+			color[i] = 2
 		}
 	}
 	// Validate parents by the full record reference, including sequence number.
@@ -706,13 +712,6 @@ func readMFT(ctx context.Context, root string, p *Progress, v *volumeReader) (*i
 		s.Nodes[parent].FirstChild = index.ID(i)
 	}
 	// Every node has one parent. Break malformed cycles before aggregation/path use.
-	color := make([]byte, len(s.Nodes))
-	color[0] = 2
-	for i := 1; i < len(s.Nodes); i++ {
-		if s.Nodes[i].Flags&index.Removed != 0 {
-			color[i] = 2
-		}
-	}
 	for i := 1; i < len(s.Nodes); i++ {
 		id := index.ID(i)
 		for color[id] == 0 {

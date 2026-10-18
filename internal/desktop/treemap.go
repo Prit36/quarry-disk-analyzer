@@ -57,6 +57,9 @@ type tileKey struct {
 type cellStyle struct {
 	color ui.Color // tile fill, or a group's frame
 	text  ui.Color
+	// lightEnd and darkEnd are the tile's gradient ends for color, so the
+	// paint loop does not derive them for every tile on every frame.
+	lightEnd, darkEnd ui.Color
 	name  string // the label: a group's includes its size
 	size  string
 	ext   string // cellExt
@@ -94,6 +97,7 @@ func (m *treemapModel) ensureStyles(s *index.Snapshot, dark bool) {
 			continue
 		}
 		st.color, st.text = col, readableOn(col)
+		st.lightEnd, st.darkEnd = col.Mix(ui.Hex("#FFFFFF"), .10), col.Mix(ui.Hex("#000000"), .18)
 		st.name = "Smaller items"
 		if !cell.Tile.Other {
 			st.name = a.name(cell.Tile.ID)
@@ -515,15 +519,18 @@ func (a *App) treemapView(c *ui.Context, pal palette) {
 				}
 				continue
 			}
+			lightEnd, darkEnd := st.lightEnd, st.darkEnd
 			if focusExt != "" && st.ext != focusExt {
 				col = col.Mix(pal.grid, .75)
 				fg = readableOn(col)
+				lightEnd, darkEnd = col.Mix(ui.Hex("#FFFFFF"), .10), col.Mix(ui.Hex("#000000"), .18)
 			}
 			if i == hover {
 				col = col.Mix(ui.Hex("#FFFFFF"), .18)
 				fg = readableOn(col)
+				lightEnd, darkEnd = col.Mix(ui.Hex("#FFFFFF"), .10), col.Mix(ui.Hex("#000000"), .18)
 			}
-			p.FillGradient(rect, ui.LinearGradient{From: col.Mix(ui.Hex("#FFFFFF"), .10), To: col.Mix(ui.Hex("#000000"), .18), Angle: 135}, 0)
+			p.FillGradient(rect, ui.LinearGradient{From: lightEnd, To: darkEnd, Angle: 135}, 0)
 			if rect.W > 2 && rect.H > 2 {
 				p.Stroke(rect, edge, 0, 1)
 			}

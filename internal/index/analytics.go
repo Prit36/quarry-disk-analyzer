@@ -73,6 +73,12 @@ func (h *largestHeap) Pop() any {
 func (s *Snapshot) Analyze(ctx context.Context, root ID, allocated bool, limit int, showMetadata ...bool) (Analysis, error) {
 	result := Analysis{Root: root}
 	groups := make(map[string]*FileType)
+	// byExt maps each extension as written to its group, so names are
+	// lowered and looked up in groups only once per distinct spelling; the
+	// last group is tried first, as neighbours often share an extension.
+	byExt := make(map[string]*FileType)
+	var last *FileType
+	var lastExt string
 	top := &largestHeap{snapshot: s, allocated: allocated}
 	folders := &largestHeap{snapshot: s, allocated: allocated}
 	err := s.walk(ctx, root, func(id ID) (bool, error) {
@@ -91,14 +97,23 @@ func (s *Snapshot) Analyze(ctx context.Context, root ID, allocated bool, limit i
 			}
 			return true, nil
 		}
-		extension := strings.ToLower(filepath.Ext(s.NameView(id)))
-		if extension == "" {
-			extension = "(no extension)"
-		}
-		group := groups[extension]
-		if group == nil {
-			group = &FileType{Extension: extension}
-			groups[extension] = group
+		ext := filepath.Ext(s.NameView(id))
+		group := last
+		if group == nil || ext != lastExt {
+			group = byExt[ext]
+			if group == nil {
+				extension := strings.ToLower(ext)
+				if extension == "" {
+					extension = "(no extension)"
+				}
+				group = groups[extension]
+				if group == nil {
+					group = &FileType{Extension: extension}
+					groups[extension] = group
+				}
+				byExt[ext] = group
+			}
+			last, lastExt = group, ext
 		}
 		group.Bytes += node.Size
 		group.Allocated += node.Allocated
