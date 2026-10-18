@@ -65,23 +65,23 @@ func (a *App) appTheme() (*ui.Theme, palette) {
 	var p palette
 	if a.dark() {
 		t = *ui.DarkTheme()
-		t.Background = ui.Hex("#1C1C1C")
-		t.Surface = ui.Hex("#2D2D2D")
-		t.SurfaceHover = ui.Hex("#2A2D31")
-		t.SurfacePressed = ui.Hex("#333333")
-		t.Border = ui.Hex("#3C3C3C")
-		t.Text = ui.Hex("#E8E8E8")
-		t.TextMuted = ui.Hex("#A0A0A0")
+		t.Background = ui.Hex("#161616")
+		t.Surface = ui.Hex("#282828")
+		t.SurfaceHover = ui.Hex("#25282C")
+		t.SurfacePressed = ui.Hex("#2E2E2E")
+		t.Border = ui.Hex("#383838")
+		t.Text = ui.Hex("#F0F0F0")
+		t.TextMuted = ui.Hex("#C4C4C4")
 		t.Accent = ui.Hex("#2F6FB3")
-		t.AccentHover = ui.Hex("#3A7CC2")
+		t.AccentHover = ui.Hex("#3473B8")
 		t.AccentPressed = ui.Hex("#28609C")
 		t.AccentText = ui.Hex("#FFFFFF")
 		t.Selection = ui.Hex("#264F78")
-		t.Focus = ui.Hex("#5C9CE6")
+		t.Focus = ui.Hex("#93BEEE")
 		t.Warning = ui.Hex("#E3B341")
-		t.Danger = ui.Hex("#F07070")
+		t.Danger = ui.Hex("#F5A3A3")
 		t.Scrollbar = ui.Hex("#5A5A5A")
-		p = palette{chrome: ui.Hex("#252526"), grid: ui.Hex("#1C1C1C"), separator: ui.Hex("#333333"), bar: ui.Hex("#4F8BD0"), barTrack: ui.Hex("#2E2E2E"), selected: ui.Hex("#24476B"), unfocused: ui.Hex("#343A42"), folder: ui.Hex("#E8B64C")}
+		p = palette{chrome: ui.Hex("#1F1F20"), grid: ui.Hex("#161616"), separator: ui.Hex("#2D2D2D"), bar: ui.Hex("#4F8BD0"), barTrack: ui.Hex("#292929"), selected: ui.Hex("#1F3F5F"), unfocused: ui.Hex("#30353C"), folder: ui.Hex("#E8B64C")}
 	} else {
 		t = *ui.LightTheme()
 		t.Background = ui.Hex("#FFFFFF")
@@ -96,11 +96,11 @@ func (a *App) appTheme() (*ui.Theme, palette) {
 		t.AccentPressed = ui.Hex("#99D1FF")
 		t.AccentText = ui.Hex("#000000")
 		t.Selection = ui.Hex("#99C9F5")
-		t.Focus = ui.Hex("#0067C0")
-		t.Warning = ui.Hex("#9D5D00")
-		t.Danger = ui.Hex("#C42B1C")
+		t.Focus = ui.Hex("#0065BC")
+		t.Warning = ui.Hex("#945700")
+		t.Danger = ui.Hex("#C02A1B")
 		t.Scrollbar = ui.Hex("#B0B0B0")
-		p = palette{chrome: ui.Hex("#F3F3F3"), grid: ui.Hex("#FFFFFF"), separator: ui.Hex("#E0E0E0"), bar: ui.Hex("#4F8BD6"), barTrack: ui.Hex("#E8E8E8"), selected: ui.Hex("#CCE8FF"), unfocused: ui.Hex("#E5E5E5"), folder: ui.Hex("#DDA028")}
+		p = palette{chrome: ui.Hex("#F3F3F3"), grid: ui.Hex("#FFFFFF"), separator: ui.Hex("#E0E0E0"), bar: ui.Hex("#3A78C4"), barTrack: ui.Hex("#E8E8E8"), selected: ui.Hex("#CCE8FF"), unfocused: ui.Hex("#E5E5E5"), folder: ui.Hex("#DDA028")}
 	}
 	t.Font = "Segoe UI"
 	t.FontSize = 12
@@ -113,6 +113,15 @@ func (a *App) appTheme() (*ui.Theme, palette) {
 	return &t, p
 }
 
+// disabledColor is the text and icon color of unavailable controls: clearly
+// dimmer than secondary text, still 3:1 on the toolbar.
+func disabledColor(t *ui.Theme) ui.Color {
+	if t.Dark {
+		return ui.Hex("#7A7A7A")
+	}
+	return ui.Hex("#8A8A8A")
+}
+
 // gridTheme scales the data workspace only (Ctrl+wheel, Ctrl+=/-/0).
 func (a *App) gridTheme(base *ui.Theme) *ui.Theme {
 	t := *base
@@ -121,7 +130,7 @@ func (a *App) gridTheme(base *ui.Theme) *ui.Theme {
 	t.Spacing = base.Spacing * z
 	// A row under the pointer must be easy to follow across wide rows.
 	if base.Dark {
-		t.SurfaceHover = ui.Hex("#2F353D")
+		t.SurfaceHover = ui.Hex("#2A3038")
 	} else {
 		t.SurfaceHover = ui.Hex("#E8F2FC")
 	}
@@ -240,10 +249,52 @@ func hashColor(s string) ui.Color {
 	return c.Mix(ui.Hex("#808080"), .45)
 }
 
+// readableOn is white or black, whichever contrasts more with c.
 func readableOn(c ui.Color) ui.Color {
-	l := .299*float32(c.R) + .587*float32(c.G) + .114*float32(c.B)
-	if l > 150 {
-		return ui.Hex("#111111")
+	light, dark := ui.Hex(treemapLightLabel), ui.Hex(treemapDarkLabel)
+	if contrastRatio(light, c) >= contrastRatio(dark, c) {
+		return light
 	}
-	return ui.Hex("#FFFFFF")
+	return dark
+}
+
+// labelOn is the color of treemap labels on c. The dark theme keeps every
+// label white, as black text on a dark window reads as a hole; deepen makes
+// the tiles dark enough for it.
+func labelOn(c ui.Color, dark bool) ui.Color {
+	if dark {
+		return ui.Hex(treemapLightLabel)
+	}
+	return readableOn(c)
+}
+
+// deepen darkens a tile color of the dark theme until a white label on its
+// light gradient end reaches minRatioTreemapDark, keeping the hue: yellow
+// becomes mustard, not olive grey.
+func deepen(c ui.Color) ui.Color {
+	white := ui.Hex(treemapLightLabel)
+	for i := range 14 {
+		d := c.Mix(ui.Hex("#000000"), float32(i)*.05)
+		if contrastRatio(white, d.Mix(white, .10)) >= minRatioTreemapDark {
+			return d
+		}
+	}
+	return c.Mix(ui.Hex("#000000"), .7)
+}
+
+// label draws a treemap label. In the dark theme a soft shadow separates
+// white text from the lighter tiles.
+func label(p *ui.Painter, x, y float32, s string, c ui.Color, dark bool) {
+	if dark {
+		p.Text(x+1, y+1, s, 11, ui.RGBA(0, 0, 0, .55))
+	}
+	p.Text(x, y, s, 11, c)
+}
+
+// swatchColor is an extension's color as its treemap tiles show it.
+func (a *App) swatchColor(ext string) ui.Color {
+	if a.dark() {
+		return deepen(a.extColor(ext))
+	}
+	return a.extColor(ext)
 }

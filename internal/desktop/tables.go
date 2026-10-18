@@ -691,7 +691,7 @@ func (a *App) extTable(c *ui.Context, pal palette) {
 		cell.Children(func() {
 			switch col {
 			case 0:
-				ui.Box(c).Size(10, 10).Radius(2).Background(a.extColor(ft.Extension)).Shrink(0)
+				ui.Box(c).Size(10, 10).Radius(2).Background(a.swatchColor(ft.Extension)).Shrink(0)
 				ui.Text(c, ft.Extension).SingleLine()
 			case 1:
 				ui.Text(c, platform.CachedFileTypeName(ft.Extension)).TextColor(t.TextMuted).SingleLine()
@@ -782,7 +782,7 @@ func (a *App) typesPanel(c *ui.Context, pal palette) {
 		cell.Children(func() {
 			switch col {
 			case 0:
-				ui.Box(c).Size(10, 10).Radius(2).Background(a.extColor(ft.Extension)).Shrink(0)
+				ui.Box(c).Size(10, 10).Radius(2).Background(a.swatchColor(ft.Extension)).Shrink(0)
 				ui.Text(c, ft.Extension).SingleLine().MinWidth(0).Shrink(1)
 				cell.Tooltip(platform.CachedFileTypeName(ft.Extension) + "\n" + plural(ft.Count, "file", "files") + " · double-click to list them")
 			case 1:

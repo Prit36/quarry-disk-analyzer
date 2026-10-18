@@ -65,9 +65,8 @@ type tileKey struct {
 }
 
 type cellStyle struct {
-	color     ui.Color // tile fill, or a group's frame
-	text      ui.Color
-	textAlpha ui.Color
+	color ui.Color // tile fill, or a group's frame
+	text  ui.Color
 	// lightEnd and darkEnd are the tile's gradient ends for color, so the
 	// paint loop does not derive them for every tile on every frame.
 	lightEnd, darkEnd ui.Color
@@ -103,19 +102,21 @@ func (m *treemapModel) ensureStyles(s *index.Snapshot, dark bool) {
 		if cell.Group {
 			frame := col.Mix(ui.Hex("#000000"), .35)
 			if a.prefs.TreemapColors == "Extension" || a.prefs.TreemapColors == "Mono" {
-				frame = ui.Hex("#3A3A3A")
+				frame = ui.Hex("#2A2A2A")
 				if !dark {
 					frame = ui.Hex("#D6D6D6")
 				}
 			}
-			st.color, st.text = frame, readableOn(frame)
-			st.textAlpha = st.text.Alpha(.8)
+			st.color, st.text = frame, labelOn(frame, dark)
 			st.name = a.name(cell.Tile.ID) + "  " + a.size(cell.Tile.Bytes)
 			continue
 		}
-		st.color, st.text = col, readableOn(col)
-		st.textAlpha = st.text.Alpha(.8)
+		if dark {
+			col = deepen(col)
+		}
+		// Labels sit at the light end of the gradient.
 		st.lightEnd, st.darkEnd = col.Mix(ui.Hex("#FFFFFF"), .10), col.Mix(ui.Hex("#000000"), .18)
+		st.color, st.text = col, labelOn(st.lightEnd, dark)
 		st.name = "Smaller items"
 		if !cell.Tile.Other {
 			st.name = a.name(cell.Tile.ID)
@@ -410,7 +411,7 @@ func (a *App) extColor(ext string) ui.Color {
 }
 
 func (m *treemapModel) color(s *index.Snapshot, cell treemap.Cell, dark bool) ui.Color {
-	neutral := ui.Hex("#6B6B6B")
+	neutral := ui.Hex("#555555")
 	if !dark {
 		neutral = ui.Hex("#A9A9A9")
 	}
@@ -696,12 +697,12 @@ func (a *App) treemapView(c *ui.Context, pal palette) {
 				// Folder frame: the header strip carries the name.
 				if i == hover {
 					col = col.Mix(ui.Hex("#FFFFFF"), .15)
-					fg = readableOn(col)
+					fg = labelOn(col, dark)
 				}
 				p.Fill(rect, col, 0)
 				if cell.Header >= 14 && rect.W > 40 {
 					p.Clip(ui.Rect{X: rect.X + 3, Y: rect.Y, W: rect.W - 6, H: cell.Header}, 0, func() {
-						p.Text(rect.X+4, rect.Y+1, st.name, 11, fg)
+						label(p, rect.X+4, rect.Y+1, st.name, fg, dark)
 					})
 				}
 				continue
@@ -709,13 +710,13 @@ func (a *App) treemapView(c *ui.Context, pal palette) {
 			lightEnd, darkEnd := st.lightEnd, st.darkEnd
 			if focusExt != "" && st.ext != focusExt {
 				col = col.Mix(pal.grid, .75)
-				fg = readableOn(col)
 				lightEnd, darkEnd = col.Mix(ui.Hex("#FFFFFF"), .10), col.Mix(ui.Hex("#000000"), .18)
+				fg = labelOn(lightEnd, dark)
 			}
 			if i == hover {
 				col = col.Mix(ui.Hex("#FFFFFF"), .18)
-				fg = readableOn(col)
 				lightEnd, darkEnd = col.Mix(ui.Hex("#FFFFFF"), .10), col.Mix(ui.Hex("#000000"), .18)
+				fg = labelOn(lightEnd, dark)
 			}
 			p.FillGradient(rect, ui.LinearGradient{From: lightEnd, To: darkEnd, Angle: 135}, 0)
 			if rect.W > 2 && rect.H > 2 {
@@ -723,9 +724,9 @@ func (a *App) treemapView(c *ui.Context, pal palette) {
 			}
 			if rect.W > 48 && rect.H > 16 {
 				p.Clip(ui.Rect{X: rect.X + 2, Y: rect.Y, W: rect.W - 4, H: rect.H}, 0, func() {
-					p.Text(rect.X+4, rect.Y+2, st.name, 11, fg)
+					label(p, rect.X+4, rect.Y+2, st.name, fg, dark)
 					if rect.H > 32 {
-						p.Text(rect.X+4, rect.Y+16, st.size, 11, st.textAlpha)
+						label(p, rect.X+4, rect.Y+16, st.size, fg, dark)
 					}
 				})
 			}
@@ -780,7 +781,7 @@ func (a *App) treemapView(c *ui.Context, pal palette) {
 		x = max(origin.X+4, x)
 		y = max(origin.Y+4, y)
 		card := ui.Rect{X: x, Y: y, W: w, H: h}
-		bg, border := ui.Hex("#2B2B2B"), ui.Hex("#4A4A4A")
+		bg, border := ui.Hex("#262626"), ui.Hex("#454545")
 		if !dark {
 			bg, border = ui.Hex("#FFFFFF"), ui.Hex("#C8C8C8")
 		}

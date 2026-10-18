@@ -133,7 +133,7 @@ func toolButton(c *ui.Context, key string, icon string, tip string, enabled bool
 	b := ui.ButtonBase(c.Key(key)).Size(26, 26).Radius(4).Center().Label(tip).Tooltip(tip).Disabled(!enabled)
 	color := t.Text
 	if !enabled {
-		color = t.TextMuted.Alpha(.5)
+		color = disabledColor(t)
 	} else if b.Pressed() {
 		b.Background(t.SurfacePressed)
 	} else if b.Hovered() {
@@ -152,7 +152,7 @@ func textButton(c *ui.Context, key, label, tip string, enabled bool) ui.Element 
 	color := t.Text
 	switch {
 	case !enabled:
-		color = t.TextMuted.Alpha(.5)
+		color = disabledColor(t)
 	case b.Pressed():
 		b.Background(t.SurfacePressed)
 	case b.Hovered():
@@ -206,7 +206,7 @@ func (a *App) scanMenu(c *ui.Context) {
 	color := t.Text
 	switch {
 	case a.scanning:
-		color = t.TextMuted.Alpha(.5)
+		color = disabledColor(t)
 	case b.Pressed():
 		b.Background(t.SurfacePressed)
 	case b.Hovered():
@@ -752,10 +752,10 @@ func (a *App) driveHeader(c *ui.Context, pal palette) {
 			ui.Text(c, value).SingleLine()
 		})
 	}
-	ui.Row(c).Height(58).Shrink(0).Padding(0, 16).Gap(20).AlignItems(ui.Center).Background(pal.chrome).BorderWidth(0, 0, 1, 0).BorderColor(pal.separator).Clip().Children(func() {
+	ui.Row(c).Height(46).Shrink(0).Padding(0, 16).Gap(20).AlignItems(ui.Center).Background(pal.chrome).BorderWidth(0, 0, 1, 0).BorderColor(pal.separator).Clip().Children(func() {
 		// The drive, or the saved scan's folder.
 		ui.Row(c).Gap(10).AlignItems(ui.Center).Shrink(0).MaxWidth(320).Children(func() {
-			ui.Icon(c, icons["hard_drive"]).FontSize(24).TextColor(t.TextMuted).Shrink(0)
+			ui.Icon(c, icons["hard_drive"]).FontSize(20).TextColor(t.TextMuted).Shrink(0)
 			ui.Column(c).Gap(2).MinWidth(0).Shrink(1).Children(func() {
 				if !live {
 					ui.Text(c, s.Root).FontSize(t.FontSize + 1).FontWeight(600).SingleLine().MinWidth(0).Shrink(1).Tooltip(s.Root)
