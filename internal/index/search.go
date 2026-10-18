@@ -12,30 +12,6 @@ import (
 	"unicode/utf8"
 )
 
-// SearchSyntax documents the matching rules shown in Help → Search Syntax.
-const SearchSyntax = `Terms are case-insensitive and must all match (AND).
-
-  report          name contains "report"
-  *.mp4           wildcard over the whole name: * any run of characters, ? one character
-  backup*         names starting with "backup"
-  "my file"       quoted text keeps spaces
-  -cache          excludes names containing "cache"
-  a\b             a term containing \ matches the full path
-
-Fields:
-  ext:log         extension (ext:log;txt for several, ext:none for no extension)
-  size:>500MB     size comparisons: > >= < <=, a range 1GB..4GB, or size:1GB (at least)
-  min:1GiB max:2GiB
-  modified:<2025-01-01   modified:>2025-06-01   modified:2025-03-14   modified:2025-01-01..2025-02-01
-  after:2025-01-01 before:2025-12-31   (before includes that day)
-  path:node_modules     any part of the full path (wildcards allowed)
-  name:backup     same as a bare term
-  type:file   type:folder
-  regex:^IMG_\d+\.jpe?g$   Go RE2 regular expression on the name (linear time)
-
-Units: B, KB, MB, GB, TB (powers of 1000) and KiB, MiB, GiB, TiB (powers of 1024).
-Dates are local calendar dates (YYYY-MM-DD). Entries without a modification time never match date filters.`
-
 // Kind restricts matches to files, folders or both.
 type Kind uint8
 

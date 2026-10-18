@@ -337,12 +337,12 @@ func (m *treemapModel) cellExt(s *index.Snapshot, cell treemap.Cell) string {
 	return ext
 }
 
-// tipInfo is what the pointer tip shows for a tile: a heading, the size and
-// its share of the map, a few labelled facts and an optional hint.
+// tipInfo is what the pointer tip shows for a tile: a title, what kind of
+// item it is with its share of the map on the right, labelled facts in
+// reading order, and an optional note.
 type tipInfo struct {
 	title, kind string
-	size, share string
-	pct         float64
+	aside       string
 	rows        [][2]string
 	hint        string
 }
@@ -355,11 +355,10 @@ func (a *App) hoverInfo(s *index.Snapshot, cell treemap.Cell) tipInfo {
 		info := tipInfo{
 			title: "Smaller items",
 			kind:  "Grouped in " + a.name(cell.Tile.ID),
-			size:  a.size(cell.Tile.Bytes),
-			pct:   percent(cell.Tile.Bytes, m.total),
+			aside: percentText(percent(cell.Tile.Bytes, m.total)) + of,
 			hint:  "Too small to draw one by one.\nDouble-click to open the folder.",
 		}
-		info.share = percentText(info.pct) + of
+		info.rows = append(info.rows, [2]string{"Size", a.size(cell.Tile.Bytes)})
 		if ext, ok := m.dominant[tileKey{cell.Tile.ID, true}]; ok {
 			info.rows = append(info.rows, [2]string{"Mostly", ext})
 		}
@@ -367,9 +366,8 @@ func (a *App) hoverInfo(s *index.Snapshot, cell treemap.Cell) tipInfo {
 	}
 	id := cell.Tile.ID
 	n := s.Nodes[id]
-	info := tipInfo{title: a.name(id), size: a.size(n.Size), pct: percent(a.metric(n), m.total)}
-	info.share = percentText(info.pct) + of
-	info.rows = append(info.rows, [2]string{"Location", truncateMiddle(a.pathOf(id), 48)})
+	info := tipInfo{title: a.name(id), aside: percentText(percent(a.metric(n), m.total)) + of}
+	info.rows = append(info.rows, [2]string{"Size", a.size(n.Size)})
 	if a.size(n.Allocated) != a.size(n.Size) {
 		info.rows = append(info.rows, [2]string{"On disk", a.size(n.Allocated)})
 	}
@@ -395,6 +393,18 @@ func (a *App) hoverInfo(s *index.Snapshot, cell treemap.Cell) tipInfo {
 		info.hint = "NTFS metadata: reserved by the\nfilesystem, not reclaimable."
 	}
 	return info
+}
+
+// fitMiddle shortens s with an ellipsis in the middle until it measures at
+// most maxW at the given size, so a path keeps its start and its end.
+func fitMiddle(p *ui.Painter, s string, size, maxW float32) string {
+	for n := len([]rune(s)); n > 1; n-- {
+		c := truncateMiddle(s, n)
+		if w, _ := p.MeasureText(0, ui.Span{Text: c, Size: size}); w <= maxW {
+			return c
+		}
+	}
+	return "…"
 }
 
 // treemapView draws the map. Click selects the item in Tree View, a double
@@ -575,26 +585,31 @@ func (a *App) treemapView(c *ui.Context, pal palette) {
 		r := cells[hover].Tile.Rect
 		rect := ui.Rect{X: origin.X + r.X + 1, Y: origin.Y + r.Y + 1, W: max(1, r.W-2), H: max(1, r.H-2)}
 		p.Stroke(rect, t.Focus, 0, 2)
-		const pad, rowH, labelW, maxW = 12, 17, 62, 340
-		titleSpan := ui.Span{Text: tip.title, Size: 13, Weight: 600, Color: t.Text}
-		sizeSpan := ui.Span{Text: tip.size, Size: 16, Weight: 600, Color: t.Text}
+		// A plain card: title, kind, a rule, then aligned label and value rows.
+		const pad, rowH, labelW, maxW = 10, 17, 60, 300
+		titleSpan := ui.Span{Text: tip.title, Size: 12.5, Weight: 600, Color: t.Text}
 		w, _ := p.MeasureText(0, titleSpan)
-		w += 18 // swatch
-		sw, _ := p.MeasureText(0, sizeSpan)
-		shw, _ := p.MeasureText(0, ui.Span{Text: tip.share, Size: 11.5})
-		w = max(w, sw+16+shw, 240)
+		kindW, _ := p.MeasureText(0, ui.Span{Text: tip.kind, Size: 11.5})
+		asideW, _ := p.MeasureText(0, ui.Span{Text: tip.aside, Size: 11.5})
+		w = max(w, kindW+asideW+12, 200)
 		for _, r := range tip.rows {
 			vw, _ := p.MeasureText(0, ui.Span{Text: r[1], Size: 11.5})
-			w = max(w, labelW+vw)
-		}
-		w = min(w+2*pad, min(maxW, max(160, origin.W-8)))
-		h := float32(pad*2 + 18 + 15 + 8 + 26 + 10 + 4)
-		h += float32(len(tip.rows) * rowH)
-		if len(tip.rows) > 0 {
-			h += 8
+			w = max(w, labelW+min(vw, maxW-2*pad-labelW))
 		}
 		hint := strings.Split(tip.hint, "\n")
-		if tip.hint != "" {
+		if tip.hint == "" {
+			hint = nil
+		}
+		for _, l := range hint {
+			lw, _ := p.MeasureText(0, ui.Span{Text: l, Size: 11})
+			w = max(w, lw)
+		}
+		w = min(w+2*pad, min(maxW, max(180, origin.W-8)))
+		h := float32(pad*2 + 17 + 15)
+		if len(tip.rows) > 0 {
+			h += float32(9 + len(tip.rows)*rowH)
+		}
+		if len(hint) > 0 {
 			h += float32(8 + 14*len(hint))
 		}
 		x, y := origin.X+px+16, origin.Y+py+18
@@ -607,47 +622,40 @@ func (a *App) treemapView(c *ui.Context, pal palette) {
 		x = max(origin.X+4, x)
 		y = max(origin.Y+4, y)
 		card := ui.Rect{X: x, Y: y, W: w, H: h}
-		bg, border, track := ui.Hex("#2B2B2B"), ui.Hex("#454545"), ui.Hex("#FFFFFF").Alpha(.12)
+		bg, border := ui.Hex("#2B2B2B"), ui.Hex("#4A4A4A")
 		if !dark {
-			bg, border, track = ui.Hex("#FFFFFF"), ui.Hex("#C8C8C8"), ui.Hex("#000000").Alpha(.10)
+			bg, border = ui.Hex("#FFFFFF"), ui.Hex("#C8C8C8")
 		}
-		p.Shadow(card, 8, 0, 4, 14, 0, ui.RGBA(0, 0, 0, 0.35))
-		p.Fill(card, bg, 8)
-		p.Stroke(card, border, 8, 1)
-		accent := styles[hover].color
+		p.Shadow(card, 4, 0, 2, 8, 0, ui.RGBA(0, 0, 0, 0.25))
+		p.Fill(card, bg, 4)
+		p.Stroke(card, border, 4, 1)
 		cx, cy, cw := x+pad, y+pad, w-2*pad
-		p.Clip(ui.Rect{X: x, Y: y, W: w, H: h}, 0, func() {
-			// Heading: colour swatch matching the tile, name, then what it is.
-			p.Fill(ui.Rect{X: cx, Y: cy + 3, W: 10, H: 10}, accent, 3)
-			p.Clip(ui.Rect{X: cx + 18, Y: cy - 2, W: cw - 18, H: 22}, 0, func() {
-				p.RichText(cx+18, cy-1, 0, titleSpan)
+		valueW := cw - labelW
+		title := titleSpan
+		title.Text = fitMiddle(p, tip.title, 12.5, cw)
+		p.Clip(card, 0, func() {
+			p.Clip(ui.Rect{X: cx, Y: cy - 2, W: cw, H: 20}, 0, func() {
+				p.RichText(cx, cy-1, 0, title)
 			})
-			cy += 18
-			p.Clip(ui.Rect{X: cx, Y: cy, W: cw, H: 16}, 0, func() {
-				p.Text(cx, cy, tip.kind, 11, t.TextMuted)
+			cy += 17
+			p.Clip(ui.Rect{X: cx, Y: cy, W: cw - asideW - 12, H: 16}, 0, func() {
+				p.Text(cx, cy, tip.kind, 11.5, t.TextMuted)
 			})
-			cy += 15 + 8
-			// Size and share, with a bar showing the share of the whole map.
-			p.RichText(cx, cy, 0, sizeSpan)
-			p.Text(cx+cw-shw, cy+4, tip.share, 11.5, t.TextMuted)
-			cy += 26
-			bar := ui.Rect{X: cx, Y: cy, W: cw, H: 4}
-			p.Fill(bar, track, 2)
-			p.Fill(ui.Rect{X: cx, Y: cy, W: max(3, cw*float32(min(tip.pct, 100))/100), H: 4}, accent, 2)
-			cy += 10 + 4
+			p.Text(cx+cw-asideW, cy, tip.aside, 11.5, t.TextMuted)
+			cy += 15
 			if len(tip.rows) > 0 {
-				p.Fill(ui.Rect{X: cx, Y: cy - 2, W: cw, H: 1}, border, 0)
-				cy += 6
+				p.Fill(ui.Rect{X: cx, Y: cy + 3, W: cw, H: 1}, border, 0)
+				cy += 9
 			}
 			for _, r := range tip.rows {
 				p.Text(cx, cy, r[0], 11.5, t.TextMuted)
 				p.Clip(ui.Rect{X: cx + labelW, Y: cy, W: cw - labelW, H: rowH}, 0, func() {
-					p.Text(cx+labelW, cy, r[1], 11.5, t.Text)
+					p.Text(cx+labelW, cy, fitMiddle(p, r[1], 11.5, valueW), 11.5, t.Text)
 				})
 				cy += rowH
 			}
-			if tip.hint != "" {
-				cy += 4
+			if len(hint) > 0 {
+				cy += 8
 				for _, l := range hint {
 					p.Text(cx, cy, l, 11, t.TextMuted)
 					cy += 14

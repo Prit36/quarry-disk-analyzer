@@ -24,7 +24,7 @@ var treeColumns = []column{
 	{ui.TableColumn{Title: "% of Scan", Width: 72, MinWidth: 50, Align: ui.End, Sortable: true}, true},
 	{ui.TableColumn{Title: "Files", Width: 76, MinWidth: 40, Align: ui.End, Sortable: true}, true},
 	{ui.TableColumn{Title: "Folders", Width: 66, MinWidth: 40, Align: ui.End, Sortable: true}, true},
-	{ui.TableColumn{Title: "Modified", Width: 116, MinWidth: 60, Sortable: true}, true},
+	{ui.TableColumn{Title: "Modified", Width: 144, MinWidth: 60, Sortable: true}, true},
 }
 
 var fileColumns = []column{
@@ -32,7 +32,7 @@ var fileColumns = []column{
 	{ui.TableColumn{Title: "Size", Width: 84, MinWidth: 50, Align: ui.End, Sortable: true}, true},
 	{ui.TableColumn{Title: "Allocated", Width: 84, MinWidth: 50, Align: ui.End, Sortable: true}, true},
 	{ui.TableColumn{Title: "% of Scan", Width: 72, MinWidth: 50, Align: ui.End, Sortable: true}, true},
-	{ui.TableColumn{Title: "Modified", Width: 116, MinWidth: 60, Sortable: true}, true},
+	{ui.TableColumn{Title: "Modified", Width: 144, MinWidth: 60, Sortable: true}, true},
 	{ui.TableColumn{Title: "Extension", Width: 72, MinWidth: 40, Sortable: true}, true},
 	{ui.TableColumn{Title: "Folder", MinWidth: 120, Sortable: true}, true},
 }
