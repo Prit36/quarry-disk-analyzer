@@ -1,7 +1,8 @@
 # Architecture
 
-The latest interaction measurements against commit `4c7d3d2` are in
-[PERFORMANCE-THROUGHPUT.md](PERFORMANCE-THROUGHPUT.md).
+The latest interaction measurements against commit `cb57e1f` are in
+[PERFORMANCE-INTERACTIONS.md](PERFORMANCE-INTERACTIONS.md). The preceding pass is
+in [PERFORMANCE-THROUGHPUT.md](PERFORMANCE-THROUGHPUT.md).
 
 ```
 main.go                 command line, or desktop.Run
@@ -29,6 +30,21 @@ Snapshots are shared with background goroutines and never mutated in place. A de
 `ParseFilter` compiles the search syntax (wildcards, quoted phrases, negation, `ext:`, `size:`, `modified:`, `path:`, `type:`, `regex:` with Go's linear-time RE2) into a `Filter`; `Search` walks a scope without recursion and evaluates `path:` terms incrementally per folder rather than by building paths. Prefix, suffix and contains wildcards match ASCII names without backtracking. Scopes of 32,768 entries or more are divided into subtrees searched on all cores and concatenated in index order. Small adjacent sibling subtrees share tasks, keeping wide folders from allocating a descriptor and result slice for every file.
 
 Saved scans keep the original format: 52-byte little-endian records, gzip. They are written as 1 MiB gzip members compressed in parallel, which any gzip reader (and every earlier release) reads as one stream. Loading finds those member boundaries and decodes the members in parallel, falling back to one serial stream for older files or when a member does not decode.
+
+`Filtered` combines matching, child-list rebuilding and aggregation in one
+depth-first folder walk. Empty subtrees are isolated as their parent's totals
+finish, preserving the former removal flags and callback order. Scratch storage
+tracks depth rather than every node. Unusual imported trees with children under
+files retain the general filtering path.
+
+`SortByRankGroups` returns four-byte group lengths from the counting pass's
+existing boundaries. File View retains only these lengths to reverse Folder or
+Extension groups while preserving the name/size order inside each group. The
+cache belongs to one immutable result order and is discarded on snapshot or
+column changes; it retains no paths or per-file rank table.
+
+Full-path terms use a worker-owned path buffer and ancestor stack, with the
+existing normalization fallback for unusual paths and unresolved metadata.
 
 ## Scanning
 

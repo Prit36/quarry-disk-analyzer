@@ -263,11 +263,19 @@ func (s *Snapshot) searchSubtree(ctx context.Context, top, skip ID, f *Filter, a
 	if len(tallies) > 0 {
 		tally = tallies[0]
 	}
+	var paths *pathWalker
+	if f.NeedsPath() {
+		paths = s.newPathWalker()
+	}
+	return s.searchSubtreeWalk(ctx, top, skip, f, ancestorOK, ids, tally, paths)
+}
+
+func (s *Snapshot) searchSubtreeWalk(ctx context.Context, top, skip ID, f *Filter, ancestorOK []bool, ids []ID, tally *searchTally, paths *pathWalker) ([]ID, error) {
 	err := s.Visit(ctx, top, func(id ID) error {
 		if id == skip {
 			return nil
 		}
-		if s.matchEntry(id, f, ancestorOK, tally) {
+		if s.matchEntry(id, f, ancestorOK, tally, paths) {
 			ids = append(ids, id)
 		}
 		return nil
@@ -278,7 +286,7 @@ func (s *Snapshot) searchSubtree(ctx context.Context, top, skip ID, f *Filter, a
 // matchEntry tests one entry, after its parent has been tested. For folders it
 // records in ancestorOK whether the folder or an ancestor satisfies every
 // path: term, which is what its descendants inherit.
-func (s *Snapshot) matchEntry(id ID, f *Filter, ancestorOK []bool, tally *searchTally) bool {
+func (s *Snapshot) matchEntry(id ID, f *Filter, ancestorOK []bool, tally *searchTally, paths *pathWalker) bool {
 	n := s.Nodes[id]
 	name := s.NameView(id)
 	inherited := false
@@ -288,7 +296,21 @@ func (s *Snapshot) matchEntry(id ID, f *Filter, ancestorOK []bool, tally *search
 			ancestorOK[id] = inherited || f.MatchPathComponent(name)
 		}
 	}
-	matched := f.MatchNode(name, n, func() string { return s.Path(id) }, inherited)
+	var full string
+	if paths != nil && n.IsDir() {
+		// Feed every directory to the walker even when another criterion
+		// rejects it: descendants reuse its path without ancestor walks.
+		full = paths.path(id)
+	}
+	matched := f.MatchNode(name, n, func() string {
+		if paths == nil {
+			return s.Path(id)
+		}
+		if full == "" {
+			full = paths.path(id)
+		}
+		return full
+	}, inherited)
 	if tally != nil && (matched || n.FirstChild != None) {
 		const covered, metadata = 1, 2
 		var state uint32
@@ -397,7 +419,7 @@ func (s *Snapshot) searchParallel(ctx context.Context, root ID, f *Filter, ances
 		}
 		id := pieces[best].id
 		split := []searchPiece{{}}
-		if s.matchEntry(id, f, ancestorOK, tally) {
+		if s.matchEntry(id, f, ancestorOK, tally, nil) {
 			split[0].ids = []ID{id}
 		}
 		children, err := s.searchPieces(ctx, id, target)
@@ -455,6 +477,10 @@ func (s *Snapshot) searchParallel(ctx context.Context, root ID, f *Filter, ances
 					if reserve {
 						p.ids = make([]ID, 0, p.reserve)
 					}
+					var paths *pathWalker
+					if f.NeedsPath() {
+						paths = s.newPathWalker()
+					}
 					count := 0
 					for c := p.id; ; c = s.Nodes[c].NextSibling {
 						if count&4095 == 0 && ctx.Err() != nil {
@@ -463,7 +489,7 @@ func (s *Snapshot) searchParallel(ctx context.Context, root ID, f *Filter, ances
 						}
 						count++
 						if s.Nodes[c].FirstChild == None {
-							if s.matchEntry(c, f, ancestorOK, pieceTally) {
+							if s.matchEntry(c, f, ancestorOK, pieceTally, paths) {
 								if p.ids == nil {
 									p.ids = make([]ID, 0, min(1024, int(p.weight)))
 								}
@@ -473,7 +499,7 @@ func (s *Snapshot) searchParallel(ctx context.Context, root ID, f *Filter, ances
 							if p.ids == nil {
 								p.ids = make([]ID, 0, min(1024, int(p.weight)))
 							}
-							p.ids, errs[i] = s.searchSubtree(ctx, c, root, f, ancestorOK, p.ids, pieceTally)
+							p.ids, errs[i] = s.searchSubtreeWalk(ctx, c, root, f, ancestorOK, p.ids, pieceTally, paths)
 						}
 						if errs[i] != nil || c == p.last {
 							break

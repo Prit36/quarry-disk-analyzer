@@ -48,7 +48,7 @@ func BenchmarkRealSorts(b *testing.B) {
 func BenchmarkRealFileQueries(b *testing.B) {
 	s := realPerfSnapshot(b)
 	b.Setenv("QUARRY_CONFIG_DIR", b.TempDir())
-	for _, query := range []string{"", "*.dll", "microsoft", "path:system32 ext:dll", "type:folder"} {
+	for _, query := range []string{"", "*.dll", "microsoft", "path:system32 ext:dll", "type:folder", `path:C:\Windows\System32`, `type:file path:C:\Windows ext:dll`} {
 		b.Run(query, func(b *testing.B) {
 			a := newApp()
 			a.snap, a.search = s, query
@@ -128,7 +128,7 @@ func BenchmarkRealSelectionFacts(b *testing.B) {
 func BenchmarkRealSortToggle(b *testing.B) {
 	s := realPerfSnapshot(b)
 	b.Setenv("QUARRY_CONFIG_DIR", b.TempDir())
-	for _, column := range []string{"Name", "Size", "Modified"} {
+	for _, column := range []string{"Name", "Size", "Modified", "Folder", "Extension"} {
 		b.Run(column, func(b *testing.B) {
 			a := newApp()
 			a.snap = s
@@ -150,6 +150,25 @@ func BenchmarkRealSortToggle(b *testing.B) {
 				a.files.sort.Descending = !a.files.sort.Descending
 				a.files.run()
 				wait()
+			}
+		})
+	}
+}
+
+func BenchmarkRealAnalysisFilters(b *testing.B) {
+	s := realPerfSnapshot(b)
+	for _, f := range []analysisFilter{
+		{Include: "ext:dll"},
+		{Include: "path:system32 ext:dll"},
+		{Exclude: "node_modules;*.tmp"},
+		{Include: "no-such-quarry-file-982731"},
+	} {
+		b.Run(f.summary(), func(b *testing.B) {
+			b.ReportAllocs()
+			for range b.N {
+				if _, _, err := f.apply(context.Background(), s); err != nil {
+					b.Fatal(err)
+				}
 			}
 		})
 	}

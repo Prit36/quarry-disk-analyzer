@@ -35,6 +35,7 @@ type fileModel struct {
 	shownAllocated bool
 	shownOnDisk    bool
 	shownSort      ui.SortOrder
+	shownGroups    []uint32 // immutable group lengths for Folder/Extension sorts
 
 	list   ui.ListState
 	sel    ui.Selection[index.ID]
@@ -61,6 +62,7 @@ func (f *fileModel) reset() {
 	cols := f.list.Columns
 	f.list = ui.ListState{Columns: cols}
 	f.ids, f.total, f.busy, f.err, f.forSnap, f.ran = nil, 0, false, "", nil, ""
+	f.shownGroups = nil
 	f.idsGen++
 	f.scope, f.pinned = 0, false
 	f.sel = ui.Selection[index.ID]{}
@@ -172,11 +174,13 @@ func (f *fileModel) run() {
 	previous, previousTotal, sameMetric := f.ids, f.total, f.shownAllocated == allocated
 	previousOnDisk := f.shownOnDisk
 	previousSort := f.shownSort
+	previousGroups := f.shownGroups
 	go func() {
 		defer cancel()
 		filter, err := index.ParseFilter(query)
 		var ids []index.ID
 		var total uint64
+		var groups []uint32
 		onDisk := previousOnDisk
 		if err == nil && reuse {
 			if sameMetric && previousSort == order {
@@ -194,6 +198,7 @@ func (f *fileModel) run() {
 		}
 		if err == nil && reuse && sameMetric {
 			total = previousTotal
+			groups = previousGroups
 		} else if err == nil && reuse {
 			// A metric change can reuse the matches. Classify their ancestors
 			// once and sum before reordering the result for the new metric.
@@ -212,10 +217,15 @@ func (f *fileModel) run() {
 			}
 		}
 		if err == nil && !(reuse && sameMetric && previousSort == order) {
-			if reuse && sameMetric && previousSort.Column == order.Column && previousSort.Descending != order.Descending && order.Column != "Folder" && order.Column != "Extension" {
-				err = s.ReverseSortContext(ctx, ids, index.Sort{Column: order.Column, Allocated: allocated})
+			if reuse && sameMetric && previousSort.Column == order.Column && previousSort.Descending != order.Descending {
+				if order.Column == "Folder" || order.Column == "Extension" {
+					groups, err = reverseEntryGroups(ctx, ids, previousGroups)
+				} else {
+					err = s.ReverseSortContext(ctx, ids, index.Sort{Column: order.Column, Allocated: allocated})
+				}
 			} else {
-				err = sortEntries(ctx, s, ids, order, allocated)
+				groups = nil
+				err = sortEntriesGrouped(ctx, s, ids, order, allocated, &groups)
 			}
 		}
 		if ctx.Err() != nil {
@@ -255,6 +265,7 @@ func (f *fileModel) run() {
 			f.shownScope, f.shownAllocated = scope, allocated
 			f.shownOnDisk = onDisk
 			f.shownSort = order
+			f.shownGroups = groups
 			f.idsGen++
 			f.cursor = cursor
 			if !reuse {
@@ -274,15 +285,50 @@ func (f *fileModel) run() {
 	}()
 }
 
+// Folder and Extension directions change the order of groups while keeping
+// each group's name/size order. Lengths come from the initial sort's exact
+// ranks, including distinct parent IDs whose normalized paths are equal.
+func reverseEntryGroups(ctx context.Context, ids []index.ID, previous []uint32) ([]uint32, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	groups := slices.Clone(previous)
+	slices.Reverse(groups)
+	slices.Reverse(ids)
+	start := 0
+	for i, length := range groups {
+		if i&4095 == 0 && ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		end := start + int(length)
+		// Large equal-key groups also yield promptly to a new query.
+		for lo, hi := start, end-1; lo < hi; lo, hi = lo+1, hi-1 {
+			if lo&4095 == 0 && ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			ids[lo], ids[hi] = ids[hi], ids[lo]
+		}
+		start = end
+	}
+	return groups, ctx.Err()
+}
+
 // sortEntries orders results; "Folder" and "Extension" use derived keys.
 // Each distinct folder path or extension is ranked once, and the entries
 // are radix-sorted by rank: comparing derived strings per comparison took
 // over a second for a million files.
 func sortEntries(ctx context.Context, s *index.Snapshot, ids []index.ID, order ui.SortOrder, allocated bool) error {
+	return sortEntriesGrouped(ctx, s, ids, order, allocated, nil)
+}
+
+func sortEntriesGrouped(ctx context.Context, s *index.Snapshot, ids []index.ID, order ui.SortOrder, allocated bool, groups *[]uint32) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if len(ids) < 2 {
+		if groups != nil && len(ids) == 1 && (order.Column == "Folder" || order.Column == "Extension") {
+			*groups = []uint32{1}
+		}
 		return ctx.Err()
 	}
 	desc := order.Descending
@@ -399,7 +445,7 @@ func sortEntries(ctx context.Context, s *index.Snapshot, ids []index.ID, order u
 		}
 		// Counting the dense folder rank keeps unrelated folders out of the
 		// more expensive name comparisons and needs only compact scratch IDs.
-		return s.SortByRank(ctx, ids, folderRank, rank, desc, index.Sort{Column: "Name"})
+		return s.SortByRankGroups(ctx, ids, folderRank, rank, desc, index.Sort{Column: "Name"}, groups)
 	case "Extension":
 		// Intern by the borrowed, original spelling first. Case folding once
 		// per distinct spelling avoids allocating ".TXT" -> ".txt" per file.
@@ -435,7 +481,7 @@ func sortEntries(ctx context.Context, s *index.Snapshot, ids []index.ID, order u
 		extensionRank := func(id index.ID) uint32 { return rawKeyRanks[rawExtOf(s, id)] }
 		// Within an extension, largest first, then by ID: exactly as
 		// Compare with Sort{Desc: true} orders them.
-		return s.SortByRank(ctx, ids, extensionRank, uint32(len(exts)-1), desc, index.Sort{Desc: true, Allocated: allocated})
+		return s.SortByRankGroups(ctx, ids, extensionRank, uint32(len(exts)-1), desc, index.Sort{Desc: true, Allocated: allocated}, groups)
 	}
 	column := order.Column
 	if column == "% of Scan" {

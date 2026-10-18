@@ -170,6 +170,125 @@ func (s *Snapshot) Filtered(ctx context.Context, keepFile func(ID) bool, dropFol
 	if err := ctx.Err(); err != nil {
 		return nil, FilterStats{}, err
 	}
+	// Imported trees can put children under files. Keep their historical
+	// aggregation semantics; normal scans use the single-pass folder walk.
+	for i := range s.Nodes {
+		if i&4095 == 0 && ctx.Err() != nil {
+			return nil, FilterStats{}, ctx.Err()
+		}
+		if !s.Nodes[i].IsDir() && (i == 0 || s.Nodes[i].FirstChild != None) {
+			return s.filteredGeneral(ctx, keepFile, dropFolder, isolate)
+		}
+	}
+	if len(s.Nodes) == 0 {
+		return s.filteredGeneral(ctx, keepFile, dropFolder, isolate)
+	}
+	c := s.Clone()
+	stats := FilterStats{}
+	type frame struct {
+		id, next, last  ID
+		size, allocated uint64
+		files, dirs     uint32
+		empty           bool
+	}
+	var local [64]frame
+	stack := local[:1]
+	stack[0] = frame{id: 0, next: s.Nodes[0].FirstChild, last: None}
+	visited := 0
+	// Attach a retained child and add its already computed totals. The next
+	// original sibling is saved in the parent frame before any link changes.
+	attach := func(parent *frame, id ID) {
+		n := &c.Nodes[id]
+		if parent.last == None {
+			c.Nodes[parent.id].FirstChild = id
+		} else {
+			c.Nodes[parent.last].NextSibling = id
+		}
+		parent.last = id
+		parent.size += n.Size
+		parent.allocated += n.Allocated
+		if n.IsDir() {
+			parent.files += n.Files
+			parent.dirs += n.Dirs + 1
+			parent.empty = parent.empty || n.Files == 0
+		} else {
+			parent.files++
+		}
+	}
+	for len(stack) > 0 {
+		if visited&4095 == 0 && ctx.Err() != nil {
+			return nil, stats, ctx.Err()
+		}
+		visited++
+		top := &stack[len(stack)-1]
+		if top.next != None {
+			id := top.next
+			n := &c.Nodes[id]
+			top.next = n.NextSibling
+			if n.IsDir() {
+				if dropFolder != nil && dropFolder(id) {
+					n.Flags |= Removed
+					stats.HiddenFolders += uint64(n.Dirs) + 1
+					stats.HiddenFiles += uint64(n.Files)
+					stats.HiddenBytes += n.Size
+					continue
+				}
+				stack = append(stack, frame{id: id, next: n.FirstChild, last: None})
+			} else if keepFile != nil && !keepFile(id) {
+				n.Flags |= Removed
+				stats.HiddenFiles++
+				stats.HiddenBytes += n.Size
+			} else {
+				attach(top, id)
+			}
+			continue
+		}
+		if top.last == None {
+			c.Nodes[top.id].FirstChild = None
+		} else {
+			c.Nodes[top.last].NextSibling = None
+		}
+		// An entirely empty subtree stays intact until its highest empty
+		// ancestor is detached. This preserves stable IDs and removal flags.
+		if isolate && top.empty && (top.files != 0 || top.id == 0) {
+			last := None
+			for id := c.Nodes[top.id].FirstChild; id != None; {
+				if visited&4095 == 0 && ctx.Err() != nil {
+					return nil, stats, ctx.Err()
+				}
+				visited++
+				n := &c.Nodes[id]
+				next := n.NextSibling
+				if n.IsDir() && n.Files == 0 {
+					n.Flags |= Removed
+					stats.HiddenFolders += uint64(n.Dirs) + 1
+					top.dirs -= n.Dirs + 1
+					if last == None {
+						c.Nodes[top.id].FirstChild = next
+					} else {
+						c.Nodes[last].NextSibling = next
+					}
+				} else {
+					last = id
+				}
+				id = next
+			}
+		}
+		n := &c.Nodes[top.id]
+		n.Size, n.Allocated, n.Files, n.Dirs = top.size, top.allocated, top.files, top.dirs
+		id := top.id
+		stack = stack[:len(stack)-1]
+		if len(stack) > 0 {
+			attach(&stack[len(stack)-1], id)
+		}
+	}
+	return c, stats, ctx.Err()
+}
+
+func (s *Snapshot) filteredGeneral(ctx context.Context, keepFile func(ID) bool, dropFolder func(ID) bool, isolate bool) (*Snapshot, FilterStats, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, FilterStats{}, err
+	}
 	c := s.Clone()
 	stats := FilterStats{}
 	drop := make([]bool, len(c.Nodes))

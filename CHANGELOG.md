@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Folder and Extension heading direction changes reuse exact group lengths
+  from the first sort, preserving each group's name/size order and selections.
+- Full-path searches reuse a path buffer during traversal.
+- Show/Hide Filters combine matching, relinking, aggregation and empty-folder
+  isolation, with the same totals, stable IDs and removal flags.
+- Measurements against 0.2.2 and reproduction details are in
+  [PERFORMANCE-INTERACTIONS.md](docs/PERFORMANCE-INTERACTIONS.md).
+
 ## 0.2.2 - 2026-10-18
 
 Less on screen, nothing lost: every total was shown up to four times at once.

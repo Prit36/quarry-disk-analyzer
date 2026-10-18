@@ -536,6 +536,7 @@ func (a *App) setView(s *index.Snapshot) {
 		}
 		a.files.gen++
 		a.files.cancel, a.files.forSnap, a.files.runFor = nil, nil, nil
+		a.files.shownGroups = nil
 		a.files.busy = false
 		if a.ext.cancel != nil {
 			a.ext.cancel()
