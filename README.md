@@ -20,6 +20,8 @@ From top to bottom: the toolbar (Scan, Rescan, back, forward, up, the location a
 
 Selections, the location and the history are shared by the tree and the treemap. Every command lives once in a central registry that drives the menu bar, the context menus and the keyboard shortcuts (Help → Keyboard Shortcuts, F1).
 
+Both themes are held to tested contrast rules: text reaches WCAG 7:1 (secondary text, links and warnings 4.5:1) on every background it is drawn on, and the APCA perceptual measure as well, so grey text stays readable on the dark theme too.
+
 ## Working with files
 
 Right-click any entry: Open, Show in Explorer (selects the items), Cut/Copy as real Explorer clipboard items, Copy Full Path (Ctrl+Alt+C), Go Into Folder, Reveal in Tree, Search in This Folder, Scan This Folder, Rename (F2), Delete to the Recycle Bin (Del) and Properties (Alt+Enter). **More** holds Copy Name, Copy Size, Copy Rows as Text (tab-separated), Focus in Treemap, Scan in New Window, Export Selection, Expand/Collapse Subtree and Delete Permanently (Shift+Del, always confirmed). Items can be dragged to Explorer; folders dropped on the window are scanned.
