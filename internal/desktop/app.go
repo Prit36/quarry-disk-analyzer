@@ -121,10 +121,25 @@ func Run(initial string) error {
 		a.win = mygo.NewWindow(mygo.WindowOptions{
 			Title: "Quarry", StateKey: "main", Width: 1280, Height: 800, UseContentSize: true,
 			MinWidth: 760, MinHeight: 480, Content: ui.View(a.view),
+			Hidden: true,
 		})
 		a.menu = a.buildMenu()
 		a.win.SetMenu(a.menu.menu)
+		// The drawing surface stays white until the first frame, which a
+		// hidden window does not draw: show the window cloaked, so it draws
+		// unseen, and reveal it with that frame, or after a second if the
+		// frame never reports.
+		hwnd, revealed := a.win.NativeHandle(), false
+		reveal := func() {
+			if !revealed {
+				revealed = true
+				platform.Cloak(hwnd, false)
+			}
+		}
+		platform.Cloak(hwnd, true)
+		a.win.OnReadyToShow(reveal)
 		a.win.Show()
+		time.AfterFunc(time.Second, func() { a.post(reveal) })
 		a.win.OnClosed(a.shutdown)
 		switch {
 		case isScanFile(initial):
