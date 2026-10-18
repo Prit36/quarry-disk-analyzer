@@ -5,10 +5,7 @@
 A disk space analyzer for Windows (formerly Stratum), written in Go with the MyGO native UI toolkit (Direct3D, no webview).
 Quarry shows where the space went and gets you from a storage problem to the file or folder responsible in a few clicks.
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/tree-dark.png">
-  <img src="docs/screenshots/tree-light.png" alt="Quarry showing drive C: 85 % full, the folder tree with share-of-parent bars, file types beside it and a treemap colored by extension">
-</picture>
+<img src="docs/screenshots/tree-dark.png" alt="Quarry showing drive C: 85 % full, the folder tree with share-of-parent bars, file types beside it and a treemap colored by extension">
 
 ## Layout
 

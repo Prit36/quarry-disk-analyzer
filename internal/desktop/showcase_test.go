@@ -80,7 +80,7 @@ func TestShowcaseScreenshots(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, theme := range []string{"dark", "light"} {
+	for _, theme := range []string{"dark"} {
 		t.Setenv("QUARRY_CONFIG_DIR", t.TempDir())
 		a := newApp()
 		a.prefs.Theme = map[string]string{"dark": "Dark", "light": "Light"}[theme]
