@@ -32,13 +32,37 @@ func BenchmarkRealSorts(b *testing.B) {
 		b.Fatal(err)
 	}
 	ids := make([]index.ID, len(base))
-	for _, column := range []string{"Name", "Folder"} {
+	for _, column := range []string{"Name", "Folder", "Size", "Modified", "Extension"} {
 		b.Run(column, func(b *testing.B) {
 			b.ReportAllocs()
 			for range b.N {
 				copy(ids, base)
 				if err := sortEntries(context.Background(), s, ids, ui.SortOrder{Column: column}, false); err != nil {
 					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkRealFileQueries(b *testing.B) {
+	s := realPerfSnapshot(b)
+	b.Setenv("QUARRY_CONFIG_DIR", b.TempDir())
+	for _, query := range []string{"", "*.dll", "microsoft", "path:system32 ext:dll", "type:folder"} {
+		b.Run(query, func(b *testing.B) {
+			a := newApp()
+			a.snap, a.search = s, query
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				a.files.forSnap = nil // measure a new query, not a resort
+				a.files.run()
+				for a.files.busy {
+					a.drain()
+					runtime.Gosched()
+				}
+				if a.files.err != "" {
+					b.Fatal(a.files.err)
 				}
 			}
 		})

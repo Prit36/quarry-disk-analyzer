@@ -193,6 +193,7 @@ func (t *treeModel) selectAll() {
 	for _, r := range t.rows {
 		t.sel.Add(r.id)
 	}
+	t.selCache.peak = max(t.selCache.peak, t.sel.Len())
 	t.selCache.invalidate()
 }
 

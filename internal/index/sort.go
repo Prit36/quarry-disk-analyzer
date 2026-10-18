@@ -21,13 +21,13 @@ func (s *Snapshot) SortContext(ctx context.Context, ids []ID, by Sort) error {
 		return nil
 	}
 	if by.Column == "Name" {
-		return s.sortWordKeys(ctx, ids, func(id ID) wordKey {
+		return s.sortWordKeysFrom(ctx, ids, func(id ID) wordKey {
 			k := s.nameWords(id)
 			if by.Desc {
 				k.hi, k.lo = ^k.hi, ^k.lo
 			}
 			return k
-		}, &by)
+		}, &by, 16)
 	}
 	key := s.sortKey(by)
 	if key == nil {

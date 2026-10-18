@@ -167,6 +167,14 @@ func TestPerfReport(t *testing.T) {
 		}
 	}
 	report["menu_sync_all_selected_next_frame_ms"] = ms(time.Since(start))
+	report["heap_after_bulk_selection_mb"] = heap()
+	start = time.Now()
+	if len(a.files.ids) > 0 {
+		a.files.selectOnly(a.files.ids[0])
+	}
+	a.files.selectedIDs()
+	report["files_reduce_selection_ms"] = ms(time.Since(start))
+	report["heap_after_reduce_selection_mb"] = heap()
 	a.files.sel.Clear()
 
 	// Extensions.

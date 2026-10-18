@@ -1,6 +1,7 @@
 package desktop
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"os"
@@ -74,43 +75,76 @@ func (a *App) paths(ids []index.ID) []string {
 
 // topLevel drops entries already covered by a selected ancestor.
 func (a *App) topLevel(ids []index.ID) []index.ID {
+	out, _ := topLevelEntries(context.Background(), a.snap, ids)
+	return out
+}
+
+// topLevelEntries classifies ancestor chains once, preserving row order. The
+// workspace is shared with selection validation and returned after use.
+func topLevelEntries(ctx context.Context, s *index.Snapshot, ids []index.ID) ([]index.ID, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if len(ids) < 2 {
-		return ids
+		return ids, nil
 	}
 	// Only folders can cover other entries.
 	hasDir := false
-	for _, id := range ids {
-		if a.snap.Nodes[id].IsDir() {
+	for i, id := range ids {
+		if i&4095 == 0 && ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if s.Nodes[id].IsDir() {
 			hasDir = true
 			break
 		}
 	}
 	if !hasDir {
-		return ids
+		return ids, nil
 	}
-	var set []bool
+	buffer := mutStatesPool.Get().(*[]uint8)
+	states := *buffer
+	if cap(states) < len(s.Nodes) {
+		states = make([]uint8, len(s.Nodes))
+	} else {
+		states = states[:len(s.Nodes)]
+		clear(states)
+	}
+	defer func() { *buffer = states; mutStatesPool.Put(buffer) }()
+	const selected, known, covered = 1, 2, 4
 	for _, id := range ids {
-		if a.snap.Nodes[id].IsDir() {
-			if set == nil {
-				set = make([]bool, len(a.snap.Nodes))
-			}
-			set[id] = true
+		if s.Nodes[id].IsDir() {
+			states[id] = selected
 		}
 	}
 	out := make([]index.ID, 0, len(ids))
-	for _, id := range ids {
-		covered := false
-		for p := a.snap.Nodes[id].Parent; p != index.None; p = a.snap.Nodes[p].Parent {
-			if set[p] {
-				covered = true
+	var local [64]index.ID
+	stack := local[:0]
+	for i, id := range ids {
+		if i&4095 == 0 && ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		state := uint8(known)
+		stack = stack[:0]
+		for p := s.Nodes[id].Parent; p != index.None; p = s.Nodes[p].Parent {
+			if states[p]&selected != 0 {
+				state |= covered
 				break
 			}
+			if states[p]&known != 0 {
+				state = states[p]
+				break
+			}
+			stack = append(stack, p)
 		}
-		if !covered {
+		for _, p := range stack {
+			states[p] = state
+		}
+		if state&covered == 0 {
 			out = append(out, id)
 		}
 	}
-	return out
+	return out, ctx.Err()
 }
 
 // Safety.

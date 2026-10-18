@@ -11,6 +11,10 @@ import (
 type wordKey struct{ hi, lo uint64 }
 
 func (s *Snapshot) sortWordKeys(ctx context.Context, ids []ID, key func(ID) wordKey, tie *Sort) error {
+	return s.sortWordKeysFrom(ctx, ids, key, tie, 0)
+}
+
+func (s *Snapshot) sortWordKeysFrom(ctx context.Context, ids []ID, key func(ID) wordKey, tie *Sort, namePrefix int) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -57,7 +61,9 @@ func (s *Snapshot) sortWordKeys(ctx context.Context, ids []ID, key func(ID) word
 	}
 	var slots [20]int
 	n := 0
-	if !orderedIDs {
+	// Derived-key comparators resolve their own ID ties. Name sorting still
+	// benefits from preordering IDs: real scans contain many identical names.
+	if !orderedIDs && (tie == nil || namePrefix > 0) {
 		for k := range 4 {
 			if diffID>>(8*k)&255 != 0 {
 				slots[n], n = k, n+1
@@ -207,6 +213,48 @@ func (s *Snapshot) sortWordKeys(ctx context.Context, ids []ID, key func(ID) word
 					end++
 				}
 				if end-start > 1 {
+					// Equal ASCII prefixes were already ordered by the radix
+					// passes. Check them once per entry instead of comparing the
+					// same sixteen bytes again at every comparison in this run.
+					prefix := namePrefix
+					if prefix > 0 {
+						for _, id := range ids[start:end] {
+							name := s.NameView(id)
+							if len(name) < prefix || !isASCII(name[:prefix]) {
+								prefix = 0
+								break
+							}
+						}
+					}
+					if prefix > 0 {
+						comparisons := 0
+						canceled := false
+						slices.SortFunc(ids[start:end], func(a, b ID) int {
+							comparisons++
+							if comparisons&4095 == 0 && ctx.Err() != nil {
+								canceled = true
+							}
+							if canceled {
+								return 0
+							}
+							v := compareFold(s.NameView(a)[prefix:], s.NameView(b)[prefix:])
+							if tie.Desc {
+								v = -v
+							}
+							if v != 0 {
+								return v
+							}
+							if a < b {
+								return -1
+							}
+							if a > b {
+								return 1
+							}
+							return 0
+						})
+						start = end
+						continue
+					}
 					if end-start >= 4096 {
 						if err := s.sortCompare(ctx, ids[start:end], *tie); err != nil {
 							return

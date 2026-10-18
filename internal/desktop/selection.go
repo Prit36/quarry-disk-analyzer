@@ -28,11 +28,13 @@ func fingerprint(sel *ui.Selection[index.ID], rows uint64, s *index.Snapshot) se
 
 // selectionCache is a view's selected entries in row order.
 type selectionCache struct {
-	ids     []index.ID
-	key     selectionKey
-	valid   bool   // false forces a rebuild
-	checked bool   // the fingerprint was compared since the last check point
-	version uint64 // increments with every rebuild
+	ids      []index.ID
+	key      selectionKey
+	valid    bool   // false forces a rebuild
+	checked  bool   // the fingerprint was compared since the last check point
+	version  uint64 // increments with every rebuild
+	peak     int    // largest cardinality since the selection map was trimmed
+	borrowed bool   // ids aliases the file model's immutable result slice
 }
 
 // invalidate forces the next question to rebuild the list.
@@ -48,6 +50,18 @@ func (c *selectionCache) checkpoint() { c.checked = false }
 // get returns the cached list, rebuilding it with build when the selection
 // may have changed.
 func (c *selectionCache) get(sel *ui.Selection[index.ID], rows uint64, s *index.Snapshot, build func([]index.ID) []index.ID) []index.ID {
+	// Selection.Clear retains its map. Release a former Select All map when
+	// the user returns to a small selection, preserving the current keys.
+	if c.peak > 16384 && sel.Len() <= 4096 {
+		var compact ui.Selection[index.ID]
+		for id := range sel.All() {
+			compact.Add(id)
+		}
+		*sel = compact
+		c.peak = sel.Len()
+	} else {
+		c.peak = max(c.peak, sel.Len())
+	}
 	if c.valid && c.checked && c.key.n == sel.Len() && c.key.rows == rows && c.key.snap == s {
 		return c.ids
 	}
@@ -58,9 +72,10 @@ func (c *selectionCache) get(sel *ui.Selection[index.ID], rows uint64, s *index.
 			return c.ids
 		}
 	}
-	if sel.Len() == 0 || cap(c.ids) > max(4096, 4*sel.Len()) {
+	if c.borrowed || sel.Len() == 0 || cap(c.ids) > max(4096, 4*sel.Len()) {
 		c.ids = nil
 	}
+	c.borrowed = false // build may explicitly borrow another immutable result
 	c.ids = build(c.ids[:0])
 	c.key = fingerprintSlice(c.ids, rows, s)
 	c.valid, c.checked = true, true
@@ -108,13 +123,14 @@ func (a *App) facts() *selectionFacts {
 		return f
 	}
 	*f = selectionFacts{view: a.prefs.View, version: a.selectionVersion(), snap: a.snap, allocated: a.metricAllocated(), ok: true}
-	f.onDisk = a.selectionOnDisk(ids)
 	if a.prefs.View == viewFiles && a.files.forSnap == a.snap && len(ids) == len(a.files.ids) && a.files.shownAllocated == a.metricAllocated() && a.files.err == "" {
 		// The complete result set's non-overlapping total was already computed
 		// by the query worker. Select All should not sum a million nodes again.
 		f.total = a.files.total
+		f.onDisk = a.files.shownOnDisk
 		return f
 	}
+	f.onDisk = a.selectionOnDisk(ids)
 	for _, id := range a.topLevel(ids) {
 		f.total += a.metric(a.snap.Nodes[id])
 	}

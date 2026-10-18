@@ -188,6 +188,43 @@ func (s *Snapshot) QueryRows(ctx context.Context, q Query) (QueryResult, error) 
 // Search returns every entry below root (excluding root) that matches f, in
 // index order. It reads only the immutable snapshot.
 func (s *Snapshot) Search(ctx context.Context, root ID, f *Filter) ([]ID, error) {
+	return s.search(ctx, root, f, nil)
+}
+
+// SearchResult describes all matches and the facts needed by bulk selection.
+type SearchResult struct {
+	IDs         []ID
+	Total       uint64
+	HasMetadata bool
+}
+
+// SearchResults returns the same ordered matches as Search and their size,
+// counting bytes inside matched folders once. Tallying during the walk avoids
+// rereading every result and walking its ancestors after sorting. Metadata
+// classification shares the temporary ancestry bits for selection validation.
+func (s *Snapshot) SearchResults(ctx context.Context, root ID, f *Filter, allocated bool) (SearchResult, error) {
+	if err := ctx.Err(); err != nil {
+		return SearchResult{}, err
+	}
+	if root == None || int(root) >= len(s.Nodes) {
+		return SearchResult{}, fmt.Errorf("invalid search scope")
+	}
+	tally := &searchTally{allocated: allocated, states: make([]atomic.Uint32, (len(s.Nodes)+15)/16)}
+	if s.IsMetadata(root) {
+		tally.states[root>>4].Store(uint32(2) << (2 * (root & 15)))
+	}
+	ids, err := s.search(ctx, root, f, tally)
+	return SearchResult{IDs: ids, Total: tally.total, HasMetadata: tally.metadata}, err
+}
+
+type searchTally struct {
+	states    []atomic.Uint32 // two bits per entry; adjacent subtrees can share a word
+	allocated bool
+	total     uint64 // private to the coordinator or one worker's current piece
+	metadata  bool
+}
+
+func (s *Snapshot) search(ctx context.Context, root ID, f *Filter, tally *searchTally) ([]ID, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -210,9 +247,9 @@ func (s *Snapshot) Search(ctx context.Context, root ID, f *Filter) ([]ID, error)
 	}
 	workers := runtime.GOMAXPROCS(0)
 	if workers < 2 || uint64(s.Nodes[root].Files)+uint64(s.Nodes[root].Dirs) < parallelSearchEntries {
-		return s.searchSubtree(ctx, root, root, f, ancestorOK, make([]ID, 0, 1024))
+		return s.searchSubtree(ctx, root, root, f, ancestorOK, make([]ID, 0, 1024), tally)
 	}
-	return s.searchParallel(ctx, root, f, ancestorOK, workers)
+	return s.searchParallel(ctx, root, f, ancestorOK, workers, tally)
 }
 
 // parallelSearchEntries is the scope size from which Search divides the walk
@@ -221,12 +258,16 @@ const parallelSearchEntries = 1 << 15
 
 // searchSubtree appends the matches in the subtree of top to ids, in index
 // order. skip is left out.
-func (s *Snapshot) searchSubtree(ctx context.Context, top, skip ID, f *Filter, ancestorOK []bool, ids []ID) ([]ID, error) {
+func (s *Snapshot) searchSubtree(ctx context.Context, top, skip ID, f *Filter, ancestorOK []bool, ids []ID, tallies ...*searchTally) ([]ID, error) {
+	var tally *searchTally
+	if len(tallies) > 0 {
+		tally = tallies[0]
+	}
 	err := s.Visit(ctx, top, func(id ID) error {
 		if id == skip {
 			return nil
 		}
-		if s.matchEntry(id, f, ancestorOK) {
+		if s.matchEntry(id, f, ancestorOK, tally) {
 			ids = append(ids, id)
 		}
 		return nil
@@ -237,7 +278,7 @@ func (s *Snapshot) searchSubtree(ctx context.Context, top, skip ID, f *Filter, a
 // matchEntry tests one entry, after its parent has been tested. For folders it
 // records in ancestorOK whether the folder or an ancestor satisfies every
 // path: term, which is what its descendants inherit.
-func (s *Snapshot) matchEntry(id ID, f *Filter, ancestorOK []bool) bool {
+func (s *Snapshot) matchEntry(id ID, f *Filter, ancestorOK []bool, tally *searchTally) bool {
 	n := s.Nodes[id]
 	name := s.NameView(id)
 	inherited := false
@@ -247,19 +288,49 @@ func (s *Snapshot) matchEntry(id ID, f *Filter, ancestorOK []bool) bool {
 			ancestorOK[id] = inherited || f.MatchPathComponent(name)
 		}
 	}
-	return f.MatchNode(name, n, func() string { return s.Path(id) }, inherited)
+	matched := f.MatchNode(name, n, func() string { return s.Path(id) }, inherited)
+	if tally != nil && (matched || n.FirstChild != None) {
+		const covered, metadata = 1, 2
+		var state uint32
+		if n.Parent != None {
+			state = tally.states[n.Parent>>4].Load() >> (2 * (n.Parent & 15)) & 3
+		}
+		if n.Flags&Unplaced != 0 || n.Parent == 0 && s.IsMetadata(id) {
+			state |= metadata
+		}
+		if matched && state&metadata != 0 {
+			tally.metadata = true
+		}
+		parentCovered := state&covered != 0
+		if matched && n.IsDir() {
+			state |= covered
+		}
+		if n.FirstChild != None && state != 0 {
+			tally.states[id>>4].Or(state << (2 * (id & 15)))
+		}
+		if matched && !parentCovered {
+			if tally.allocated {
+				tally.total += n.Allocated
+			} else {
+				tally.total += n.Size
+			}
+		}
+	}
+	return matched
 }
 
 // searchPiece is a part of a search, in index order: either the whole subtree
 // of id (walk), or the matched entries already collected in ids.
 type searchPiece struct {
-	id      ID
-	last    ID // inclusive end of a consecutive run of siblings
-	walk    bool
-	weight  uint64
-	files   uint64
-	reserve int
-	ids     []ID
+	id       ID
+	last     ID // inclusive end of a consecutive run of siblings
+	walk     bool
+	weight   uint64
+	files    uint64
+	reserve  int
+	ids      []ID
+	total    uint64
+	metadata bool
 }
 
 // Batch small sibling subtrees together. A flat folder can contain millions
@@ -304,7 +375,11 @@ func (s *Snapshot) searchPieces(ctx context.Context, parent ID, target uint64) (
 // matched here and its children become pieces in its place, so the pieces
 // concatenated in order are exactly the index order of a single walk. Pieces
 // touch disjoint entries of ancestorOK, which keeps the workers race free.
-func (s *Snapshot) searchParallel(ctx context.Context, root ID, f *Filter, ancestorOK []bool, workers int) ([]ID, error) {
+func (s *Snapshot) searchParallel(ctx context.Context, root ID, f *Filter, ancestorOK []bool, workers int, tallies ...*searchTally) ([]ID, error) {
+	var tally *searchTally
+	if len(tallies) > 0 {
+		tally = tallies[0]
+	}
 	target := max(uint64(1024), (uint64(s.Nodes[root].Files)+uint64(s.Nodes[root].Dirs))/uint64(4*workers))
 	pieces, err := s.searchPieces(ctx, root, target)
 	if err != nil {
@@ -322,7 +397,7 @@ func (s *Snapshot) searchParallel(ctx context.Context, root ID, f *Filter, ances
 		}
 		id := pieces[best].id
 		split := []searchPiece{{}}
-		if s.matchEntry(id, f, ancestorOK) {
+		if s.matchEntry(id, f, ancestorOK, tally) {
 			split[0].ids = []ID{id}
 		}
 		children, err := s.searchPieces(ctx, id, target)
@@ -369,6 +444,14 @@ func (s *Snapshot) searchParallel(ctx context.Context, root ID, f *Filter, ances
 				}
 				if pieces[i].walk {
 					p := &pieces[i]
+					var local searchTally
+					var pieceTally *searchTally
+					if tally != nil {
+						local = *tally
+						local.total = 0
+						local.metadata = false
+						pieceTally = &local
+					}
 					if reserve {
 						p.ids = make([]ID, 0, p.reserve)
 					}
@@ -380,7 +463,7 @@ func (s *Snapshot) searchParallel(ctx context.Context, root ID, f *Filter, ances
 						}
 						count++
 						if s.Nodes[c].FirstChild == None {
-							if s.matchEntry(c, f, ancestorOK) {
+							if s.matchEntry(c, f, ancestorOK, pieceTally) {
 								if p.ids == nil {
 									p.ids = make([]ID, 0, min(1024, int(p.weight)))
 								}
@@ -390,12 +473,14 @@ func (s *Snapshot) searchParallel(ctx context.Context, root ID, f *Filter, ances
 							if p.ids == nil {
 								p.ids = make([]ID, 0, min(1024, int(p.weight)))
 							}
-							p.ids, errs[i] = s.searchSubtree(ctx, c, root, f, ancestorOK, p.ids)
+							p.ids, errs[i] = s.searchSubtree(ctx, c, root, f, ancestorOK, p.ids, pieceTally)
 						}
 						if errs[i] != nil || c == p.last {
 							break
 						}
 					}
+					p.total = local.total
+					p.metadata = local.metadata
 				}
 			}
 		}()
@@ -411,6 +496,10 @@ func (s *Snapshot) searchParallel(ctx context.Context, root ID, f *Filter, ances
 	ids := make([]ID, 0, total)
 	for _, p := range pieces {
 		ids = append(ids, p.ids...)
+		if tally != nil {
+			tally.total += p.total
+			tally.metadata = tally.metadata || p.metadata
+		}
 	}
 	return ids, nil
 }

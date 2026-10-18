@@ -32,6 +32,7 @@ type fileModel struct {
 	scope          index.ID
 	shownScope     index.ID
 	shownAllocated bool
+	shownOnDisk    bool
 
 	list   ui.ListState
 	sel    ui.Selection[index.ID]
@@ -144,59 +145,44 @@ func (f *fileModel) run() {
 	// order or size metric need not search the same snapshot and scope again.
 	reuse := f.forSnap == s && f.ran == query && f.shownScope == scope && f.err == ""
 	previous, previousTotal, sameMetric := f.ids, f.total, f.shownAllocated == allocated
+	previousOnDisk := f.shownOnDisk
 	go func() {
 		defer cancel()
 		filter, err := index.ParseFilter(query)
 		var ids []index.ID
 		var total uint64
+		onDisk := previousOnDisk
 		if err == nil && reuse {
 			ids = slices.Clone(previous)
 		} else if err == nil {
 			if filter.Kind == index.KindAny && query == "" {
 				filter.Kind = index.KindFiles
 			}
-			ids, err = s.Search(ctx, scope, &filter)
-		}
-		if err == nil {
-			err = sortEntries(ctx, s, ids, order, allocated)
-		}
-		if ctx.Err() != nil {
-			return
+			var results index.SearchResult
+			results, err = s.SearchResults(ctx, scope, &filter, allocated)
+			ids, total, onDisk = results.IDs, results.Total, !results.HasMetadata
 		}
 		if err == nil && reuse && sameMetric {
 			total = previousTotal
-		} else if err == nil {
-			// Count each matched byte once: skip matches inside a matched folder.
-			matchedDirs := map[index.ID]bool{}
-			for i, id := range ids {
-				if i&4095 == 0 && ctx.Err() != nil {
-					return
-				}
-				if s.Nodes[id].IsDir() {
-					matchedDirs[id] = true
-				}
-			}
-			for i, id := range ids {
+		} else if err == nil && reuse {
+			// A metric change can reuse the matches. Classify their ancestors
+			// once and sum before reordering the result for the new metric.
+			var top []index.ID
+			top, err = topLevelEntries(ctx, s, ids)
+			for i, id := range top {
 				if i&4095 == 0 && ctx.Err() != nil {
 					return
 				}
 				n := s.Nodes[id]
-				nested := false
-				for p := n.Parent; p != index.None && len(matchedDirs) > 0; p = s.Nodes[p].Parent {
-					if matchedDirs[p] {
-						nested = true
-						break
-					}
-				}
-				if nested {
-					continue
-				}
 				if allocated {
 					total += n.Allocated
 				} else {
 					total += n.Size
 				}
 			}
+		}
+		if err == nil {
+			err = sortEntries(ctx, s, ids, order, allocated)
 		}
 		if ctx.Err() != nil {
 			return
@@ -233,6 +219,7 @@ func (f *fileModel) run() {
 			}
 			f.ids, f.total = ids, total
 			f.shownScope, f.shownAllocated = scope, allocated
+			f.shownOnDisk = onDisk
 			f.idsGen++
 			f.cursor = cursor
 			if !reuse {
@@ -287,7 +274,7 @@ func sortEntries(ctx context.Context, s *index.Snapshot, ids []index.ID, order u
 		type parentPath struct {
 			id         index.ID
 			arena      uint32
-			start, end int
+			start, end uint32
 		}
 		parentList := make([]parentPath, len(parents))
 		for i, p := range parents {
@@ -348,13 +335,13 @@ func sortEntries(ctx context.Context, s *index.Snapshot, ids []index.ID, order u
 						arena.Grow(max(chunkSize, length))
 					}
 					p := &parentList[i]
-					p.start = arena.Len()
+					p.start = uint32(arena.Len())
 					if ascii {
 						arena.Write(scratch)
 					} else {
 						arena.WriteString(unicodePath)
 					}
-					p.end = arena.Len()
+					p.end = uint32(arena.Len())
 				}
 				if chunkStart < end {
 					publish(end)
@@ -366,7 +353,9 @@ func sortEntries(ctx context.Context, s *index.Snapshot, ids []index.ID, order u
 			return err
 		}
 		pathOf := func(p parentPath) string { return arenas[p.arena][p.start:p.end] }
-		slices.SortFunc(parentList, func(x, y parentPath) int { return strings.Compare(pathOf(x), pathOf(y)) })
+		if err := parallelSort(ctx, parentList, func(x, y parentPath) int { return strings.Compare(pathOf(x), pathOf(y)) }); err != nil {
+			return err
+		}
 		rank := uint32(0)
 		for i, pp := range parentList {
 			if i == 0 || pathOf(pp) != pathOf(parentList[i-1]) {
@@ -461,6 +450,7 @@ func (f *fileModel) selectAll() {
 	for _, id := range f.ids {
 		f.sel.Add(id)
 	}
+	f.selCache.peak = max(f.selCache.peak, f.sel.Len())
 	f.selCache.invalidate()
 }
 
@@ -474,7 +464,8 @@ func (f *fileModel) selectedIDs() []index.ID {
 			}
 		case n > 1:
 			if n == len(f.ids) {
-				return append(out, f.ids...)
+				f.selCache.borrowed = true
+				return f.ids
 			}
 			for _, id := range f.ids {
 				if f.sel.Has(id) {
