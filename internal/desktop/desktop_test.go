@@ -40,7 +40,7 @@ func testApp(t *testing.T) *App {
 	t.Setenv("QUARRY_CONFIG_DIR", t.TempDir())
 	a := newApp()
 	a.prefs.Theme = "Dark"
-	a.setBase(fixture(), "")
+	a.setBase(fixture(), "", nil, false)
 	return a
 }
 
@@ -141,12 +141,12 @@ func TestCommandAvailability(t *testing.T) {
 		t.Fatal("the scan root must not be deletable or renamable")
 	}
 	a.tree.reveal(7)
-	a.tree.selValid = false
+	a.tree.selCache.invalidate()
 	if !a.can("edit.copyPath") || !a.can("edit.delete") || !a.can("edit.rename") {
 		t.Fatal("an ordinary file can be copied, deleted and renamed")
 	}
 	a.source = "saved.quarry"
-	a.tree.selValid = false
+	a.tree.selCache.invalidate()
 	if a.can("edit.delete") || a.can("edit.cut") || a.mutable() {
 		t.Fatal("saved scans are historical: no file operations")
 	}
@@ -162,7 +162,7 @@ func TestMetadataIsProtected(t *testing.T) {
 	a := newApp()
 	a.prefs.Theme = "Dark"
 	a.prefs.ShowMetadata = true
-	a.setBase(s, "")
+	a.setBase(s, "", metadataEntries(s), false)
 	if reason := a.blocked(bad); !strings.Contains(reason, "metadata") {
 		t.Fatalf("$BadClus: %q", reason)
 	}
@@ -332,7 +332,7 @@ func TestMetadataHiddenByDefault(t *testing.T) {
 	a := newApp()
 	a.prefs.Theme = "Dark"
 	tt := ui.NewTester(a.view, 1000, 700)
-	a.setBase(s, "")
+	a.setBase(s, "", metadataEntries(s), false)
 	settle(tt, func() bool { return !a.filterBusy && a.snap != nil })
 	if a.snap.Reachable(bad) || a.snap.Nodes[0].Size != 100 || !a.snap.Reachable(3) {
 		t.Fatalf("metadata should be hidden: size %d", a.snap.Nodes[0].Size)

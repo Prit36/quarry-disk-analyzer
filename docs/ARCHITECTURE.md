@@ -14,19 +14,31 @@ internal/desktop        the native UI
 
 ## Index
 
-A scan is a `Snapshot`: 56-byte pointer-free `Node`s (sizes, modified time, parent/first-child/next-sibling IDs, counts) and one UTF-8 name arena. Paths are rebuilt on demand. Folders own no bytes; their totals are their children's.
+A scan is a `Snapshot`: 48-byte pointer-free `Node`s (sizes, modified time as 32-bit Unix seconds, parent/first-child/next-sibling IDs, counts) and one UTF-8 name arena. Paths are rebuilt on demand (`Path` measures, then fills one allocation; exports build paths incrementally while walking). Folders own no bytes; their totals are their children's. Because the index holds no pointers, the garbage collector never scans it; the GUI therefore runs with `GOGC=25`.
 
-Snapshots are shared with background goroutines and never mutated in place. A delete, rename, exclusion or analysis filter produces a copy with the same IDs (`Clone`, `Remove`, `Rename`, `Prune`, `Filtered`, `Reaggregate`), so selections, expansion and history survive. `Compact` renumbers a copy for saving.
+A directory scan grows its index in fixed-size chunks (`Builder`) and assembles exactly sized arrays once; the MFT reader sizes them from the MFT's own `$BITMAP`. Neither copies arrays as they grow.
 
-`ParseFilter` compiles the search syntax (wildcards, quoted phrases, negation, `ext:`, `size:`, `modified:`, `path:`, `type:`, `regex:` with Go's linear-time RE2) into a `Filter`; `Search` walks a scope without recursion and evaluates `path:` terms incrementally per folder rather than by building paths.
+Snapshots are shared with background goroutines and never mutated in place. A delete, rename, exclusion or analysis filter produces a copy with the same IDs (`Clone`, `Remove`, `Restore`, `Rename`, `Prune`, `Filtered`, `Reaggregate`), so selections, expansion and history survive. `Compact` renumbers a copy for saving.
+
+`SortContext` radix-sorts by a precomputed two-word key (sizes, dates, counts exactly; names by their first sixteen case-folded bytes, comparing in full only where those are equal) and gives the same order as `Compare`.
+
+`ParseFilter` compiles the search syntax (wildcards, quoted phrases, negation, `ext:`, `size:`, `modified:`, `path:`, `type:`, `regex:` with Go's linear-time RE2) into a `Filter`; `Search` walks a scope without recursion and evaluates `path:` terms incrementally per folder rather than by building paths. Prefix, suffix and contains wildcards match ASCII names without backtracking.
+
+Saved scans keep the original format: 52-byte little-endian records, gzip. They are written as 1 MiB gzip members compressed in parallel, which any gzip reader (and every earlier release) reads as one stream.
+
+## Scanning
+
+- **MFT** (`mft_windows.go`, administrator): two readers with their own unbuffered volume handles read the MFT in 2 MiB chunks, skipping regions the `$BITMAP` marks unused, and parse records into per-chunk arenas; the coordinator applies chunks in order, so IDs are deterministic. Names found in extension records (large folders such as WinSxS keep theirs there) replace or supply the base record's.
+- **Directory enumeration** (`scan.go`, `enumerate_*.go`): up to eight workers query folders with `FILE_ID_BOTH_DIR_INFO`, decode names straight into pooled batch arenas and open folders through a pooled UTF-16 path buffer. Hard links are found after the scan by radix-sorting (file ID, entry) pairs. Folders are opened by path, not by file ID: opening by ID bypasses namespace-virtualizing filter drivers and lists different contents.
 
 ## Desktop
 
-- `app.go` — `App`: scanning, the base snapshot and the filtered view snapshot, the single navigation history (location, back, forward, up, reveal).
+- `app.go` — `App`: scanning, the base snapshot and the filtered view snapshot, the single navigation history (location, back, forward, up, reveal). Hidden NTFS metadata is detached from the base snapshot itself (`Remove`, `Restore` to show it), not kept as a second copy.
 - `commands.go` — every user action once: label, shortcut, availability, check state, action. The native menu bar, row and treemap context menus and the keyboard dispatcher read the same table. Menu labels show shortcuts without registering native accelerators, so text fields keep Ctrl+C, Delete, etc.
 - `tree.go` — Tree View model: flattened rows of the expanded tree below the location, spliced on expand/collapse, keyed by index ID; bounded subtree expansion.
-- `files.go`, `extensions.go` — File View and Extensions: queries and sorts on goroutines with generation counters; results are applied on the UI thread.
-- `treemap.go` — hierarchy built off-thread (6,000 tiles, 7 levels, "Smaller items" aggregates), dominant extension per aggregated block, geometry cached per size.
+- `files.go`, `extensions.go` — File View and Extensions: queries and sorts on goroutines with generation counters; results are applied on the UI thread, and a query already running for the shown snapshot is not restarted by later frames. Explorer type names are resolved in parallel after the Extensions table is shown.
+- `treemap.go` — hierarchy built off-thread (6,000 tiles, 7 levels, "Smaller items" aggregates), dominant extension per aggregated block, geometry cached per size, tile colors and labels cached per layout and setting.
+- `selection.go` — selected entries in row order and facts about them (all on disk, total size), cached between frames and rebuilt when a fingerprint of the selection changes; commands always recompute them before running.
 - `ops.go` — file operations through `internal/platform`, each re-validating the on-disk entry first, then updating the index copy-on-write.
 - `view.go`, `tables.go`, `dialogs.go` — layout, grids and modal dialogs.
 - `prefs.go` — persisted settings (atomic write on close).
@@ -40,3 +52,5 @@ Deletion goes through `SHFileOperationW` (Recycle Bin with `FOF_ALLOWUNDO`, or p
 ## Tests
 
 `go test ./...` covers the scanners, NTFS parsing, the index (search syntax, mutation, snapshots, duplicates) and the desktop models, plus headless view tests with `ui.NewTester`. Interactive checks of the built executable are listed in the 0.1.0 changelog entry.
+
+Performance is measured with `go run scripts/bench.go -scan C:\ [-walk] [-ops]` (scan time, phases, peak working set and private bytes, allocations, then every index operation on the result), `TestPerfReport` in `internal/desktop` (headless frame times and view latencies on a saved scan; set `QUARRY_PERF_SNAPSHOT`) and, as administrator, `TestMFTDiagnostics` in `internal/scan` (MFT read settings on a real volume; set `QUARRY_MFT_DIAG=C:\`). Run directory-scan benchmarks outside sandboxes: filter drivers change their cost.

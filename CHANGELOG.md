@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.0 — 2026-10-18
+
+Performance and memory, measured on C:\ (1.09 million files) before and after; details in `docs/benchmark-results.json`.
+
+- **MFT scans are faster, use half the memory and are complete.** 2.3 s → 1.7 s, peak working set 360 → 184 MB. Two readers with their own unbuffered volume handles (the MFT no longer floods the file cache), records parsed into per-chunk arenas without allocating, and the `$MFT`'s `$BITMAP` sizes the index exactly and skips unused regions. Records whose folder's name is stored in an MFT extension record are now placed correctly: before, 14,755 entries (all of `C:\Windows\WinSxS`, among others) were listed at the root as unresolved, without paths.
+- **Folder scans** (without administrator rights): 9.5 s → 6.7 s, peak working set 447 → 279 MB, allocations 1.15 GB → 0.45 GB. Up to eight workers instead of four, names decoded straight into pooled arenas, folders opened through a reused UTF-16 buffer, the index grown in chunks instead of by copying, and hard links found by sorting file IDs after the scan instead of a hash set during it.
+- **Quarry uses far less memory.** After a scan of C:\ the app settles at about 175 MB instead of 390–440 MB. Hiding NTFS metadata no longer keeps a second copy of the index; index nodes are 48 bytes instead of 56 (modification times before 1970 are shown as 1970); the garbage collector runs before the heap doubles; scan buffers are returned to Windows when a scan ends.
+- **Select All no longer freezes the window.** With a million files selected, every frame took 0.3 s and refreshing the menus 9 s; the selection and what depends on it (on disk, total size) are now cached between frames: 10 ms.
+- **File View and Extensions no longer restart while loading.** Moving the pointer while a query ran restarted it, so the view could take many seconds to appear. Extensions shows its table at once (1.6 s → 65 ms) and fills in Explorer's type names in the background.
+- **Sorting and searching.** Sorting a million files by size 342 → 73 ms, by name 715 → 266 ms, by extension 1.2 s → 0.18 s; `*.log` searches 213 → 33 ms.
+- **Saving, loading and exporting.** Save Scan 767 → 144 ms (parallel compression; the file format is unchanged and readable by earlier releases), Open 555 → 428 ms, CSV export 1.2 s → 0.44 s with 100× fewer allocations.
+- The treemap caches tile colors and labels instead of recomputing them on every frame.
+- Benchmarks: `scripts/bench.go`, `TestPerfReport` and the elevated `TestMFTDiagnostics` (see `docs/ARCHITECTURE.md`).
+
 ## 0.1.1 — 2026-10-17
 
 - **NTFS sizes.** Sparse named streams count the space they occupy, not their length: `$BadClus` no longer shows the size of the whole volume and `$Extend` (the USN journal) no longer tens of gigabytes, so drive totals are no longer inflated past the disk size. Sparse files keep their logical size.

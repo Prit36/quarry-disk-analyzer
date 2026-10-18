@@ -3,6 +3,7 @@
 package platform
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -375,6 +376,41 @@ func FileTypeName(ext string) string {
 	}
 	typeNames.Store(strings.ToLower(ext), name)
 	return name
+}
+
+// CachedFileTypeName returns FileTypeName's answer only if it is already
+// known, so a table can draw without a shell lookup per row.
+func CachedFileTypeName(ext string) string {
+	if v, ok := typeNames.Load(strings.ToLower(ext)); ok {
+		return v.(string)
+	}
+	return ""
+}
+
+// ResolveFileTypeNames looks up many extensions at once, in parallel: each
+// lookup takes about half a millisecond, and a drive has thousands.
+func ResolveFileTypeNames(ctx context.Context, exts []string) {
+	jobs := make(chan string)
+	var group sync.WaitGroup
+	for range min(8, max(1, len(exts))) {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			for ext := range jobs {
+				FileTypeName(ext)
+			}
+		}()
+	}
+	for _, ext := range exts {
+		if ctx.Err() != nil {
+			break
+		}
+		if ext != "" && ext[0] == '.' && CachedFileTypeName(ext) == "" {
+			jobs <- ext
+		}
+	}
+	close(jobs)
+	group.Wait()
 }
 
 const explorerVerb = `Quarry.Analyze`

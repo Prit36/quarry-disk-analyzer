@@ -227,3 +227,73 @@ func TestJunctionIsNotFollowed(t *testing.T) {
 		t.Fatal("junction followed", s.Nodes[0], s.SkippedLinks)
 	}
 }
+
+// A folder whose name is only in an extension record (as with WinSxS) keeps
+// its place and its children; the $BITMAP sizes the index and lets regions
+// without records in use go unread.
+func TestMFTExtensionNamesAndBitmap(t *testing.T) {
+	defer func(chunk int64) { mftChunkBytes = chunk }(mftChunkBytes)
+	mftChunkBytes = 1 << 20 // the image below spans two chunks
+	const sequence = uint64(2) << 48
+	const mft = 2 << 20 // two read chunks
+	image := make([]byte, 4096+mft)
+	mftData := make([]byte, 72)
+	testLE.PutUint32(mftData, 0x80)
+	testLE.PutUint32(mftData[4:], 72)
+	mftData[8] = 1
+	testLE.PutUint64(mftData[24:], mft/4096-1)
+	testLE.PutUint16(mftData[32:], 64)
+	testLE.PutUint64(mftData[40:], mft)
+	testLE.PutUint64(mftData[48:], mft)
+	copy(mftData[64:], []byte{0x12, 0x00, 0x02, 0x01, 0x00})
+	bitmap := make([]byte, mft/1024/8)
+	for _, n := range []int{0, 5, 7, 8, 9} {
+		bitmap[n/8] |= 1 << (n % 8)
+	}
+	records := map[int][]byte{
+		0:    testRecord(false, 0, testName("$MFT", sequence|5), mftData, testResident(0xb0, bitmap)),
+		5:    testRecord(true, 0, testName(".", sequence|5)),
+		7:    testRecord(true, 0),
+		8:    testRecord(false, sequence|7, testName("WinSxS", sequence|5)),
+		9:    testRecord(false, 0, testName("a.txt", sequence|7), testResident(0x80, make([]byte, 100))),
+		1500: testRecord(false, 0, testName("ghost.txt", sequence|5), testResident(0x80, make([]byte, 7))),
+	}
+	for n, r := range records {
+		copy(image[4096+n*1024:], r)
+	}
+	file, err := os.CreateTemp(t.TempDir(), "volume-*.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if _, err := file.Write(image); err != nil {
+		t.Fatal(err)
+	}
+	v := &volumeReader{f: file, sector: 512, cluster: 4096, record: 1024, length: mft, start: 1}
+	s, err := readMFT(context.Background(), `C:\`, &Progress{}, v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.bitmap == nil || s.Unresolved != 0 || cap(s.Nodes) > 6 {
+		t.Fatalf("bitmap %v, unresolved %d, capacity %d", v.bitmap != nil, s.Unresolved, cap(s.Nodes))
+	}
+	found := false
+	for i := range s.Nodes {
+		id := index.ID(i)
+		if !s.Reachable(id) {
+			continue
+		}
+		switch s.NameView(id) {
+		case "a.txt":
+			found = true
+			if p := s.Path(id); p != `C:\WinSxS\a.txt` {
+				t.Fatalf("a.txt at %s", p)
+			}
+		case "ghost.txt":
+			t.Fatal("a region the bitmap marks unused was read")
+		}
+	}
+	if !found || s.Nodes[0].Size != mft+100 || s.Nodes[0].Files != 2 || s.Nodes[0].Dirs != 1 { // $MFT and a.txt; WinSxS
+		t.Fatalf("found %v, root %+v", found, s.Nodes[0])
+	}
+}

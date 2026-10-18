@@ -77,6 +77,36 @@ func (s *Snapshot) Remove(ids ...ID) {
 	}
 }
 
+// Restore re-attaches entries that Remove detached, under their original
+// parents, and adds their totals back to every ancestor. Entries that are
+// not detached, or whose parent is not reachable, are left alone. Call it
+// on a Clone.
+func (s *Snapshot) Restore(ids ...ID) {
+	for _, id := range ids {
+		if id == 0 || id == None || int(id) >= len(s.Nodes) || s.Nodes[id].Flags&Removed == 0 {
+			continue
+		}
+		n := &s.Nodes[id]
+		if !s.Reachable(n.Parent) {
+			continue
+		}
+		n.Flags &^= Removed
+		n.NextSibling = s.Nodes[n.Parent].FirstChild
+		s.Nodes[n.Parent].FirstChild = id
+		files, dirs := n.Files, n.Dirs
+		if n.IsDir() {
+			dirs++
+		}
+		for p := n.Parent; p != None; p = s.Nodes[p].Parent {
+			q := &s.Nodes[p]
+			q.Size += n.Size
+			q.Allocated += n.Allocated
+			q.Files += files
+			q.Dirs += dirs
+		}
+	}
+}
+
 func (s *Snapshot) unlink(id ID) {
 	parent := s.Nodes[id].Parent
 	if parent == None {
@@ -260,10 +290,27 @@ func (s *Snapshot) IsMetadata(id ID) bool {
 			return true
 		}
 		if s.Nodes[n].Parent == 0 {
-			return strings.Contains(s.Engine, "MFT") && ntfsMetadata[strings.ToLower(s.NameView(n))]
+			return strings.Contains(s.Engine, "MFT") && isMetadataName(s.NameView(n))
 		}
 	}
 	return false
+}
+
+// isMetadataName looks a top-level name up without allocating: menus ask
+// for every selected entry on every frame.
+func isMetadataName(name string) bool {
+	if len(name) == 0 || name[0] != '$' || len(name) > 16 {
+		return false
+	}
+	var lower [16]byte
+	for i := 0; i < len(name); i++ {
+		b := name[i]
+		if b >= 'A' && b <= 'Z' {
+			b += 32
+		}
+		lower[i] = b
+	}
+	return ntfsMetadata[string(lower[:len(name)])]
 }
 
 // Compact returns a copy without removed entries, with renumbered IDs and a

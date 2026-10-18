@@ -37,6 +37,12 @@ type treemapModel struct {
 
 	ranks   map[string]int // extension → color slot, by size across the scan
 	rankFor *index.Snapshot
+
+	// styles holds each cell's colors and texts, derived once per layout
+	// and setting rather than on every frame the pointer moves.
+	styles   []cellStyle
+	styleFor styleKey
+	styleGen uint64 // changes with the cells, ranks or dominant extensions
 	// dominant is the largest extension inside each block that stands for
 	// several files (a folder not subdivided further, or "Smaller items"),
 	// so even aggregated blocks show what fills them.
@@ -46,6 +52,55 @@ type treemapModel struct {
 type tileKey struct {
 	id    index.ID
 	other bool
+}
+
+type cellStyle struct {
+	color ui.Color // tile fill, or a group's frame
+	text  ui.Color
+	name  string // the label: a group's includes its size
+	size  string
+	ext   string // cellExt
+}
+
+type styleKey struct {
+	gen           uint64 // cells, ranks and dominant extensions
+	colors, units string
+	dark          bool
+}
+
+// ensureStyles derives the cells' colors and labels when the layout or a
+// setting they depend on changed.
+func (m *treemapModel) ensureStyles(s *index.Snapshot, dark bool) {
+	a := m.a
+	key := styleKey{gen: m.styleGen, colors: a.prefs.TreemapColors, units: a.prefs.Units, dark: dark}
+	if m.styles != nil && key == m.styleFor {
+		return
+	}
+	m.styleFor = key
+	m.styles = make([]cellStyle, len(m.cells))
+	for i, cell := range m.cells {
+		st := &m.styles[i]
+		col := m.color(s, cell, dark)
+		if cell.Group {
+			frame := col.Mix(ui.Hex("#000000"), .35)
+			if a.prefs.TreemapColors == "Extension" || a.prefs.TreemapColors == "Mono" {
+				frame = ui.Hex("#3A3A3A")
+				if !dark {
+					frame = ui.Hex("#D6D6D6")
+				}
+			}
+			st.color, st.text = frame, readableOn(frame)
+			st.name = a.name(cell.Tile.ID) + "  " + a.size(cell.Tile.Bytes)
+			continue
+		}
+		st.color, st.text = col, readableOn(col)
+		st.name = "Smaller items"
+		if !cell.Tile.Other {
+			st.name = a.name(cell.Tile.ID)
+		}
+		st.size = a.size(cell.Tile.Bytes)
+		st.ext = m.cellExt(s, cell)
+	}
 }
 
 // dominantExtensions finds, for every aggregated block, the extension that
@@ -178,6 +233,7 @@ func (m *treemapModel) ensure() {
 			}
 			if ranks != nil {
 				m.ranks, m.rankFor = ranks, s
+				m.styleGen++
 			}
 		})
 	}()
@@ -189,6 +245,7 @@ func (m *treemapModel) layout(w, h float32) {
 	}
 	m.w, m.h = w, h
 	m.cells = treemap.NestedLayout(m.branches, treemap.Rect{X: 0, Y: 0, W: max(0, w), H: max(0, h)})
+	m.styleGen++
 	m.cellOf = make(map[index.ID]int, len(m.cells))
 	for i, c := range m.cells {
 		if !c.Tile.Other {
@@ -307,7 +364,7 @@ func (a *App) hoverLines(s *index.Snapshot, cell treemap.Cell) (string, []string
 		}
 		lines = append(lines, ext)
 	}
-	if d := dateText(n.Modified); d != "" {
+	if d := dateText(n.ModTime()); d != "" {
 		lines = append(lines, "Modified "+d)
 	}
 	if s.IsMetadata(id) {
@@ -418,6 +475,8 @@ func (a *App) treemapView(c *ui.Context, pal palette) {
 		tipTitle, tipLines = a.hoverLines(s, m.cells[hover])
 	}
 	cells := m.cells
+	m.ensureStyles(s, t.Dark)
+	styles := m.styles
 	dark := t.Dark
 	busy := m.busy
 	metric := strings.ToLower(a.prefs.Metric)
@@ -440,48 +499,39 @@ func (a *App) treemapView(c *ui.Context, pal palette) {
 				continue
 			}
 			rect := ui.Rect{X: origin.X + r.X, Y: origin.Y + r.Y, W: r.W, H: r.H}
-			col := m.color(s, cell, dark)
+			st := &styles[i]
+			col, fg := st.color, st.text
 			if cell.Group {
 				// Folder frame: the header strip carries the name.
-				frame := col.Mix(ui.Hex("#000000"), .35)
-				if a.prefs.TreemapColors == "Extension" || a.prefs.TreemapColors == "Mono" {
-					frame = ui.Hex("#3A3A3A")
-					if !dark {
-						frame = ui.Hex("#D6D6D6")
-					}
-				}
 				if i == hover {
-					frame = frame.Mix(ui.Hex("#FFFFFF"), .15)
+					col = col.Mix(ui.Hex("#FFFFFF"), .15)
+					fg = readableOn(col)
 				}
-				p.Fill(rect, frame, 0)
+				p.Fill(rect, col, 0)
 				if cell.Header >= 14 && rect.W > 40 {
-					label := a.name(cell.Tile.ID) + "  " + a.size(cell.Tile.Bytes)
 					p.Clip(ui.Rect{X: rect.X + 3, Y: rect.Y, W: rect.W - 6, H: cell.Header}, 0, func() {
-						p.Text(rect.X+4, rect.Y+1, label, 11, readableOn(frame))
+						p.Text(rect.X+4, rect.Y+1, st.name, 11, fg)
 					})
 				}
 				continue
 			}
-			if focusExt != "" && m.cellExt(s, cell) != focusExt {
+			if focusExt != "" && st.ext != focusExt {
 				col = col.Mix(pal.grid, .75)
+				fg = readableOn(col)
 			}
 			if i == hover {
 				col = col.Mix(ui.Hex("#FFFFFF"), .18)
+				fg = readableOn(col)
 			}
 			p.FillGradient(rect, ui.LinearGradient{From: col.Mix(ui.Hex("#FFFFFF"), .10), To: col.Mix(ui.Hex("#000000"), .18), Angle: 135}, 0)
 			if rect.W > 2 && rect.H > 2 {
 				p.Stroke(rect, edge, 0, 1)
 			}
 			if rect.W > 48 && rect.H > 16 {
-				name := "Smaller items"
-				if !cell.Tile.Other {
-					name = a.name(cell.Tile.ID)
-				}
-				fg := readableOn(col)
 				p.Clip(ui.Rect{X: rect.X + 2, Y: rect.Y, W: rect.W - 4, H: rect.H}, 0, func() {
-					p.Text(rect.X+4, rect.Y+2, name, 11, fg)
+					p.Text(rect.X+4, rect.Y+2, st.name, 11, fg)
 					if rect.H > 32 {
-						p.Text(rect.X+4, rect.Y+16, a.size(cell.Tile.Bytes), 11, fg.Alpha(.8))
+						p.Text(rect.X+4, rect.Y+16, st.size, 11, fg.Alpha(.8))
 					}
 				})
 			}

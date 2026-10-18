@@ -10,7 +10,7 @@ import (
 	"syscall"
 )
 
-func enumerate(ctx context.Context, path string, emit func([]entry) error) error {
+func enumerate(ctx context.Context, path string, emit func(*dirBatch) error) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -20,14 +20,15 @@ func enumerate(ctx context.Context, path string, emit func([]entry) error) error
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		dirs, readErr := f.ReadDir(256)
-		entries := acquireEntries()
+		dirs, readErr := f.ReadDir(batchSize)
+		batch := acquireBatch()
 		for _, d := range dirs {
 			info, err := d.Info()
 			if err != nil {
+				releaseBatch(batch)
 				return err
 			}
-			e := entry{name: d.Name(), size: uint64(max(0, info.Size())), modified: info.ModTime().Unix()}
+			e := entry{size: uint64(max(0, info.Size())), modified: info.ModTime().Unix()}
 			if info.IsDir() {
 				e.flags |= index.Directory
 				e.size = 0
@@ -42,14 +43,14 @@ func enumerate(ctx context.Context, path string, emit func([]entry) error) error
 			if e.flags&index.Directory != 0 {
 				e.allocated = 0
 			}
-			entries = append(entries, e)
+			batch.add(e, d.Name())
 		}
-		if len(entries) > 0 {
-			if err := emit(entries); err != nil {
+		if len(batch.entries) > 0 {
+			if err := emit(batch); err != nil {
 				return err
 			}
 		} else {
-			releaseEntries(entries)
+			releaseBatch(batch)
 		}
 		if readErr != nil {
 			if readErr == io.EOF {

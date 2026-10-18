@@ -1,7 +1,6 @@
 package desktop
 
 import (
-	"cmp"
 	"context"
 	"path/filepath"
 	"slices"
@@ -26,8 +25,9 @@ type fileModel struct {
 	cancel  context.CancelFunc
 	dirty   bool
 	due     time.Time
-	forSnap *index.Snapshot
-	ran     string // query of the shown results
+	forSnap *index.Snapshot // snapshot of the shown results
+	runFor  *index.Snapshot // snapshot of the running query
+	ran     string          // query of the shown results
 	scope   index.ID
 
 	list   ui.ListState
@@ -35,8 +35,8 @@ type fileModel struct {
 	cursor int
 	sort   ui.SortOrder
 
-	selCache []index.ID
-	selValid bool
+	selCache selectionCache
+	idsGen   uint64 // changes whenever ids change
 }
 
 func (f *fileModel) init(a *App) {
@@ -53,11 +53,12 @@ func (f *fileModel) reset() {
 	cols := f.list.Columns
 	f.list = ui.ListState{Columns: cols}
 	f.ids, f.total, f.busy, f.err, f.forSnap, f.ran = nil, 0, false, "", nil, ""
+	f.idsGen++
 	f.scope = 0
 	f.sel.Clear()
 	f.cursor = -1
 	f.dirty = true
-	f.selValid = false
+	f.selCache.invalidate()
 }
 
 func (f *fileModel) invalidate() {
@@ -67,9 +68,11 @@ func (f *fileModel) invalidate() {
 	}
 }
 
-// ensure runs the query when File View is shown with outdated results.
+// ensure runs the query when File View is shown with outdated results. A
+// query already running for the shown snapshot is left to finish: every
+// frame (a pointer move is enough) would otherwise restart it.
 func (f *fileModel) ensure() {
-	if f.dirty || f.forSnap != f.a.snap {
+	if f.dirty || f.forSnap != f.a.snap && !(f.busy && f.runFor == f.a.snap) {
 		f.run()
 	}
 }
@@ -122,7 +125,7 @@ func (f *fileModel) run() {
 	gen := f.gen
 	ctx, cancel := context.WithCancel(context.Background())
 	f.cancel = cancel
-	f.busy, f.dirty, f.due = true, false, time.Time{}
+	f.busy, f.dirty, f.due, f.runFor = true, false, time.Time{}, a.snap
 	s, query, scope, order, allocated := a.snap, strings.TrimSpace(a.search), f.scope, f.sort, a.metricAllocated()
 	go func() {
 		filter, err := index.ParseFilter(query)
@@ -181,6 +184,7 @@ func (f *fileModel) run() {
 				keep[id] = true
 			}
 			f.ids, f.total = ids, total
+			f.idsGen++
 			f.sel.Clear()
 			f.cursor = -1
 			if len(keep) > 0 {
@@ -193,7 +197,7 @@ func (f *fileModel) run() {
 					}
 				}
 			}
-			f.selValid = false
+			f.selCache.invalidate()
 			if f.cursor < 0 {
 				f.list.ScrollTo(0, ui.Start)
 			}
@@ -205,46 +209,81 @@ func (f *fileModel) run() {
 }
 
 // sortEntries orders results; "Folder" and "Extension" use derived keys.
+// Each distinct folder path or extension is ranked once, and the entries
+// are radix-sorted by rank: comparing derived strings per comparison took
+// over a second for a million files.
 func sortEntries(ctx context.Context, s *index.Snapshot, ids []index.ID, order ui.SortOrder, allocated bool) error {
 	desc := order.Descending
-	flip := func(v int) int {
-		if desc {
-			return -v
+	keyOf := func(rank []uint32) func(index.ID) uint64 {
+		return func(id index.ID) uint64 {
+			k := uint64(rank[id])
+			if desc {
+				k = ^k
+			}
+			return k
 		}
-		return v
 	}
 	switch order.Column {
 	case "Folder":
-		parents := map[index.ID]string{}
+		parentRank := make([]uint32, len(s.Nodes))
+		var parents []index.ID
 		for _, id := range ids {
-			p := s.Nodes[id].Parent
-			if _, ok := parents[p]; !ok && p != index.None {
-				parents[p] = strings.ToLower(s.Path(p))
+			if p := s.Nodes[id].Parent; p != index.None && parentRank[p] == 0 {
+				parentRank[p] = 1
+				parents = append(parents, p)
 			}
 		}
-		n := 0
-		slices.SortStableFunc(ids, func(x, y index.ID) int {
-			if n++; n&4095 == 0 && ctx.Err() != nil {
-				return 0
+		paths := make(map[index.ID]string, len(parents))
+		for i, p := range parents {
+			if i&1023 == 0 && ctx.Err() != nil {
+				return ctx.Err()
 			}
-			if v := strings.Compare(parents[s.Nodes[x].Parent], parents[s.Nodes[y].Parent]); v != 0 {
-				return flip(v)
+			paths[p] = strings.ToLower(s.Path(p))
+		}
+		slices.SortFunc(parents, func(x, y index.ID) int { return strings.Compare(paths[x], paths[y]) })
+		rank := uint32(0)
+		for i, p := range parents {
+			if i == 0 || paths[p] != paths[parents[i-1]] {
+				rank++
 			}
-			return s.Compare(x, y, index.Sort{Column: "Name"})
-		})
-		return ctx.Err()
+			parentRank[p] = rank
+		}
+		entryRank := make([]uint32, len(s.Nodes))
+		for _, id := range ids {
+			if p := s.Nodes[id].Parent; p != index.None {
+				entryRank[id] = parentRank[p]
+			}
+		}
+		// Within a folder, by name: the first eight name bytes in the key, the
+		// rest compared where those are equal.
+		name := func(id index.ID) uint64 { return s.NameKey(id, 0) }
+		return s.SortByKeys(ctx, ids, keyOf(entryRank), name, &index.Sort{Column: "Name"})
 	case "Extension":
-		n := 0
-		slices.SortStableFunc(ids, func(x, y index.ID) int {
-			if n++; n&4095 == 0 && ctx.Err() != nil {
-				return 0
+		ranks := map[string]uint32{}
+		for _, id := range ids {
+			ranks[extOf(s, id)] = 0
+		}
+		exts := make([]string, 0, len(ranks))
+		for e := range ranks {
+			exts = append(exts, e)
+		}
+		slices.Sort(exts)
+		for i, e := range exts {
+			ranks[e] = uint32(i)
+		}
+		entryRank := make([]uint32, len(s.Nodes))
+		for _, id := range ids {
+			entryRank[id] = ranks[extOf(s, id)]
+		}
+		// Within an extension, largest first, then by ID: exactly as
+		// Compare with Sort{Desc: true} orders them.
+		largest := func(id index.ID) uint64 {
+			if allocated {
+				return ^s.Nodes[id].Allocated
 			}
-			if v := cmp.Compare(extOf(s, x), extOf(s, y)); v != 0 {
-				return flip(v)
-			}
-			return s.Compare(x, y, index.Sort{Desc: true, Allocated: allocated})
-		})
-		return ctx.Err()
+			return ^s.Nodes[id].Size
+		}
+		return s.SortByKeys(ctx, ids, keyOf(entryRank), largest, nil)
 	}
 	column := order.Column
 	if column == "% of Scan" {
@@ -271,34 +310,32 @@ func (f *fileModel) selectAll() {
 	for _, id := range f.ids {
 		f.sel.Add(id)
 	}
-	f.selValid = false
+	f.selCache.invalidate()
 }
 
+// selectedIDs lists selected results in row order (cached, see selectionCache).
 func (f *fileModel) selectedIDs() []index.ID {
-	if f.selValid {
-		return f.selCache
-	}
-	f.selCache = f.selCache[:0]
-	switch n := f.sel.Len(); {
-	case n == 1:
-		for id := range f.sel.All() {
-			f.selCache = append(f.selCache, id)
-		}
-	case n > 1:
-		for _, id := range f.ids {
-			if f.sel.Has(id) {
-				f.selCache = append(f.selCache, id)
+	return f.selCache.get(&f.sel, f.idsGen, f.a.snap, func(out []index.ID) []index.ID {
+		switch n := f.sel.Len(); {
+		case n == 1:
+			for id := range f.sel.All() {
+				out = append(out, id)
+			}
+		case n > 1:
+			for _, id := range f.ids {
+				if f.sel.Has(id) {
+					out = append(out, id)
+				}
 			}
 		}
-	}
-	f.selValid = true
-	return f.selCache
+		return out
+	})
 }
 
 func (f *fileModel) selectOnly(id index.ID) {
 	f.sel.Clear()
 	f.sel.Add(id)
-	f.selValid = false
+	f.selCache.invalidate()
 	f.cursor = slices.Index(f.ids, id)
 	if f.cursor >= 0 {
 		f.list.ScrollIntoView(f.cursor)

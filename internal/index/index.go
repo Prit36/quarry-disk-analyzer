@@ -3,11 +3,13 @@
 package index
 
 import (
+	"bufio"
 	"cmp"
 	"context"
 	"encoding/csv"
 	"fmt"
 	"io"
+	"math"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -27,10 +29,13 @@ const (
 	Unplaced
 )
 
-// Node is 56 bytes on 64-bit targets, with no GC-scanned pointers.
+// Node is 48 bytes, with no GC-scanned pointers.
 type Node struct {
-	Size, Allocated                 uint64
-	Modified                        int64
+	Size, Allocated uint64
+	// Modified is in Unix seconds, 0 when unknown: 32 bits cover 1970 to
+	// 2106 and keep the node at 48 bytes instead of 56. Earlier times are
+	// stored as the first second of 1970. ModTime returns it as int64.
+	Modified                        uint32
 	Parent, FirstChild, NextSibling ID
 	NameOffset                      uint32
 	NameLength                      uint16
@@ -39,6 +44,22 @@ type Node struct {
 }
 
 func (n Node) IsDir() bool { return n.Flags&Directory != 0 }
+
+// ModTime is the modification time in Unix seconds, 0 when unknown.
+func (n Node) ModTime() int64 { return int64(n.Modified) }
+
+// unixSeconds stores a Unix time in a Node's 32 bits, clamped.
+func unixSeconds(t int64) uint32 {
+	switch {
+	case t == 0:
+		return 0
+	case t < 0:
+		return 1
+	case t > math.MaxUint32:
+		return math.MaxUint32
+	}
+	return uint32(t)
+}
 
 type Issue struct{ Path, Message string }
 type Snapshot struct {
@@ -67,7 +88,7 @@ func (s *Snapshot) Add(parent ID, name string, size, allocated uint64, modified 
 		panic("scan index exceeds 32-bit arena limits")
 	}
 	id := ID(len(s.Nodes))
-	n := Node{Size: size, Allocated: allocated, Modified: modified, Parent: parent, FirstChild: None, NextSibling: None, NameOffset: uint32(len(s.Names)), NameLength: uint16(len(name)), Flags: flags}
+	n := Node{Size: size, Allocated: allocated, Modified: unixSeconds(modified), Parent: parent, FirstChild: None, NextSibling: None, NameOffset: uint32(len(s.Names)), NameLength: uint16(len(name)), Flags: flags}
 	if parent != None {
 		n.NextSibling = s.Nodes[parent].FirstChild
 		s.Nodes[parent].FirstChild = id
@@ -89,10 +110,64 @@ func (s *Snapshot) NameView(id ID) string {
 	}
 	return unsafe.String(&s.Names[n.NameOffset], int(n.NameLength))
 }
+
+// Path builds an entry's full path. Ordinary paths are measured first and
+// filled in from the end, in one allocation; anything filepath.Join would
+// normalize takes the general route.
 func (s *Snapshot) Path(id ID) string {
 	if id == 0 {
 		return s.Root
 	}
+	size, depth := 0, 0
+	for cur := id; cur != 0; depth++ {
+		if cur == None || depth >= len(s.Nodes) || s.Nodes[cur].Flags&Unplaced != 0 {
+			return s.joinPath(id)
+		}
+		name := s.NameView(cur)
+		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `\/`) {
+			return s.joinPath(id)
+		}
+		size += len(name) + 1
+		cur = s.Nodes[cur].Parent
+	}
+	root := s.Root
+	if !cleanRoot(root) {
+		return s.joinPath(id)
+	}
+	if strings.HasSuffix(root, `\`) {
+		size--
+	}
+	b := make([]byte, len(root)+size)
+	copy(b, root)
+	end := len(b)
+	for cur := id; cur != 0; cur = s.Nodes[cur].Parent {
+		name := s.NameView(cur)
+		end -= len(name)
+		copy(b[end:], name)
+		if end > len(root) {
+			end--
+			b[end] = '\\'
+		}
+	}
+	if end != len(root) && end != len(root)+1 {
+		return s.joinPath(id)
+	}
+	if end == len(root)+1 {
+		b[len(root)] = '\\'
+	}
+	return unsafe.String(&b[0], len(b))
+}
+
+// cleanRoot reports whether filepath.Join leaves root and the separator
+// after it as they are: a cleaned Windows path, as scans record.
+func cleanRoot(root string) bool {
+	if len(root) < 3 || root[1] != ':' || root[2] != '\\' || strings.Contains(root, "/") || strings.Contains(root[2:], `\\`) || strings.HasSuffix(root, `\.`) || strings.Contains(root, `\.\`) || strings.Contains(root, `\..`) {
+		return false
+	}
+	return len(root) == 3 || !strings.HasSuffix(root, `\`) && !strings.HasSuffix(root, " ")
+}
+
+func (s *Snapshot) joinPath(id ID) string {
 	parts := make([]string, 0, 16)
 	unplaced := false
 	for steps := 0; id != 0 && id != None && steps < len(s.Nodes); steps++ {
@@ -179,24 +254,6 @@ func (s *Snapshot) Sort(ids []ID, by Sort) {
 	slices.SortFunc(ids, func(a, b ID) int { return s.Compare(a, b, by) })
 }
 
-func (s *Snapshot) SortContext(ctx context.Context, ids []ID, by Sort) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	comparisons := 0
-	canceled := false
-	slices.SortFunc(ids, func(first, second ID) int {
-		comparisons++
-		if comparisons&4095 == 0 && ctx.Err() != nil {
-			canceled = true
-		}
-		if canceled {
-			return 0
-		}
-		return s.Compare(first, second, by)
-	})
-	return ctx.Err()
-}
 func (s *Snapshot) Compare(a, b ID, by Sort) int {
 	x, y := s.Nodes[a], s.Nodes[b]
 	var v int
@@ -274,11 +331,11 @@ func (s *Snapshot) Export(ctx context.Context, w io.Writer) error {
 }
 
 func (s *Snapshot) ExportScope(ctx context.Context, w io.Writer, root ID) error {
-	return s.exportRecords(w, func(visit func(ID) error) error { return s.Visit(ctx, root, visit) })
+	return s.exportRecords(w, s.newPathWalker().path, func(visit func(ID) error) error { return s.Visit(ctx, root, visit) })
 }
 
 func (s *Snapshot) ExportRows(ctx context.Context, w io.Writer, rows []Row) error {
-	return s.exportRecords(w, func(visit func(ID) error) error {
+	return s.exportRecords(w, s.Path, func(visit func(ID) error) error {
 		for position, row := range rows {
 			if position&1023 == 0 {
 				if err := ctx.Err(); err != nil {
@@ -296,26 +353,56 @@ func (s *Snapshot) ExportRows(ctx context.Context, w io.Writer, rows []Row) erro
 	})
 }
 
-func (s *Snapshot) exportRecords(w io.Writer, visit func(func(ID) error) error) error {
-	c := csv.NewWriter(w)
+// exportRecords writes one CSV row per visited entry. Fields are formatted
+// into one reused buffer and passed as views of it (the CSV writer copies
+// them), so a row allocates nothing.
+func (s *Snapshot) exportRecords(w io.Writer, path func(ID) string, visit func(func(ID) error) error) error {
+	buffered := bufio.NewWriterSize(w, 1<<20)
+	c := csv.NewWriter(buffered)
 	if err := c.Write([]string{"Path", "Type", "Size", "Allocated", "Files", "Folders", "Modified", "Shared", "Incomplete"}); err != nil {
 		return err
 	}
+	row := make([]string, 9)
+	scratch := make([]byte, 0, 128)
+	field := func(start int) string {
+		return unsafe.String(unsafe.SliceData(scratch[start:]), len(scratch)-start)
+	}
 	err := visit(func(id ID) error {
 		n := s.Nodes[id]
-		kind := "file"
+		row[0] = path(id)
+		row[1] = "file"
 		if n.IsDir() {
-			kind = "folder"
+			row[1] = "folder"
 		}
-		modified := ""
+		scratch = scratch[:0]
+		start := len(scratch)
+		scratch = strconv.AppendUint(scratch, n.Size, 10)
+		row[2] = field(start)
+		start = len(scratch)
+		scratch = strconv.AppendUint(scratch, n.Allocated, 10)
+		row[3] = field(start)
+		start = len(scratch)
+		scratch = strconv.AppendUint(scratch, uint64(n.Files), 10)
+		row[4] = field(start)
+		start = len(scratch)
+		scratch = strconv.AppendUint(scratch, uint64(n.Dirs), 10)
+		row[5] = field(start)
+		row[6] = ""
 		if n.Modified != 0 {
-			modified = time.Unix(n.Modified, 0).UTC().Format(time.RFC3339)
+			start = len(scratch)
+			scratch = time.Unix(n.ModTime(), 0).UTC().AppendFormat(scratch, time.RFC3339)
+			row[6] = field(start)
 		}
-		return c.Write([]string{s.Path(id), kind, strconv.FormatUint(n.Size, 10), strconv.FormatUint(n.Allocated, 10), strconv.FormatUint(uint64(n.Files), 10), strconv.FormatUint(uint64(n.Dirs), 10), modified, strconv.FormatBool(n.Flags&Shared != 0), strconv.FormatBool(n.Flags&Incomplete != 0)})
+		row[7] = strconv.FormatBool(n.Flags&Shared != 0)
+		row[8] = strconv.FormatBool(n.Flags&Incomplete != 0)
+		return c.Write(row)
 	})
 	if err != nil {
 		return err
 	}
 	c.Flush()
-	return c.Error()
+	if err := c.Error(); err != nil {
+		return err
+	}
+	return buffered.Flush()
 }

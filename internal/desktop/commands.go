@@ -139,6 +139,7 @@ func (a *App) can(id string) bool {
 
 // exec runs a command if it is currently available.
 func (a *App) exec(id string) {
+	a.invalidateSelections() // commands act on the exact selection
 	if a.can(id) {
 		a.cmds[id].run(a)
 		if a.win != nil {

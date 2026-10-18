@@ -3,6 +3,7 @@
 package platform
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -41,8 +42,10 @@ func RenameItem(path, newName string) (string, error) {
 	}
 	return target, os.Rename(path, target)
 }
-func FileTypeName(ext string) string { return "" }
-func ExplorerVerbInstalled() bool    { return false }
-func InstallExplorerVerb() error     { return errUnsupported }
-func RemoveExplorerVerb() error      { return errUnsupported }
-func AttachParentConsole() bool      { return true }
+func FileTypeName(ext string) string                          { return "" }
+func CachedFileTypeName(ext string) string                    { return "" }
+func ResolveFileTypeNames(ctx context.Context, exts []string) {}
+func ExplorerVerbInstalled() bool                             { return false }
+func InstallExplorerVerb() error                              { return errUnsupported }
+func RemoveExplorerVerb() error                               { return errUnsupported }
+func AttachParentConsole() bool                               { return true }

@@ -80,7 +80,7 @@ func (s *Snapshot) FindDuplicatesOver(ctx context.Context, root ID, minSize uint
 			}
 			opened, err := file.Stat()
 			node := s.Nodes[id]
-			if err != nil || !opened.Mode().IsRegular() || !os.SameFile(before, opened) || opened.Size() < 0 || uint64(opened.Size()) != node.Size || (node.Modified != 0 && opened.ModTime().Unix() != node.Modified) {
+			if err != nil || !opened.Mode().IsRegular() || !os.SameFile(before, opened) || opened.Size() < 0 || uint64(opened.Size()) != node.Size || (node.Modified != 0 && opened.ModTime().Unix() != node.ModTime()) {
 				file.Close()
 				result.Skipped++
 				continue

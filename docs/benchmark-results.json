@@ -1,39 +1,46 @@
 {
-  "date": "2026-10-16",
-  "platform": "windows/amd64",
-  "cpu": "Intel Core i5-12400F",
+  "date": "2026-10-18",
+  "platform": "windows/amd64, Windows 11",
+  "cpu": "Intel Core i5-12400F (6 cores, 12 threads)",
+  "drive": "KIOXIA EXCERIA PLUS G3 NVMe, C: NTFS 1 TB",
   "go_version": "1.27.2",
-  "mygo_version": "0.5.5",
-  "real_scan": {
-    "engine": "Directory scan",
-    "cache_condition": "warm, uncontrolled",
-    "workers": 4,
-    "elapsed_ms": 9778.48,
-    "files": 1047038,
-    "folders": 329581,
-    "index_bytes": 119160816,
-    "heap_bytes_after_gc": 120661616,
-    "errors": 124,
-    "hard_link_aliases": 120875
+  "method": "Baseline is 0.1.1 (commit 9db6966), optimized is 0.2.0. Runs alternate baseline and optimized; medians shown. Warm caches. Directory scans run outside any sandbox (filter drivers change their cost). Headless numbers come from scripts/bench.go, GUI numbers from the real Quarry.exe scanning C:\\ (time until results are shown, process working set and private bytes sampled every 50 ms, settled 8 s after results).",
+  "directory_scan_c": {
+    "entries": "1,092,397 files, 334,519 folders",
+    "baseline": { "elapsed_ms": 9480, "peak_working_set_mb": 447, "peak_private_mb": 488, "allocated_mb": 1148, "allocations": 4896799, "heap_after_gc_mb": 134 },
+    "optimized": { "elapsed_ms": 6692, "peak_working_set_mb": 279, "peak_private_mb": 329, "allocated_mb": 453, "allocations": 1609710, "heap_after_gc_mb": 103 }
   },
-  "synthetic": {
-    "million_record_index_ms": 36.3691,
-    "million_record_index_bytes": 76000000,
-    "million_file_search_ms": 6.5161,
-    "million_file_search_matches": 100000,
-    "million_file_search_filter": "ext:mp4 min:900KB",
-    "million_file_search_runs": 3,
-    "table_100k_rows_ms_per_frame": 0.5366,
-    "table_allocated_bytes_per_frame": 12168,
-    "table_measured_frames": 3,
-    "ntfs_parser_ns_per_record": 143.7,
-    "fuzz_inputs": 10758025
+  "mft_scan_c": {
+    "baseline": { "elapsed_ms": 2343, "files": 982235, "folders": 339166, "unresolved_records": 14755, "peak_working_set_mb": 360, "peak_private_mb": 400, "allocated_mb": 600, "allocations": 2294850, "heap_after_gc_mb": 121 },
+    "optimized": { "elapsed_ms": 1658, "files": 987358, "folders": 344162, "unresolved_records": 0, "peak_working_set_mb": 184, "peak_private_mb": 227, "allocated_mb": 177, "allocations": 26141, "heap_after_gc_mb": 100 },
+    "note": "The MFT is 1,420 MiB; raw volume reads top out near 1 GB/s on this drive, so about 1.4 s is the floor. Baseline lost 14,755 records whose folder's name is stored in an MFT extension record (C:\\Windows\\WinSxS among them) and listed them at the root as unresolved."
+  },
+  "gui_end_to_end_c": {
+    "directory_scan": {
+      "baseline": { "results_shown_ms": 9558, "peak_working_set_mb": 514, "peak_private_mb": 558, "settled_working_set_mb": 439, "settled_private_mb": 484 },
+      "optimized": { "results_shown_ms": 6895, "peak_working_set_mb": 288, "peak_private_mb": 335, "settled_working_set_mb": 180, "settled_private_mb": 226 }
+    },
+    "mft_scan_as_administrator": {
+      "baseline": { "results_shown_ms": 2880, "peak_working_set_mb": 445, "peak_private_mb": 493, "settled_working_set_mb": 391, "settled_private_mb": 438 },
+      "optimized": { "results_shown_ms": 2089, "peak_working_set_mb": 217, "peak_private_mb": 265, "settled_working_set_mb": 172, "settled_private_mb": 221 }
+    }
+  },
+  "ui_on_c_mft_snapshot": {
+    "source": "TestPerfReport, 1,310,435 entries, 1600x1000 headless frames (layout, shaping, painting; no GPU presentation)",
+    "baseline_ms": { "extensions_view": 1587, "file_view_all_files": 377, "file_sort_name": 767, "file_sort_extension": 1169, "file_sort_folder": 741, "file_sort_modified": 246, "search_wildcard_dll": 235, "search_folders": 147, "frame_with_965k_selected": 281, "menu_refresh_with_965k_selected": 9013, "install_scan": 122, "remove_folder": 118 },
+    "optimized_ms": { "extensions_view": 65, "file_view_all_files": 107, "file_sort_name": 297, "file_sort_extension": 182, "file_sort_folder": 423, "file_sort_modified": 91, "search_wildcard_dll": 49, "search_folders": 72, "frame_with_965k_selected": 10, "menu_refresh_with_965k_selected": 12, "install_scan": 13, "remove_folder": 63 },
+    "heap_mb": { "baseline_after_load": 187, "optimized_after_load": 107, "baseline_after_all_steps": 298, "optimized_after_all_steps": 208, "index_baseline": 105, "index_optimized": 95 },
+    "frames": "Idle, scrolling, 200,000-row tree and treemap-hover frames stay at 0-2 ms median (worst 10-12 ms) in both versions; per-frame allocation fell 20-30%."
+  },
+  "index_operations_on_c_mft_snapshot_ms": {
+    "all_files_sorted_by_size": [342, 73], "sort_by_name": [715, 266], "sort_by_modified": [216, 66],
+    "search_star_log": [213, 33], "search_substring": [95, 81], "search_path_node_modules": [122, 97],
+    "snapshot_save": [767, 144], "snapshot_load": [555, 428], "export_csv": [1240, 441], "path_100k": [70, 40], "clone": [6.6, 4.9],
+    "note": "[baseline, optimized]. CSV export allocations fell from 605 MB / 12.3 M to 5.7 MB / 82 K; snapshot save from 71 MB to 16 MB."
   },
   "limitations": [
-    "Single machine; timing and cache conditions vary.",
-    "Index bytes exclude UI, GPU and transient maps.",
-    "Headless frame costs exclude native presentation.",
-    "Physical NTFS MFT path requires elevated real-volume validation.",
+    "Single machine; NVMe throughput varied by up to 30% between sessions, so only same-session alternating runs are compared.",
+    "Headless frame costs exclude GPU presentation.",
     "No same-machine WizTree benchmark was performed."
   ]
 }

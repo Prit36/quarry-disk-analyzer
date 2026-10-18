@@ -55,17 +55,22 @@ func (s *Snapshot) Save(ctx context.Context, path string) error {
 		return err
 	}
 	defer os.Remove(file.Name())
-	compressed, _ := gzip.NewWriterLevel(file, gzip.BestSpeed)
+	compressed := newParallelGzip(file)
 	header := snapshotHeader{Magic: snapshotMagic, Records: uint32(len(s.Nodes)), Names: uint32(len(s.Names)), Metadata: uint32(len(metadata))}
 	err = binary.Write(compressed, binary.LittleEndian, header)
 	if err == nil {
 		_, err = compressed.Write(metadata)
 	}
-	for start := 0; err == nil && start < len(s.Nodes); start += 1024 {
+	encoded := make([]byte, 0, nodeBatch*nodeRecord)
+	for start := 0; err == nil && start < len(s.Nodes); start += nodeBatch {
 		if err = ctx.Err(); err != nil {
 			break
 		}
-		err = binary.Write(compressed, binary.LittleEndian, s.Nodes[start:min(start+1024, len(s.Nodes))])
+		encoded = encoded[:0]
+		for i := range s.Nodes[start:min(start+nodeBatch, len(s.Nodes))] {
+			encoded = appendNode(encoded, &s.Nodes[start+i])
+		}
+		_, err = compressed.Write(encoded)
 	}
 	if err == nil {
 		_, err = compressed.Write(s.Names)
@@ -118,12 +123,18 @@ func LoadSnapshot(ctx context.Context, path string) (*Snapshot, error) {
 		return nil, err
 	}
 	snapshot := &Snapshot{Root: info.Root, Engine: info.Engine, Fallback: info.Fallback, Started: info.Started, Elapsed: info.Elapsed, Cancelled: info.Cancelled, Errors: info.Errors, SkippedLinks: info.SkippedLinks, HardLinks: info.HardLinks, Unresolved: info.Unresolved, Issues: info.Issues, Exclusions: info.Exclusions, Excluded: info.Excluded, Nodes: make([]Node, header.Records), Names: make([]byte, header.Names)}
-	for start := 0; start < len(snapshot.Nodes); start += 1024 {
+	encoded := make([]byte, nodeBatch*nodeRecord)
+	for start := 0; start < len(snapshot.Nodes); start += nodeBatch {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if err := binary.Read(compressed, binary.LittleEndian, snapshot.Nodes[start:min(start+1024, len(snapshot.Nodes))]); err != nil {
+		nodes := snapshot.Nodes[start:min(start+nodeBatch, len(snapshot.Nodes))]
+		b := encoded[:len(nodes)*nodeRecord]
+		if _, err := io.ReadFull(compressed, b); err != nil {
 			return nil, err
+		}
+		for i := range nodes {
+			nodes[i] = decodeNode(b[i*nodeRecord:])
 		}
 	}
 	if _, err := io.ReadFull(compressed, snapshot.Names); err != nil {

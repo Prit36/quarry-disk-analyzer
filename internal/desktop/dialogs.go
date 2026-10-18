@@ -340,7 +340,7 @@ func (a *App) dialogs(c *ui.Context, pal palette) {
 			if a.snap == nil {
 				return
 			}
-			s, root := a.base, a.base.Nodes[0]
+			s, root := a.base, a.scanTotals()
 			line := func(k, v string) {
 				ui.Row(c).Gap(8).Children(func() {
 					ui.Text(c, k).Width(170).TextColor(t.TextMuted)
@@ -451,7 +451,7 @@ func (a *App) dialogs(c *ui.Context, pal palette) {
 }
 
 // Version is set by main.
-var Version = "0.1.1"
+var Version = "0.2.0"
 
 func (s *searchDialog) query() string {
 	var parts []string
@@ -717,7 +717,7 @@ func (a *App) duplicatesDialog(c *ui.Context, pal palette) {
 					case 2:
 						ui.Text(c, a.size(s.Nodes[id].Size)).TextColor(t.TextMuted)
 					case 3:
-						ui.Text(c, dateText(s.Nodes[id].Modified)).TextColor(t.TextMuted)
+						ui.Text(c, dateText(s.Nodes[id].ModTime())).TextColor(t.TextMuted)
 					}
 				})
 			}).Grow(1).MinHeight(0).Border(1, t.Border)

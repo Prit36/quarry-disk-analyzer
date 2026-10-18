@@ -312,7 +312,7 @@ func (a *App) treeTable(c *ui.Context, pal palette) {
 				return []index.ID{id}
 			})
 			if clickSelect(cell, &tr.sel, &tr.cursor, row, func(i int) index.ID { return tr.rows[i].id }) {
-				tr.selValid = false
+				tr.selCache.invalidate()
 				a.focusTable = true
 			}
 			if cell.DoubleClicked() {
@@ -356,6 +356,7 @@ func (a *App) treeTable(c *ui.Context, pal palette) {
 		}
 	}).Grow(1).MinHeight(0).Background(pal.grid)
 	restore()
+	tr.selCache.checkpoint() // the table may have changed the selection
 	a.trackFocus(c, "tree", &tr.list)
 	if a.focusTable && a.prefs.View == viewTree {
 		if tr.list.Focus(c) {
@@ -441,7 +442,7 @@ func (a *App) treeCellText(id index.ID, col string) string {
 			return count(uint64(n.Dirs))
 		}
 	case "Modified":
-		return dateText(n.Modified)
+		return dateText(n.ModTime())
 	case "Extension":
 		if !n.IsDir() {
 			return strings.ToLower(strings.TrimPrefix(filepath.Ext(s.NameView(id)), "."))
@@ -496,7 +497,7 @@ func (a *App) fileTable(c *ui.Context, pal palette) {
 				return []index.ID{id}
 			})
 			if clickSelect(cell, &f.sel, &f.cursor, row, func(i int) index.ID { return f.ids[i] }) {
-				f.selValid = false
+				f.selCache.invalidate()
 				a.focusTable = true
 			}
 			if cell.DoubleClicked() {
@@ -532,6 +533,7 @@ func (a *App) fileTable(c *ui.Context, pal palette) {
 		}
 	})
 	restore()
+	f.selCache.checkpoint() // the table may have changed the selection
 	a.trackFocus(c, "files", &f.list)
 	if a.focusTable && a.prefs.View == viewFiles {
 		if f.list.Focus(c) {
@@ -593,7 +595,7 @@ func (a *App) extTable(c *ui.Context, pal palette) {
 				ui.Box(c).Size(10, 10).Radius(2).Background(a.extColor(ft.Extension)).Shrink(0)
 				ui.Text(c, ft.Extension).SingleLine()
 			case 1:
-				ui.Text(c, platform.FileTypeName(ft.Extension)).TextColor(t.TextMuted).SingleLine()
+				ui.Text(c, platform.CachedFileTypeName(ft.Extension)).TextColor(t.TextMuted).SingleLine()
 			case 2:
 				ui.Text(c, count(ft.Count)).TextColor(t.TextMuted)
 			case 3:

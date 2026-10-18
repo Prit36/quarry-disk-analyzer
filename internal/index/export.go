@@ -24,6 +24,7 @@ func (s *Snapshot) ExportJSON(ctx context.Context, writer io.Writer, root ID) er
 		return err
 	}
 	encoder := json.NewEncoder(writer)
+	walker := s.newPathWalker()
 	first := true
 	err = s.Visit(ctx, root, func(id ID) error {
 		if !first {
@@ -39,7 +40,7 @@ func (s *Snapshot) ExportJSON(ctx context.Context, writer io.Writer, root ID) er
 			Files, Folders  uint32
 			Modified        int64
 			Flags           uint16
-		}{s.Path(id), s.NameView(id), node.Size, node.Allocated, node.Files, node.Dirs, node.Modified, node.Flags})
+		}{walker.path(id), s.NameView(id), node.Size, node.Allocated, node.Files, node.Dirs, node.ModTime(), node.Flags})
 	})
 	if err != nil {
 		return err

@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"unsafe"
 
 	"quarry/internal/index"
 )
@@ -65,7 +66,9 @@ func Run(ctx context.Context, root string, opts Options, p *Progress) (*index.Sn
 		return nil, fmt.Errorf("choose the real folder, rather than a symbolic link")
 	}
 	if opts.Workers <= 0 {
-		opts.Workers = min(4, max(1, runtime.NumCPU()/2))
+		// Directory queries are bound by kernel and filter-driver work per
+		// folder, which scales to about eight concurrent queries on SSDs.
+		opts.Workers = min(8, max(2, runtime.NumCPU()))
 	}
 	opts.Workers = min(16, opts.Workers)
 	var fallback string
@@ -105,39 +108,71 @@ func Run(ctx context.Context, root string, opts Options, p *Progress) (*index.Sn
 	return s, err
 }
 
+// entry is one directory record; its name lives in the batch's arena.
 type entry struct {
-	name            string
 	size, allocated uint64
 	modified        int64
 	fileID          uint64
+	nameOff         uint32
+	nameLen         uint16
 	flags           uint16
 }
+
+// task is a folder to enumerate.
 type task struct {
 	id   index.ID
 	path string
 }
-type batch struct {
-	parent  index.ID
-	path    string
-	entries []entry
-	err     error
-	done    bool
+
+type result struct {
+	task  task
+	batch *dirBatch
+	err   error
+	done  bool
 }
 
-var entryBatches = sync.Pool{New: func() any { return make([]entry, 0, 256) }}
+// dirBatch carries up to batchSize entries of one folder, with their names
+// decoded into one arena, from a worker to the coordinator. Batches are
+// pooled, so a scan allocates per batch, not per name.
+type dirBatch struct {
+	entries []entry
+	names   []byte
+}
 
-func acquireEntries() []entry        { return entryBatches.Get().([]entry)[:0] }
-func releaseEntries(entries []entry) { clear(entries); entryBatches.Put(entries[:0]) }
+const batchSize = 256
+
+var batches = sync.Pool{New: func() any { return &dirBatch{entries: make([]entry, 0, batchSize), names: make([]byte, 0, 8<<10)} }}
+
+func acquireBatch() *dirBatch { return batches.Get().(*dirBatch) }
+func releaseBatch(b *dirBatch) {
+	b.entries, b.names = b.entries[:0], b.names[:0]
+	batches.Put(b)
+}
+
+func (b *dirBatch) add(e entry, name string) {
+	e.nameOff = uint32(len(b.names))
+	b.names = append(b.names, name...)
+	e.nameLen = uint16(len(name))
+	b.entries = append(b.entries, e)
+}
+
+// name borrows the batch's arena; it is valid until the batch is released.
+func (b *dirBatch) name(e *entry) string {
+	if e.nameLen == 0 {
+		return ""
+	}
+	return unsafe.String(&b.names[e.nameOff], int(e.nameLen))
+}
 
 // A single coordinator owns the index. Workers only enumerate directories.
 // At most two buffered batches per worker, with 256 records in each batch.
 func walk(ctx context.Context, root string, opts Options, p *Progress) (*index.Snapshot, error) {
-	s := index.New(root)
-	s.Engine = "Directory scan"
+	b := index.NewBuilder(root)
+	b.Engine = "Directory scan"
 	excl := NewExclusions(opts.Exclude)
-	s.Exclusions = excl.Patterns()
+	b.Exclusions = excl.Patterns()
 	jobs := make(chan task)
-	results := make(chan batch, opts.Workers*2)
+	results := make(chan result, opts.Workers*2)
 	workerCtx, cancel := context.WithCancel(ctx)
 	var workers sync.WaitGroup
 	for range opts.Workers {
@@ -145,17 +180,17 @@ func walk(ctx context.Context, root string, opts Options, p *Progress) (*index.S
 		go func() {
 			defer workers.Done()
 			for t := range jobs {
-				err := enumerate(workerCtx, t.path, func(entries []entry) error {
+				err := enumerate(workerCtx, t.path, func(batch *dirBatch) error {
 					select {
-					case results <- batch{parent: t.id, path: t.path, entries: entries}:
+					case results <- result{task: t, batch: batch}:
 						return nil
 					case <-workerCtx.Done():
-						releaseEntries(entries)
+						releaseBatch(batch)
 						return workerCtx.Err()
 					}
 				})
 				select {
-				case results <- batch{parent: t.id, path: t.path, err: err, done: true}:
+				case results <- result{task: t, err: err, done: true}:
 				case <-workerCtx.Done():
 					return
 				}
@@ -165,7 +200,7 @@ func walk(ctx context.Context, root string, opts Options, p *Progress) (*index.S
 	defer func() { cancel(); close(jobs); workers.Wait() }()
 	pending := []task{{0, root}}
 	head, active := 0, 0
-	seen := make(map[uint64]index.ID)
+	identities := make([]identity, 0, 1<<16)
 	for head < len(pending) || active > 0 {
 		var send chan task
 		var next task
@@ -175,8 +210,10 @@ func walk(ctx context.Context, root string, opts Options, p *Progress) (*index.S
 		}
 		select {
 		case <-ctx.Done():
-			s.Cancelled = true
+			b.Cancelled = true
 			p.Phase.Store("Finalizing partial scan")
+			s := b.Build()
+			markHardLinks(s, identities)
 			s.Finalize()
 			return s, nil
 		case send <- next:
@@ -188,61 +225,120 @@ func walk(ctx context.Context, root string, opts Options, p *Progress) (*index.S
 				pending = pending[:len(pending)-head]
 				head = 0
 			}
-		case b := <-results:
-			if b.done {
+		case r := <-results:
+			t := r.task
+			if r.done {
 				active--
-				if b.err != nil && !errors.Is(b.err, context.Canceled) {
-					s.Nodes[b.parent].Flags |= index.Incomplete
-					s.AddIssue(b.path, b.err)
+				if r.err != nil && !errors.Is(r.err, context.Canceled) {
+					b.Node(t.id).Flags |= index.Incomplete
+					b.AddIssue(t.path, r.err)
 					p.Errors.Add(1)
 				}
 				continue
 			}
-			for _, e := range b.entries {
+			batch := r.batch
+			var files, folders, bytes uint64
+			for i := range batch.entries {
+				e := &batch.entries[i]
+				name := batch.name(e)
+				dir := e.flags&index.Directory != 0
 				if !excl.Empty() {
 					full := ""
-					if e.flags&index.Directory != 0 {
-						full = filepath.Join(b.path, e.name)
+					if dir && excl.needsPaths() {
+						full = filepath.Join(t.path, name)
 					}
-					if excl.Match(e.name, full, e.flags&index.Directory != 0) {
-						s.Excluded++
+					if excl.Match(name, full, dir) {
+						b.Excluded++
 						continue
 					}
 				}
 				if e.flags&index.Incomplete != 0 {
-					s.AddIssue(filepath.Join(b.path, e.name), fmt.Errorf("allocation metadata unavailable"))
+					b.AddIssue(filepath.Join(t.path, name), fmt.Errorf("allocation metadata unavailable"))
 					p.Errors.Add(1)
 				}
-				if e.flags&index.Directory == 0 && e.fileID != 0 {
-					if _, ok := seen[e.fileID]; ok {
-						e.flags |= index.Shared
-						e.size = 0
-						e.allocated = 0
-						s.HardLinks++
-					}
-				}
-				id := s.Add(b.parent, e.name, e.size, e.allocated, e.modified, e.flags)
-				if e.flags&index.Directory != 0 {
-					p.Folders.Add(1)
+				id := b.Add(t.id, name, e.size, e.allocated, e.modified, e.flags)
+				if dir {
+					folders++
 					if e.flags&index.Reparse != 0 {
-						s.SkippedLinks++
-					} else {
-						pending = append(pending, task{id, filepath.Join(b.path, e.name)})
+						b.SkippedLinks++
+						continue
 					}
+					pending = append(pending, task{id, filepath.Join(t.path, name)})
 				} else {
-					if e.fileID != 0 && e.flags&index.Shared == 0 {
-						seen[e.fileID] = id
+					if e.fileID != 0 {
+						identities = append(identities, identity{e.fileID, id})
 					}
-					p.Files.Add(1)
-					p.Bytes.Add(e.size)
+					files++
+					bytes += e.size
 				}
 			}
-			releaseEntries(b.entries)
+			p.Files.Add(files)
+			p.Folders.Add(folders)
+			p.Bytes.Add(bytes)
+			releaseBatch(batch)
 		}
 	}
 	p.Phase.Store("Aggregating sizes")
+	s := b.Build()
+	markHardLinks(s, identities)
 	s.Finalize()
 	return s, nil
+}
+
+// identity pairs a file's volume file ID with its entry.
+type identity struct {
+	file uint64
+	id   index.ID
+}
+
+// markHardLinks finds files listed under several names (hard links) and
+// counts each file once: every name after the first seen keeps its entry,
+// marked Shared, without bytes. Sorting a flat list after the scan needs a
+// fraction of the memory of a hash set of every file ID held during it.
+func markHardLinks(s *index.Snapshot, ids []identity) {
+	radixSort(ids)
+	for i := 1; i < len(ids); i++ {
+		if ids[i].file == ids[i-1].file {
+			n := &s.Nodes[ids[i].id]
+			n.Flags |= index.Shared
+			n.Size, n.Allocated = 0, 0
+			s.HardLinks++
+		}
+	}
+}
+
+// radixSort orders identities by file ID in four stable 16-bit passes, so
+// names of one file stay in the order they were added (by entry ID).
+func radixSort(ids []identity) {
+	if len(ids) < 2 {
+		return
+	}
+	tmp := make([]identity, len(ids))
+	counts := make([]int, 1<<16)
+	src, dst := ids, tmp
+	for shift := uint(0); shift < 64; shift += 16 {
+		clear(counts)
+		for _, v := range src {
+			counts[v.file>>shift&0xffff]++
+		}
+		if counts[src[0].file>>shift&0xffff] == len(src) {
+			continue // every key shares this digit
+		}
+		sum := 0
+		for i, c := range counts {
+			counts[i] = sum
+			sum += c
+		}
+		for _, v := range src {
+			d := v.file >> shift & 0xffff
+			dst[counts[d]] = v
+			counts[d]++
+		}
+		src, dst = dst, src
+	}
+	if &src[0] != &ids[0] {
+		copy(ids, src)
+	}
 }
 
 func unixTime(windowsTime uint64) int64 { return int64(windowsTime/10000000) - 11644473600 }

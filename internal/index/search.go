@@ -50,7 +50,18 @@ type textMatcher struct {
 	wildcard bool
 	path     bool // matched against the full path
 	negate   bool
+	// shape and literal describe the common wildcard patterns ("*.mp4",
+	// "backup*", "*cache*") that match ASCII names without backtracking.
+	shape   uint8
+	literal string
 }
+
+const (
+	shapeGeneral = iota
+	shapePrefix
+	shapeSuffix
+	shapeContains
+)
 
 // Filter is a compiled search. The zero Filter matches everything.
 type Filter struct {
@@ -227,7 +238,50 @@ func tokenize(text string) ([]string, error) {
 
 func newMatcher(value string, negate bool) textMatcher {
 	lower := strings.ToLower(value)
-	return textMatcher{text: lower, wildcard: strings.ContainsAny(lower, "*?"), negate: negate}
+	m := textMatcher{text: lower, wildcard: strings.ContainsAny(lower, "*?"), negate: negate}
+	if m.wildcard && !strings.Contains(lower, "?") && isASCII(lower) {
+		inner := strings.Trim(lower, "*")
+		if !strings.Contains(inner, "*") {
+			starts, ends := strings.HasPrefix(lower, "*"), strings.HasSuffix(lower, "*")
+			switch {
+			case starts && ends:
+				m.shape = shapeContains
+			case starts:
+				m.shape = shapeSuffix
+			case ends:
+				m.shape = shapePrefix
+			}
+			m.literal = inner
+		}
+	}
+	return m
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
+}
+
+// equalFoldASCII compares s with an ASCII lower-case literal, folding
+// s's ASCII upper case; it reports false for non-ASCII s.
+func equalFoldASCII(s, lower string) bool {
+	if len(s) != len(lower) {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		if b >= 'A' && b <= 'Z' {
+			b += 32
+		}
+		if b != lower[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (f *Filter) addTerm(value string, negate bool) {
@@ -400,7 +454,7 @@ func (f *Filter) MatchNode(name string, n Node, path func() string, ancestor boo
 	if f.hasMinimum && n.Size < f.minimum || f.hasMaximum && n.Size > f.maximum {
 		return false
 	}
-	if (f.hasAfter || f.hasBefore) && (n.Modified == 0 || f.hasAfter && n.Modified < f.after || f.hasBefore && n.Modified >= f.before) {
+	if (f.hasAfter || f.hasBefore) && (n.Modified == 0 || f.hasAfter && n.ModTime() < f.after || f.hasBefore && n.ModTime() >= f.before) {
 		return false
 	}
 	if len(f.extensions) > 0 {
@@ -453,6 +507,29 @@ func (f *Filter) MatchPathComponent(name string) bool {
 
 func (t textMatcher) match(s string) bool {
 	if t.wildcard {
+		// A non-ASCII character can fold to an ASCII one (the Kelvin sign
+		// to k), so the shortcuts only decide over ASCII text.
+		n := len(t.literal)
+		switch t.shape {
+		case shapeSuffix:
+			if len(s) < n {
+				return false
+			}
+			if tail := s[len(s)-n:]; isASCII(tail) {
+				return equalFoldASCII(tail, t.literal)
+			}
+		case shapePrefix:
+			if len(s) < n {
+				return false
+			}
+			if head := s[:n]; isASCII(head) {
+				return equalFoldASCII(head, t.literal)
+			}
+		case shapeContains:
+			if isASCII(s) {
+				return containsFold(s, t.literal)
+			}
+		}
 		return wildcardFold(t.text, s)
 	}
 	return containsFold(s, t.text)

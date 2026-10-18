@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -40,11 +39,11 @@ func (a *App) current() index.ID {
 	}
 	switch a.prefs.View {
 	case viewTree:
-		if id := a.tree.cursorID(); slices.Contains(ids, id) {
+		if id := a.tree.cursorID(); id != index.None && a.tree.sel.Has(id) && (len(ids) > 1 || ids[0] == id) {
 			return id
 		}
 	case viewFiles:
-		if id := a.files.cursorID(); slices.Contains(ids, id) {
+		if id := a.files.cursorID(); id != index.None && a.files.sel.Has(id) && (len(ids) > 1 || ids[0] == id) {
 			return id
 		}
 	}
@@ -58,15 +57,10 @@ func (a *App) currentIsDir() bool {
 
 // allPaths reports whether every selected entry is an ordinary file or
 // folder that Windows can open. NTFS metadata ($MFT, $BadClus, …) has a
-// name in the index but no path the shell accepts.
-func (a *App) allPaths() bool {
-	for _, id := range a.selected() {
-		if a.pathOf(id) == "" || a.snap.IsMetadata(id) {
-			return false
-		}
-	}
-	return true
-}
+// name in the index but no path the shell accepts, and IsMetadata also
+// covers entries without a resolved path. Cached per selection: menus ask
+// on every frame.
+func (a *App) allPaths() bool { return a.facts().onDisk }
 
 func (a *App) paths(ids []index.ID) []string {
 	out := make([]string, 0, len(ids))
@@ -80,11 +74,23 @@ func (a *App) paths(ids []index.ID) []string {
 
 // topLevel drops entries already covered by a selected ancestor.
 func (a *App) topLevel(ids []index.ID) []index.ID {
-	set := make(map[index.ID]bool, len(ids))
-	for _, id := range ids {
-		set[id] = true
+	if len(ids) < 2 {
+		return ids
 	}
-	var out []index.ID
+	// Only folders can cover other entries.
+	var set []bool
+	for _, id := range ids {
+		if a.snap.Nodes[id].IsDir() {
+			if set == nil {
+				set = make([]bool, len(a.snap.Nodes))
+			}
+			set[id] = true
+		}
+	}
+	if set == nil {
+		return ids
+	}
+	out := make([]index.ID, 0, len(ids))
 	for _, id := range ids {
 		covered := false
 		for p := a.snap.Nodes[id].Parent; p != index.None; p = a.snap.Nodes[p].Parent {
@@ -316,7 +322,7 @@ func (a *App) copyRows() {
 		if n.IsDir() {
 			files, dirs = strconv.FormatUint(uint64(n.Files), 10), strconv.FormatUint(uint64(n.Dirs), 10)
 		}
-		lines = append(lines, strings.Join([]string{a.name(id), a.pathOf(id), strconv.FormatUint(n.Size, 10), strconv.FormatUint(n.Allocated, 10), files, dirs, dateText(n.Modified)}, "\t"))
+		lines = append(lines, strings.Join([]string{a.name(id), a.pathOf(id), strconv.FormatUint(n.Size, 10), strconv.FormatUint(n.Allocated, 10), files, dirs, dateText(n.ModTime())}, "\t"))
 	}
 	a.copyText(lines, plural(uint64(len(lines)-1), "row", "rows"))
 }

@@ -31,8 +31,8 @@ type treeModel struct {
 	sort   ui.SortOrder
 	notice string
 
-	selCache []index.ID
-	selValid bool
+	selCache selectionCache
+	rowsGen  uint64 // changes whenever rows change
 }
 
 func (t *treeModel) init(a *App) {
@@ -46,11 +46,12 @@ func (t *treeModel) reset() {
 	cols := t.list.Columns
 	t.list = ui.ListState{Columns: cols}
 	t.rows, t.kids = nil, nil
+	t.rowsGen++
 	t.open = map[index.ID]bool{0: true}
 	t.sel.Clear()
 	t.cursor = -1
 	t.notice = ""
-	t.selValid = false
+	t.selCache.invalidate()
 }
 
 func (t *treeModel) snap() *index.Snapshot { return t.a.snap }
@@ -111,6 +112,7 @@ func (t *treeModel) descendants(id index.ID, depth int32, out []treeRow, budget 
 func (t *treeModel) rebuild() {
 	if t.snap() == nil {
 		t.rows = nil
+		t.rowsGen++
 		return
 	}
 	cid := t.cursorID()
@@ -120,8 +122,9 @@ func (t *treeModel) rebuild() {
 		rows = t.descendants(loc, 1, rows, 1<<30)
 	}
 	t.rows = rows
+	t.rowsGen++
 	t.restoreCursor(cid)
-	t.selValid = false
+	t.selCache.invalidate()
 }
 
 func (t *treeModel) dataChanged() {
@@ -175,7 +178,7 @@ func (t *treeModel) selectOnly(id index.ID) bool {
 	t.sel.Clear()
 	t.sel.Add(id)
 	t.cursor = i
-	t.selValid = false
+	t.selCache.invalidate()
 	t.list.ScrollIntoView(i)
 	return true
 }
@@ -184,30 +187,27 @@ func (t *treeModel) selectAll() {
 	for _, r := range t.rows {
 		t.sel.Add(r.id)
 	}
-	t.selValid = false
+	t.selCache.invalidate()
 }
 
-// selectedIDs lists selected rows in display order (cached per frame).
+// selectedIDs lists selected rows in display order (cached, see selectionCache).
 func (t *treeModel) selectedIDs() []index.ID {
-	if t.selValid {
-		return t.selCache
-	}
-	t.selCache = t.selCache[:0]
-	if n := t.sel.Len(); n == 1 {
-		for id := range t.sel.All() {
-			if t.snap().Reachable(id) {
-				t.selCache = append(t.selCache, id)
+	return t.selCache.get(&t.sel, t.rowsGen, t.snap(), func(out []index.ID) []index.ID {
+		if n := t.sel.Len(); n == 1 {
+			for id := range t.sel.All() {
+				if t.snap().Reachable(id) {
+					out = append(out, id)
+				}
+			}
+		} else if n > 1 {
+			for _, r := range t.rows {
+				if t.sel.Has(r.id) {
+					out = append(out, r.id)
+				}
 			}
 		}
-	} else if n > 1 {
-		for _, r := range t.rows {
-			if t.sel.Has(r.id) {
-				t.selCache = append(t.selCache, r.id)
-			}
-		}
-	}
-	t.selValid = true
-	return t.selCache
+		return out
+	})
 }
 
 // Expand and collapse.
@@ -232,8 +232,9 @@ func (t *treeModel) expandRow(i int) {
 	t.open[r.id] = true
 	sub := t.descendants(r.id, r.depth+1, nil, 1<<30)
 	t.rows = slices.Insert(t.rows, i+1, sub...)
+	t.rowsGen++
 	t.restoreCursor(cid)
-	t.selValid = false
+	t.selCache.invalidate()
 }
 
 // collapseRow hides a folder's rows. A selected row that disappears moves
@@ -260,11 +261,12 @@ func (t *treeModel) collapseRow(i int) {
 		cid, hidden = r.id, true
 	}
 	t.rows = slices.Delete(t.rows, i+1, end)
+	t.rowsGen++
 	if hidden {
 		t.sel.Add(r.id)
 	}
 	t.restoreCursor(cid)
-	t.selValid = false
+	t.selCache.invalidate()
 }
 
 func (t *treeModel) expandSubtree(id index.ID) {

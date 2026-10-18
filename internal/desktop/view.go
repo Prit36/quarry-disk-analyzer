@@ -19,7 +19,8 @@ func (a *App) view(c *ui.Context) {
 	}
 	t, pal := a.appTheme()
 	c.SetTheme(t)
-	a.tree.selValid, a.files.selValid = false, false
+	a.tree.selCache.checkpoint()
+	a.files.selCache.checkpoint()
 	a.hover, a.hoverOther = index.None, false
 	a.syncMenu()
 	a.shortcuts(c)
@@ -608,11 +609,7 @@ func (a *App) statusBar(c *ui.Context, pal palette) {
 		}
 		ui.Spacer(c)
 		if ids := a.selected(); len(ids) > 0 && a.snap != nil {
-			var total uint64
-			for _, id := range a.topLevel(ids) {
-				total += a.metric(a.snap.Nodes[id])
-			}
-			ui.Text(c, fmt.Sprintf("%s selected · %s", count(uint64(len(ids))), a.size(total))).TextColor(t.TextMuted).SingleLine()
+			ui.Text(c, fmt.Sprintf("%s selected · %s", count(uint64(len(ids))), a.size(a.facts().total))).TextColor(t.TextMuted).SingleLine()
 		}
 		if a.snap != nil {
 			s := a.snap

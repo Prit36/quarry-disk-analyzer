@@ -31,18 +31,43 @@ func extendedPath(path string) string {
 	}
 	return `\\?\` + path
 }
+
+const directoryAccess = windows.FILE_LIST_DIRECTORY
+const shareAll = windows.FILE_SHARE_READ | windows.FILE_SHARE_WRITE | windows.FILE_SHARE_DELETE
+const directoryFlags = windows.FILE_FLAG_BACKUP_SEMANTICS | windows.FILE_FLAG_OPEN_REPARSE_POINT
+
+var pathBuffers = sync.Pool{New: func() any { b := make([]uint16, 0, 512); return &b }}
+
+// openDirectory encodes the extended-length path into a pooled UTF-16
+// buffer: one folder open allocates nothing.
 func openDirectory(path string) (windows.Handle, error) {
-	p, err := windows.UTF16PtrFromString(extendedPath(path))
-	if err != nil {
-		return 0, err
+	if strings.IndexByte(path, 0) >= 0 {
+		return 0, windows.ERROR_INVALID_NAME
 	}
-	return windows.CreateFile(p, windows.FILE_LIST_DIRECTORY, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil, windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	buffer := pathBuffers.Get().(*[]uint16)
+	defer pathBuffers.Put(buffer)
+	p := (*buffer)[:0]
+	switch {
+	case strings.HasPrefix(path, `\\?\`):
+	case strings.HasPrefix(path, `\\`):
+		p = utf16.AppendRune(append(p, '\\', '\\', '?', '\\', 'U', 'N', 'C'), '\\')
+		path = path[2:]
+	default:
+		p = append(p, '\\', '\\', '?', '\\')
+	}
+	for _, r := range path {
+		p = utf16.AppendRune(p, r)
+	}
+	p = append(p, 0)
+	*buffer = p
+	return windows.CreateFile(&p[0], directoryAccess, shareAll, nil, windows.OPEN_EXISTING, directoryFlags, 0)
 }
 
 // FILE_ID_BOTH_DIR_INFO returns size, allocated size and file identity in one
 // directory syscall, avoiding stat/open per file. The OS fills a reusable 64 KiB
-// buffer; only bounded batches and retained names cross to the coordinator.
-func enumerate(ctx context.Context, path string, emit func([]entry) error) error {
+// buffer; names are decoded straight into the batch's arena, and only bounded
+// batches cross to the coordinator.
+func enumerate(ctx context.Context, path string, emit func(*dirBatch) error) error {
 	h, err := openDirectory(path)
 	if err != nil {
 		return err
@@ -67,19 +92,24 @@ func enumerate(ctx context.Context, path string, emit func([]entry) error) error
 			return callErr
 		}
 		class = 10
-		entries := acquireEntries()
+		batch := acquireBatch()
 		for off := 0; ; {
 			if off+104 > len(b) {
+				releaseBatch(batch)
 				return fmt.Errorf("truncated directory metadata")
 			}
 			r := b[off:]
 			next := int(binary.LittleEndian.Uint32(r))
 			length := int(binary.LittleEndian.Uint32(r[60:]))
 			if length%2 != 0 || length > len(r)-104 {
+				releaseBatch(batch)
 				return fmt.Errorf("invalid directory name length")
 			}
-			name := string(utf16.Decode(unsafe.Slice((*uint16)(unsafe.Pointer(&r[104])), length/2)))
-			if name != "." && name != ".." {
+			raw := r[104 : 104+length]
+			// "." and ".." are the only names starting with a dot that are
+			// one or two dots long.
+			dots := (length == 2 || length == 4) && raw[0] == '.' && raw[1] == 0 && (length == 2 || raw[2] == '.' && raw[3] == 0)
+			if !dots {
 				attrs := binary.LittleEndian.Uint32(r[56:])
 				flags := uint16(0)
 				if attrs&windows.FILE_ATTRIBUTE_DIRECTORY != 0 {
@@ -88,39 +118,43 @@ func enumerate(ctx context.Context, path string, emit func([]entry) error) error
 				if attrs&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
 					flags |= index.Reparse
 				}
-				e := entry{name: name, size: binary.LittleEndian.Uint64(r[40:]), allocated: binary.LittleEndian.Uint64(r[48:]), modified: unixTime(binary.LittleEndian.Uint64(r[24:])), fileID: binary.LittleEndian.Uint64(r[96:]), flags: flags}
+				e := entry{size: binary.LittleEndian.Uint64(r[40:]), allocated: binary.LittleEndian.Uint64(r[48:]), modified: unixTime(binary.LittleEndian.Uint64(r[24:])), fileID: binary.LittleEndian.Uint64(r[96:]), flags: flags}
 				if flags&index.Directory != 0 {
 					e.size, e.allocated = 0, 0
 				}
-				entries = append(entries, e)
-				if len(entries) == 256 {
-					if err := emit(entries); err != nil {
+				start := len(batch.names)
+				batch.names = index.AppendUTF16(batch.names, raw)
+				e.nameOff, e.nameLen = uint32(start), uint16(len(batch.names)-start)
+				batch.entries = append(batch.entries, e)
+				if len(batch.entries) == batchSize {
+					if err := emit(batch); err != nil {
 						return err
 					}
-					entries = acquireEntries()
+					batch = acquireBatch()
 				}
 			}
 			if next == 0 {
 				break
 			}
 			if next < 104 || next > len(b)-off {
+				releaseBatch(batch)
 				return fmt.Errorf("invalid directory record offset")
 			}
 			off += next
 		}
-		if len(entries) > 0 {
-			if err := emit(entries); err != nil {
+		if len(batch.entries) > 0 {
+			if err := emit(batch); err != nil {
 				return err
 			}
 		} else {
-			releaseEntries(entries)
+			releaseBatch(batch)
 		}
 	}
 }
 
 // Some SMB/FAT providers do not implement file-ID enumeration. Fall back to
 // bounded ReadDir plus FileStandardInfo; unknown allocation is disclosed.
-func enumerateFallback(ctx context.Context, path string, emit func([]entry) error) error {
+func enumerateFallback(ctx context.Context, path string, emit func(*dirBatch) error) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -130,14 +164,15 @@ func enumerateFallback(ctx context.Context, path string, emit func([]entry) erro
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		dirs, readErr := f.ReadDir(256)
-		entries := acquireEntries()
+		dirs, readErr := f.ReadDir(batchSize)
+		batch := acquireBatch()
 		for _, d := range dirs {
 			info, err := d.Info()
 			if err != nil {
+				releaseBatch(batch)
 				return err
 			}
-			e := entry{name: d.Name(), size: uint64(max(0, info.Size())), modified: info.ModTime().Unix()}
+			e := entry{size: uint64(max(0, info.Size())), modified: info.ModTime().Unix()}
 			if d.IsDir() {
 				e.flags |= index.Directory
 				e.size = 0
@@ -147,9 +182,10 @@ func enumerateFallback(ctx context.Context, path string, emit func([]entry) erro
 			}
 			p, err := windows.UTF16PtrFromString(extendedPath(filepath.Join(path, d.Name())))
 			if err != nil {
+				releaseBatch(batch)
 				return err
 			}
-			h, err := windows.CreateFile(p, windows.FILE_READ_ATTRIBUTES, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil, windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+			h, err := windows.CreateFile(p, windows.FILE_READ_ATTRIBUTES, shareAll, nil, windows.OPEN_EXISTING, directoryFlags, 0)
 			if err == nil {
 				var standard [3]uint64
 				ok, _, _ := getFileInfo.Call(uintptr(h), 1, uintptr(unsafe.Pointer(&standard[0])), 24)
@@ -169,14 +205,14 @@ func enumerateFallback(ctx context.Context, path string, emit func([]entry) erro
 			if e.flags&index.Directory != 0 {
 				e.allocated = 0
 			}
-			entries = append(entries, e)
+			batch.add(e, d.Name())
 		}
-		if len(entries) > 0 {
-			if err := emit(entries); err != nil {
+		if len(batch.entries) > 0 {
+			if err := emit(batch); err != nil {
 				return err
 			}
 		} else {
-			releaseEntries(entries)
+			releaseBatch(batch)
 		}
 		if readErr != nil {
 			if errors.Is(readErr, io.EOF) {

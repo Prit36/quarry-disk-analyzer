@@ -11,7 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -49,16 +49,18 @@ type App struct {
 
 	// Data. base is the authoritative index (updated by file operations);
 	// snap is what the views show: base, or a filtered copy with the same IDs.
-	base        *index.Snapshot
-	snap        *index.Snapshot
-	source      string          // snapshot file the data came from, "" for a live scan
-	stale       string          // why on-disk state may differ from the index
-	plain       *index.Snapshot // base without NTFS metadata (or base), for plainFor
-	plainFor    *index.Snapshot
-	plainHidden bool // plain was made with metadata hidden
-	filter      analysisFilter
-	filterBusy  bool
-	filterGen   uint64
+	base   *index.Snapshot
+	snap   *index.Snapshot
+	source string // snapshot file the data came from, "" for a live scan
+	stale  string // why on-disk state may differ from the index
+	// meta lists base's top-level NTFS metadata entries. While metaHidden,
+	// they are detached from base itself (index.Remove), so hiding them
+	// costs no second copy of the index; Restore brings them back.
+	meta       []index.ID
+	metaHidden bool
+	filter     analysisFilter
+	filterBusy bool
+	filterGen  uint64
 
 	// Navigation: one history shared by the tree and the treemap.
 	location index.ID
@@ -85,6 +87,8 @@ type App struct {
 	messageAt time.Time
 	errorMsg  bool
 
+	selFacts selectionFacts // cached facts about the active selection
+
 	dlg dialogs
 }
 
@@ -97,6 +101,11 @@ func isScanFile(path string) bool {
 
 // Run opens the main window. initial is a folder to scan or a .quarry file.
 func Run(initial string) error {
+	// Most of the heap is the scan index: large arrays without pointers,
+	// which a collection does not need to scan. Collecting when the heap
+	// has grown by a quarter instead of doubling costs little CPU and keeps
+	// the working set near the live data instead of up to twice it.
+	debug.SetGCPercent(25)
 	a := newApp()
 	mygo.App.WhenReady(func() {
 		a.setTheme(a.prefs.Theme) // also themes the native title bar and menus
@@ -226,11 +235,13 @@ func (a *App) startScan() {
 	progress, hide := a.progress, !a.prefs.ShowMetadata
 	go func() {
 		s, err := scan.Run(ctx, target, opts, progress)
-		var plain *index.Snapshot
+		var meta []index.ID
 		if err == nil {
-			plain = withoutMetadata(ctx, s, hide) // off the UI thread
+			meta = hideMetadata(s, hide) // off the UI thread
 		}
-		runtime.GC() // release scan buffers off the UI thread
+		// Return the scan's transient buffers to Windows now: otherwise the
+		// working set stays near the scan's peak until the runtime gets to it.
+		debug.FreeOSMemory()
 		drives := platform.Drives()
 		a.post(func() {
 			if gen != a.scanGen {
@@ -251,8 +262,7 @@ func (a *App) startScan() {
 			}
 			a.prefs.Recent = remember(a.prefs.Recent, s.Root, 12)
 			a.menu.recentChanged = true
-			a.plain, a.plainFor, a.plainHidden = plain, s, hide
-			a.setBase(s, "")
+			a.setBase(s, "", meta, hide)
 			switch {
 			case s.Cancelled:
 				a.notify("Scan stopped after %s. Results are partial.", duration(s.Elapsed))
@@ -325,9 +335,11 @@ func (a *App) restartElevated() {
 
 // Data ownership.
 
-// setBase installs a new scan or loaded snapshot and resets views.
-func (a *App) setBase(s *index.Snapshot, source string) {
+// setBase installs a new scan or loaded snapshot and resets views. meta
+// lists its NTFS metadata entries; hidden says they are already detached.
+func (a *App) setBase(s *index.Snapshot, source string, meta []index.ID, hidden bool) {
 	a.base, a.source, a.stale = s, source, ""
+	a.meta, a.metaHidden = meta, hidden && len(meta) > 0
 	a.target = s.Root
 	a.location, a.history, a.histPos = 0, []index.ID{0}, 0
 	a.tree.reset()
@@ -355,46 +367,49 @@ func (a *App) replaceBase(s *index.Snapshot) {
 	a.applyFilter()
 }
 
-// applyFilter derives the view snapshot from base and the analysis filter.
+// applyFilter derives the view snapshot from base: NTFS metadata detached
+// or attached as the option says, then the analysis filter.
 func (a *App) applyFilter() {
 	a.filterGen++
 	if a.base == nil {
 		return
 	}
-	// plain is base without NTFS metadata, unless it is shown; the analysis
-	// filter applies on top of it.
 	hide := !a.prefs.ShowMetadata
-	ready := a.plainFor == a.base && a.plainHidden == hide && a.plain != nil
-	if !ready && (!hide || !hasMetadata(a.base)) {
-		a.plain, a.plainFor, a.plainHidden, ready = a.base, a.base, hide, true
-	}
-	if ready && !a.filter.active() {
+	toggle := len(a.meta) > 0 && a.metaHidden != hide
+	if !toggle && !a.filter.active() {
 		a.filter.stats = index.FilterStats{}
 		a.filterBusy = false
-		a.setView(a.plain)
+		a.setView(a.base)
 		return
 	}
-	gen, base, f, plain := a.filterGen, a.base, a.filter, a.plain
+	gen, base, f, meta := a.filterGen, a.base, a.filter, a.meta
 	a.filterBusy = true
 	go func() {
 		ctx := context.Background()
-		if !ready {
-			plain = withoutMetadata(ctx, base, hide)
+		if toggle {
+			base = base.Clone()
+			if hide {
+				base.Remove(meta...)
+			} else {
+				base.Restore(meta...)
+			}
 		}
-		view, stats, err := plain, index.FilterStats{}, error(nil)
+		view, stats, err := base, index.FilterStats{}, error(nil)
 		if f.active() {
-			view, stats, err = f.apply(ctx, plain)
+			view, stats, err = f.apply(ctx, base)
 		}
 		a.post(func() {
 			if gen != a.filterGen {
 				return
 			}
 			a.filterBusy = false
-			a.plain, a.plainFor, a.plainHidden = plain, base, hide
+			if toggle {
+				a.base, a.metaHidden = base, hide
+			}
 			if err != nil {
 				a.fail("Filter: %v", err)
 				a.filter = analysisFilter{}
-				a.setView(plain)
+				a.setView(base)
 				return
 			}
 			a.filter.stats = stats
@@ -404,11 +419,50 @@ func (a *App) applyFilter() {
 }
 
 // metadataBytes is the size of the NTFS metadata hidden from the views.
+// Detached entries keep their own totals.
 func (a *App) metadataBytes() (uint64, bool) {
-	if a.base == nil || a.plain == nil || a.plainFor != a.base || a.plain == a.base {
+	if a.base == nil || !a.metaHidden {
 		return 0, false
 	}
-	return a.metric(a.base.Nodes[0]) - a.metric(a.plain.Nodes[0]), true
+	var total uint64
+	for _, id := range a.meta {
+		total += a.metric(a.base.Nodes[id])
+	}
+	return total, true
+}
+
+// scanTotals is the scan root's totals including any hidden metadata.
+func (a *App) scanTotals() index.Node {
+	root := a.base.Nodes[0]
+	if a.metaHidden {
+		for _, id := range a.meta {
+			n := a.base.Nodes[id]
+			root.Size += n.Size
+			root.Allocated += n.Allocated
+			if n.IsDir() {
+				root.Files += n.Files
+				root.Dirs += n.Dirs + 1
+			} else {
+				root.Files++
+			}
+		}
+	}
+	return root
+}
+
+// completeScan returns a function giving the whole scan, NTFS metadata
+// included, for saving, exporting and comparing. It may copy the index,
+// so it is called off the UI thread.
+func (a *App) completeScan() func() *index.Snapshot {
+	base, meta, hidden := a.base, a.meta, a.metaHidden
+	return func() *index.Snapshot {
+		if !hidden {
+			return base
+		}
+		c := base.Clone()
+		c.Restore(meta...)
+		return c
+	}
 }
 
 // setView installs the snapshot the views read and refreshes them.
@@ -430,9 +484,6 @@ func (a *App) setView(s *index.Snapshot) {
 // mapSnapshot is what the treemap draws.
 func (a *App) mapSnapshot() *index.Snapshot {
 	if a.filter.active() && !a.prefs.FilterMap {
-		if a.plainFor == a.base && a.plain != nil {
-			return a.plain
-		}
 		return a.base
 	}
 	return a.snap

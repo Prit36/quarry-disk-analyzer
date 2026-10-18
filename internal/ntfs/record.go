@@ -21,8 +21,14 @@ type Attribute struct {
 	Data        []byte
 }
 type Record struct {
-	Reference, Parent, Base           uint64
-	Name                              string
+	Reference, Parent, Base uint64
+	Name                    string
+	// RawName is the chosen name as stored, UTF-16LE, borrowed from the
+	// record buffer (ParseRaw leaves Name empty and sets only RawName).
+	RawName []byte
+	// NameRank orders the namespaces of the chosen name: 3 Win32 and DOS,
+	// 2 Win32, 1 POSIX, 0 no name. DOS-only short names are never chosen.
+	NameRank                          uint8
 	Size, Allocated                   uint64
 	Modified                          int64
 	Links                             uint16
@@ -94,6 +100,20 @@ func (a Attribute) Value() ([]byte, error) {
 	return a.Data[off : off+length], nil
 }
 func Parse(b []byte, number uint64) (Record, bool, error) {
+	r, inUse, err := ParseRaw(b, number)
+	if len(r.RawName) > 0 {
+		name := make([]uint16, len(r.RawName)/2)
+		for i := range name {
+			name[i] = le.Uint16(r.RawName[i*2:])
+		}
+		r.Name = string(utf16.Decode(name))
+	}
+	return r, inUse, err
+}
+
+// ParseRaw is Parse without decoding the name: it allocates nothing, and
+// Record.RawName points into b.
+func ParseRaw(b []byte, number uint64) (Record, bool, error) {
 	if len(b) < 48 {
 		return Record{}, false, ErrRecord
 	}
@@ -144,13 +164,10 @@ func Parse(b []byte, number uint64) (Record, bool, error) {
 				return ErrRecord
 			}
 			if rank > best {
-				name := make([]uint16, length)
-				for i := range name {
-					name[i] = le.Uint16(v[66+i*2:])
-				}
-				r.Name = string(utf16.Decode(name))
+				r.RawName = v[66 : 66+length*2]
 				r.Parent = le.Uint64(v)
 				best = rank
+				r.NameRank = uint8(rank)
 			}
 		case 0x80:
 			if !a.NonResident {

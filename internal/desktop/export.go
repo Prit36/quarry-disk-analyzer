@@ -107,16 +107,16 @@ func (a *App) exportSelection() {
 
 // exportScan writes every entry of the unfiltered scan.
 func (a *App) exportScan() {
-	s := a.base
+	scan := a.completeScan()
 	a.saveAs("Export Entire Scan", a.baseName()+".csv", "csv", "CSV", func(w io.Writer) error {
-		return s.Export(context.Background(), w)
+		return scan().Export(context.Background(), w)
 	})
 }
 
 func (a *App) exportJSON() {
-	s := a.base
+	scan := a.completeScan()
 	a.saveAs("Export Scan as JSON", a.baseName()+".json", "json", "JSON", func(w io.Writer) error {
-		return s.ExportJSON(context.Background(), w, 0)
+		return scan().ExportJSON(context.Background(), w, 0)
 	})
 }
 
@@ -154,7 +154,7 @@ func (a *App) exportExtensions() {
 var scanFilters = []mygo.FileFilter{{Name: "Quarry scan", Extensions: []string{"quarry", "stratum"}}}
 
 func (a *App) saveSnapshotDialog() {
-	s := a.base
+	scan := a.completeScan()
 	go func() {
 		path, err := mygo.Dialog.Save(mygo.SaveDialogOptions{Parent: a.win, Title: "Save Scan", DefaultPath: a.baseName() + ".quarry", Filters: []mygo.FileFilter{{Name: "Quarry scan", Extensions: []string{"quarry"}}}})
 		if err != nil || path == "" {
@@ -163,7 +163,7 @@ func (a *App) saveSnapshotDialog() {
 		if filepath.Ext(path) == "" {
 			path += ".quarry"
 		}
-		err = s.Save(context.Background(), path)
+		err = scan().Save(context.Background(), path)
 		a.post(func() {
 			if err != nil {
 				a.fail("Could not save the scan: %v", err)
@@ -189,9 +189,9 @@ func (a *App) openSnapshot(path string) {
 	hide := !a.prefs.ShowMetadata
 	go func() {
 		s, err := index.LoadSnapshot(context.Background(), path)
-		var plain *index.Snapshot
+		var meta []index.ID
 		if err == nil {
-			plain = withoutMetadata(context.Background(), s, hide)
+			meta = hideMetadata(s, hide)
 		}
 		a.post(func() {
 			if err != nil {
@@ -203,8 +203,7 @@ func (a *App) openSnapshot(path string) {
 				a.scanGen++
 				a.scanning = false
 			}
-			a.plain, a.plainFor, a.plainHidden = plain, s, hide
-			a.setBase(s, path)
+			a.setBase(s, path, meta, hide)
 			a.notify("Opened saved scan of %s from %s. This is historical data.", s.Root, s.Started.Format("2006-01-02 15:04"))
 		})
 	}()
@@ -212,7 +211,7 @@ func (a *App) openSnapshot(path string) {
 
 // compareDialog compares the current scan with a saved scan of the same root.
 func (a *App) compareDialog() {
-	current, allocated := a.base, a.metricAllocated()
+	scan, allocated := a.completeScan(), a.metricAllocated()
 	go func() {
 		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: a.win, Title: "Compare with Saved Scan", Filters: scanFilters})
 		if err != nil || len(paths) == 0 {
@@ -221,7 +220,7 @@ func (a *App) compareDialog() {
 		previous, err := index.LoadSnapshot(context.Background(), paths[0])
 		var changes []index.Change
 		if err == nil {
-			changes, err = index.CompareSnapshots(previous, current, allocated)
+			changes, err = index.CompareSnapshots(previous, scan(), allocated)
 		}
 		a.post(func() {
 			if err != nil {

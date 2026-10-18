@@ -25,7 +25,7 @@ func TestAggregationAndArena(t *testing.T) {
 	if n.Size != 1300 || n.Allocated != 8192 || n.Files != 3 || n.Dirs != 1 {
 		t.Fatalf("wrong totals: %+v", n)
 	}
-	if unsafe.Sizeof(Node{}) != 56 {
+	if unsafe.Sizeof(Node{}) != 48 {
 		t.Fatalf("record grew to %d bytes", unsafe.Sizeof(Node{}))
 	}
 	if s.NameView(2) != "video.MP4" || !strings.HasSuffix(s.Path(2), "media\\video.MP4") {

@@ -24,6 +24,7 @@ type extModel struct {
 	cancel  context.CancelFunc
 	dirty   bool
 	forSnap *index.Snapshot
+	runFor  *index.Snapshot // snapshot being analyzed
 	forText string
 
 	list   ui.ListState
@@ -56,8 +57,9 @@ func (e *extModel) invalidate() {
 	}
 }
 
+// ensure analyzes the shown snapshot unless that is already under way.
 func (e *extModel) ensure() {
-	if e.dirty || e.forSnap != e.a.snap {
+	if e.dirty || e.forSnap != e.a.snap && !(e.busy && e.runFor == e.a.snap) {
 		e.run()
 	}
 }
@@ -74,7 +76,7 @@ func (e *extModel) run() {
 	gen := e.gen
 	ctx, cancel := context.WithCancel(context.Background())
 	e.cancel = cancel
-	e.busy, e.dirty = true, false
+	e.busy, e.dirty, e.runFor = true, false, a.snap
 	s, scope, allocated := a.snap, a.files.scope, a.metricAllocated()
 	if !s.Reachable(scope) {
 		scope = 0
@@ -86,13 +88,6 @@ func (e *extModel) run() {
 			total.Bytes += t.Bytes
 			total.Allocated += t.Allocated
 			total.Count += t.Count
-		}
-		// Explorer's type names, resolved off the UI thread once per extension.
-		for _, t := range analysis.Types {
-			if ctx.Err() != nil {
-				return
-			}
-			platform.FileTypeName(t.Extension)
 		}
 		a.post(func() {
 			if gen != e.gen {
@@ -107,6 +102,21 @@ func (e *extModel) run() {
 			e.forText = "\x00"
 			e.cursor = -1
 		})
+		if err != nil {
+			return
+		}
+		// Explorer's type names, resolved after the table is shown, off the
+		// UI thread and in parallel; the table draws cached names only.
+		exts := make([]string, len(analysis.Types))
+		for i, t := range analysis.Types {
+			exts[i] = t.Extension
+		}
+		platform.ResolveFileTypeNames(ctx, exts)
+		a.post(func() {
+			if gen == e.gen {
+				e.forText = "\x00" // filter and sort again with the names
+			}
+		})
 	}()
 }
 
@@ -119,7 +129,7 @@ func (e *extModel) refresh(text string) {
 	e.forText = text
 	e.shown = e.shown[:0]
 	for i, t := range e.types {
-		if text == "" || strings.Contains(t.Extension, text) || strings.Contains(strings.ToLower(platform.FileTypeName(t.Extension)), text) {
+		if text == "" || strings.Contains(t.Extension, text) || strings.Contains(strings.ToLower(platform.CachedFileTypeName(t.Extension)), text) {
 			e.shown = append(e.shown, i)
 		}
 	}
@@ -136,7 +146,7 @@ func (e *extModel) sortShown() {
 		case "Extension":
 			v = strings.Compare(a.Extension, b.Extension)
 		case "Type":
-			v = strings.Compare(strings.ToLower(platform.FileTypeName(a.Extension)), strings.ToLower(platform.FileTypeName(b.Extension)))
+			v = strings.Compare(strings.ToLower(platform.CachedFileTypeName(a.Extension)), strings.ToLower(platform.CachedFileTypeName(b.Extension)))
 		case "Files":
 			v = cmp.Compare(a.Count, b.Count)
 		case "Allocated":

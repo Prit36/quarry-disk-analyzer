@@ -96,17 +96,27 @@ func hasMetadata(s *index.Snapshot) bool {
 	return strings.Contains(s.Engine, "MFT") || s.Unresolved > 0
 }
 
-// withoutMetadata returns s without its NTFS metadata, with totals
-// recomputed, or s itself when hide is false or there is none. Metadata
-// only sits directly below the scan root, so only those entries are tested.
-func withoutMetadata(ctx context.Context, s *index.Snapshot, hide bool) *index.Snapshot {
-	if !hide || !hasMetadata(s) {
-		return s
+// metadataEntries lists a scan's NTFS metadata entries. Metadata (and
+// unresolved records) only sits directly below the scan root.
+func metadataEntries(s *index.Snapshot) []index.ID {
+	if !hasMetadata(s) {
+		return nil
 	}
-	meta := func(id index.ID) bool { return s.Nodes[id].Parent == 0 && s.IsMetadata(id) }
-	view, _, err := s.Filtered(ctx, func(id index.ID) bool { return !meta(id) }, meta, false)
-	if err != nil {
-		return s
+	var ids []index.ID
+	for c := s.Nodes[0].FirstChild; c != index.None; c = s.Nodes[c].NextSibling {
+		if s.IsMetadata(c) {
+			ids = append(ids, c)
+		}
 	}
-	return view
+	return ids
+}
+
+// hideMetadata finds a new scan's metadata entries and, with hide, detaches
+// them in place: s must not be shared yet.
+func hideMetadata(s *index.Snapshot, hide bool) []index.ID {
+	meta := metadataEntries(s)
+	if hide {
+		s.Remove(meta...)
+	}
+	return meta
 }
