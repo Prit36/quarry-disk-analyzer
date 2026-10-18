@@ -74,6 +74,35 @@ func TestFusedFilterMatchesGeneralNodesAndCallbacks(t *testing.T) {
 	}
 }
 
+func TestReservedSearchHandlesIncorrectCounts(t *testing.T) {
+	s := New(`C:\counts`)
+	for d := range 80 {
+		p := s.Add(0, fmt.Sprint(d), 0, 0, 0, Directory)
+		for i := range 600 {
+			s.Add(p, fmt.Sprintf("%d.log", i), uint64(i), uint64(i+4096), 0, 0)
+		}
+	}
+	s.Finalize()
+	for _, kind := range []Kind{KindAny, KindFiles, KindFolders} {
+		f := Filter{Kind: kind}
+		want, err := s.searchSubtree(context.Background(), 0, 0, &f, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, counts := range []uint32{0, 1, ^uint32(0)} {
+			for i := 1; i < len(s.Nodes); i++ {
+				if s.Nodes[i].IsDir() {
+					s.Nodes[i].Files, s.Nodes[i].Dirs = counts, counts
+				}
+			}
+			got, err := s.searchParallel(context.Background(), 0, &f, nil, 8)
+			if err != nil || !slices.Equal(got, want) || cap(got) > max(4096, 2*len(want)) {
+				t.Fatalf("kind=%d counts=%d: incorrect reserved search: %v", kind, counts, err)
+			}
+		}
+	}
+}
+
 func TestRankGroupLengthsFollowSortedRanks(t *testing.T) {
 	s := New(`C:\ranks`)
 	var ids []ID

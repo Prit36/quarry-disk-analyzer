@@ -15,12 +15,12 @@ three independent samples. MB/op means decimal bytes allocated per operation,
 not peak working set or retained memory. The final raw samples and JSON summary
 are under `build/interaction-pass/verified/`; earlier trials are excluded.
 
-Before committing, the shared-output-buffer experiment was removed because
-it did not improve unrestricted-search latency. Only sort-direction reuse,
-full-path traversal buffers and fused analysis filtering remain. Their timed
-paths are unchanged by that removal. Retained-build benchmark confirmation is
-in `build/interaction-pass/commit-benchmarks.txt` (three samples, 500 ms each),
-with a fresh output comparison in `commit-parity.json`.
+Shared output storage is retained for its allocation savings even when latency
+is flat or slightly slower. The memory follow-up compares `eb36c15` against the
+shared-buffer implementation in three alternating pairs of 500 ms samples,
+under `build/interaction-pass/memory-*-before.txt` and `memory-*-after.txt`.
+Its fresh complete-output comparison is in `memory-parity.json`. Earlier
+confirmation of the other improvements is in `commit-benchmarks.txt`.
 
 ## Changes
 
@@ -38,6 +38,11 @@ with a fresh output comparison in `commit-parity.json`.
   directory feeds the walker even if another criterion rejects it. Existing
   normalization and unresolved-metadata fallbacks are preserved, and borrowed
   path strings are consumed before the buffer changes.
+- **Unrestricted search shares output storage.** Workers fill disjoint,
+  capacity-clipped ranges of one result array, avoiding a second full array
+  when counts are accurate. Incorrect saved counts can safely grow individual
+  ranges; the coordinator copies or compacts them in traversal order. Large
+  overestimates do not retain a mostly empty buffer.
 - **Analysis filters combine tree work.** Matching, relinking, totals and
   empty-folder isolation finish during one depth-first folder traversal,
   replacing several complete tree walks and a per-node drop array. The copy
@@ -59,6 +64,8 @@ and recomputed totals.
 | Reverse Extension heading | 49.297 | 1.161 | -97.6% | 30.074 | 4.475 |
 | `path:C:\Windows\System32` | 185.987 | 57.108 | -69.3% | 193.890 | 1.401 |
 | `type:file path:C:\Windows ext:dll` | 12.256 | 11.124 | -9.2% | 8.617 | 1.927 |
+| Show all files | 19.265 | 19.469 | +1.1% | 27.391 | 22.826 |
+| `type:folder` | 9.533 | 9.850 | +3.3% | 8.605 | 7.184 |
 | Filter: show `ext:dll` | 54.967 | 42.316 | -23.0% | 71.868 | 69.709 |
 | Filter: show `path:system32 ext:dll` | 63.116 | 53.102 | -15.9% | 73.129 | 71.168 |
 | Filter: hide `node_modules;*.tmp` | 54.036 | 44.063 | -18.5% | 71.670 | 69.710 |
@@ -68,10 +75,21 @@ Folder direction samples were 47.199–47.790 ms before and 1.869–1.880 ms
 after. Extension direction samples were 48.681–49.605 ms before and
 1.150–1.178 ms after. The broad full-path query measured 185.657–190.217 ms
 before and 56.801–59.931 ms after. Its allocation reduction is **99.3%**;
-Folder/Extension direction allocations fall **91.9%/85.1%**. The discarded
-shared-output-buffer experiment reduced unrestricted-search allocation by
-16.5–16.7% but measured 1.1–3.3% slower. Those memory savings are not part of
-the retained implementation.
+Folder/Extension direction allocations fall **91.9%/85.1%**. Shared output
+storage reduces unrestricted-search allocation by **16.5–16.7%**, while its
+latency measured 1.1–3.3% slower in this batch. This is a memory improvement;
+it is not counted as a speedup.
+
+The isolated shared-buffer follow-up against `eb36c15` confirms the savings:
+
+| Query | Before ms | After ms | Before MB/op | After MB/op | Allocation change |
+|---|---:|---:|---:|---:|---:|
+| Show all files | 19.845 | 19.687 | 27.397 | 22.832 | -16.7% |
+| `type:folder` | 9.937 | 9.797 | 8.605 | 7.184 | -16.5% |
+
+These timing differences are small; the demonstrated benefit is reduced
+temporary allocation. The restored build passed package tests, Go vet, MyGO
+checks and compilation, and all 484 fresh output digests match the baseline.
 
 Ordinary query changes are small and include regressions: `*.dll` measured
 7.879 → 8.292 ms (+5.2%), `microsoft` 14.408 → 14.845 ms (+3.0%), and
@@ -106,7 +124,7 @@ resolution; that does not mean zero work.
 All **484 complete-output digests match** the baseline. They cover ordered search and sort results, filtered node
 tables and statistics, treemap data, and File View state. Additional regression
 tests cover deep filters, callback order, source immutability, cancellation,
-Unicode and normalized paths, sparse ranks, repeated
+incorrect saved counts, Unicode and normalized paths, sparse ranks, repeated
 direction changes, metric changes and snapshot-cache lifetime.
 
 The portable build passed all package tests, Go vet, MyGO UI lifetime checks and

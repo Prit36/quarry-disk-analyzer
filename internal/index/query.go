@@ -433,13 +433,16 @@ func (s *Snapshot) searchParallel(ctx context.Context, root ID, f *Filter, ances
 	unrestricted := *f
 	unrestricted.Kind = KindAny
 	reserve := unrestricted.Empty()
+	var reserved []ID
 	if reserve {
 		// Counts are hints, including on imported snapshots. Bound all
 		// reservations together so bad totals cannot multiply allocations.
 		remaining := uint64(len(s.Nodes))
+		capacityTotal := 0
 		for i := range pieces {
 			p := &pieces[i]
 			if !p.walk {
+				capacityTotal += len(p.ids)
 				continue
 			}
 			capacity := p.weight
@@ -451,6 +454,21 @@ func (s *Snapshot) searchParallel(ctx context.Context, root ID, f *Filter, ances
 			}
 			p.reserve = int(min(capacity, remaining))
 			remaining -= uint64(p.reserve)
+			capacityTotal += p.reserve
+		}
+		// Give workers disjoint, capacity-clipped ranges of the output array.
+		// Accurate counts avoid a second full result array. Incorrect saved
+		// counts can still grow individual ranges without touching neighbours.
+		reserved = make([]ID, capacityTotal)
+		offset := 0
+		for i := range pieces {
+			p := &pieces[i]
+			if p.walk {
+				p.ids = reserved[offset : offset : offset+p.reserve]
+				offset += p.reserve
+			} else {
+				offset += len(p.ids)
+			}
 		}
 	}
 	var next atomic.Int64
@@ -473,9 +491,6 @@ func (s *Snapshot) searchParallel(ctx context.Context, root ID, f *Filter, ances
 						local.total = 0
 						local.metadata = false
 						pieceTally = &local
-					}
-					if reserve {
-						p.ids = make([]ID, 0, p.reserve)
 					}
 					var paths *pathWalker
 					if f.NeedsPath() {
@@ -513,13 +528,20 @@ func (s *Snapshot) searchParallel(ctx context.Context, root ID, f *Filter, ances
 	}
 	wg.Wait()
 	total := 0
+	grew := false
 	for i, p := range pieces {
 		if errs[i] != nil {
 			return nil, errs[i]
 		}
 		total += len(p.ids)
+		grew = grew || p.walk && len(p.ids) > p.reserve
 	}
-	ids := make([]ID, 0, total)
+	ids := reserved[:0]
+	// Compact leftward only when no range outgrew its reservation. Otherwise
+	// a copy could overwrite a later worker's results before reading them.
+	if !reserve || grew || cap(ids) > 2*total+4096 {
+		ids = make([]ID, 0, total)
+	}
 	for _, p := range pieces {
 		ids = append(ids, p.ids...)
 		if tally != nil {

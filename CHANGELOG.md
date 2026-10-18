@@ -5,6 +5,8 @@
 - Folder and Extension heading direction changes reuse exact group lengths
   from the first sort, preserving each group's name/size order and selections.
 - Full-path searches reuse a path buffer during traversal.
+- Unrestricted searches share an output array across workers, reducing
+  temporary allocation by about 16–17% with essentially unchanged latency.
 - Show/Hide Filters combine matching, relinking, aggregation and empty-folder
   isolation, with the same totals, stable IDs and removal flags.
 - Measurements against 0.2.2 and reproduction details are in

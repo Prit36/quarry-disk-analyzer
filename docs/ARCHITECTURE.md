@@ -45,6 +45,9 @@ column changes; it retains no paths or per-file rank table.
 
 Full-path terms use a worker-owned path buffer and ancestor stack, with the
 existing normalization fallback for unusual paths and unresolved metadata.
+Unrestricted searches give workers disjoint, capacity-clipped ranges of a
+single result array. Incorrect saved counts can grow individual ranges safely;
+the coordinator then copies or compacts them without changing traversal order.
 
 ## Scanning
 
