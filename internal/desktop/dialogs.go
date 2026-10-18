@@ -374,7 +374,7 @@ func (a *App) dialogs(c *ui.Context, pal palette) {
 				line("Excluded entries", count(s.Excluded)+" ("+strings.Join(s.Exclusions, "; ")+")")
 			}
 			if s.Cancelled {
-				line("Status", "Stopped before completion — partial results")
+				line("Status", "Stopped before completion - partial results")
 			}
 			ui.Text(c, "Logical size is the sum of file lengths. Allocated size is the disk space those files occupy (smaller for compressed or sparse files, larger due to cluster rounding). The volume's used space also includes filesystem structures, shadow copies and files Quarry could not read, so the numbers are not expected to match.").TextColor(t.TextMuted).Margin(8, 0, 0, 0).MaxWidth(560)
 			buttons(c, func() {

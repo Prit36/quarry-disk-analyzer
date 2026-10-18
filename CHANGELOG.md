@@ -12,7 +12,7 @@ Less on screen, nothing lost: every total was shown up to four times at once.
 - **Treemap bar** no longer repeats the location and its size; the metric reads "Logical size" or "Allocated size".
 - **Start page** shows the drive table and recent folders, nothing else; one click scans either. Gone: the heading and instructions, the Scan Selected Drive, Scan Folder… and Open Saved Scan… buttons (all in the Scan menu), drive roots repeated under Recent, and the administrator paragraph, now one line with a link. While the first scan runs, its progress is shown once, on the page.
 
-## 0.2.1 — 2026-10-18
+## 0.2.1 - 2026-10-18
 
 Faster searching, sorting, opening saved scans and duplicate verification. Measured on a saved scan of C:\ (1.43 million entries), 0.2.0 against 0.2.1, alternating runs, medians; every search, sort, analysis, treemap layout, JSON export and duplicate result was checked to be identical in both versions. Details in `docs/benchmark-results.json`.
 
@@ -25,7 +25,7 @@ Faster searching, sorting, opening saved scans and duplicate verification. Measu
 - Smaller changes with no measurable effect in this test: grid cell text and treemap tile colors are cached between frames, availability of Cut, Rename and Delete is cached per selection, plain-name scan exclusions no longer use a regular expression, and directory scans query folders with a 256 KiB buffer.
 - Directory scans (about 6.7 s) and MFT scans (about 1.7 s, with about a third less CPU) take the same time as in 0.2.0.
 
-## 0.2.0 — 2026-10-18
+## 0.2.0 - 2026-10-18
 
 Performance and memory, measured on C:\ (1.09 million files) before and after; details in `docs/benchmark-results.json`.
 
@@ -39,7 +39,7 @@ Performance and memory, measured on C:\ (1.09 million files) before and after; d
 - The treemap caches tile colors and labels instead of recomputing them on every frame.
 - Benchmarks: `scripts/bench.go`, `TestPerfReport` and the elevated `TestMFTDiagnostics` (see `docs/ARCHITECTURE.md`).
 
-## 0.1.1 — 2026-10-17
+## 0.1.1 - 2026-10-17
 
 - **NTFS sizes.** Sparse named streams count the space they occupy, not their length: `$BadClus` no longer shows the size of the whole volume and `$Extend` (the USN journal) no longer tens of gigabytes, so drive totals are no longer inflated past the disk size. Sparse files keep their logical size.
 - **Treemap context menu.** Commands act on the tile that was right-clicked. Before, the menu followed the pointer, so Open, Show in Explorer, Copy, Delete or Go Into could do nothing or act on the previous selection. The menu names its tile and adds Copy Name, Up One Level and Search in This Folder.
@@ -50,7 +50,7 @@ Performance and memory, measured on C:\ (1.09 million files) before and after; d
 - **Extensions view** highlights the chosen extension's tiles in the treemap and dims the rest.
 - Rows under the pointer are easier to follow; Advanced Search's scope also updates Extensions.
 
-## 0.1.0 — 2026-10-17
+## 0.1.0 - 2026-10-17
 
 A rebuild of the interface as a compact Windows utility, released under a new name: **Stratum is now Quarry**, with a new logo. The scan engines and index format are unchanged.
 
@@ -68,14 +68,14 @@ A rebuild of the interface as a compact Windows utility, released under a new na
 
 Verified on Windows 11 with the built executable: scans of a fixture tree and of C:\ (1.07 million files, 9 s warm, about 390 MB with a 200,000-row expansion), tree keyboard and mouse navigation, search and filters, extension drill-down, treemap selection and drill-down, back/forward, rename, Recycle Bin delete with index update, Properties, shell clipboard, duplicate verification, snapshot save/open, CLI exit codes, Explorer verb install/removal, theme and layout persistence. Not verified here: elevated MFT scans, removable drives, drag and drop with Explorer, screen readers and high-contrast themes.
 
-## 0.0.3 — 2026-10-17
+## 0.0.3 - 2026-10-17
 
 - Nested treemap tiles are now clearly distinct: depth-aware borders and stable within-family shading replace gaps that blended into the parent fill, in both the live map and the PNG export.
 - Distribute hierarchy detail with a shared budget across folders so one large directory cannot consume the entire visualization; compact deep-level headers preserve space for their children.
 - Extend nested-selection visibility and app-wide detail polish: sunburst rings, file-type bars, selected-row metadata and statistics separators.
 - Add regression coverage for nested tile edges and selection, zoom clamping, viewport zoom/pan and exported nested tiles; refresh the reference-comparison QA evidence.
 
-## 0.0.2 — 2026-10-17
+## 0.0.2 - 2026-10-17
 
 - Rebuild the native interface around the supplied visual reference: compact title/toolbar/summary, resizable explorer and analytics panes, Segoe UI typography, Fluent and Windows Shell icons, dark/light themes and responsive statistics.
 - Add scoped overview, extension distribution, top files, contextual quick statistics and verified duplicate analysis.

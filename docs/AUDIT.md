@@ -1,4 +1,4 @@
-# Stratum v0.0.3 — Feature Audit (pre-overhaul)
+# Stratum v0.0.3 - Feature Audit (pre-overhaul)
 
 Audit of the codebase before the native usability overhaul described in
 `v2.txt`. The backend packages (`internal/scan`, `internal/ntfs`,

@@ -22,10 +22,10 @@ Tree | Files | Extensions                                     Scope: Entire scan
 C:\Users  ·  152 GiB  ·  804,863 files          NTFS MFT · 2 s   C: 120 GiB free
 ```
 
-- **Tree** — the folder hierarchy below the current location, sorted by size. Right/Left expand and collapse (Shift for the whole subtree, bounded at 200,000 rows), Enter or double-click expands folders and opens files, Backspace or Alt+Up goes up.
-- **Files** — every file in the scope, largest first, or every match of the search. Results are complete (no silent limit) and virtualized.
-- **Extensions** — space by file type with Windows' type names. Double-click an extension to list its files.
-- **Treemap** — area proportional to size, colored by extension (aggregated blocks take their dominant type), by top-level folder, or monochrome. Click selects the item in Tree View, double-click a folder goes into it, the mouse back button returns.
+- **Tree** - the folder hierarchy below the current location, sorted by size. Right/Left expand and collapse (Shift for the whole subtree, bounded at 200,000 rows), Enter or double-click expands folders and opens files, Backspace or Alt+Up goes up.
+- **Files** - every file in the scope, largest first, or every match of the search. Results are complete (no silent limit) and virtualized.
+- **Extensions** - space by file type with Windows' type names. Double-click an extension to list its files.
+- **Treemap** - area proportional to size, colored by extension (aggregated blocks take their dominant type), by top-level folder, or monochrome. Click selects the item in Tree View, double-click a folder goes into it, the mouse back button returns.
 
 Selections, the location and the history are shared by the tree and the treemap. Every command lives once in a central registry that drives the menu bar, the context menus and the keyboard shortcuts (Help → Keyboard Shortcuts, F1).
 
@@ -50,11 +50,11 @@ type:file  type:folder    regex:^IMG_\d+\.jpe?g$
 
 Tools → Advanced Search builds such a query from fields. The scope (entire scan, current location or a selected folder) is always shown next to the results.
 
-**Analysis filters** (Tools → Analysis Filter) hide entries that are already scanned — e.g. show only `ext:log`, hide `node_modules` — and recompute every total. **Scan exclusions** (Options → Scan Exclusions) keep folders or name patterns out of future scans; the info bar then reports how many entries were excluded.
+**Analysis filters** (Tools → Analysis Filter) hide entries that are already scanned - e.g. show only `ext:log`, hide `node_modules` - and recompute every total. **Scan exclusions** (Options → Scan Exclusions) keep folders or name patterns out of future scans; the info bar then reports how many entries were excluded.
 
 ## Scanning
 
-As administrator, whole NTFS drives are read directly from the master file table (seconds for millions of files). Otherwise — and for folders, FAT/exFAT and network drives — Quarry enumerates directories with `FILE_ID_BOTH_DIR_INFO`. The status bar names the method used and why MFT reading was not possible; Options → Restart as Administrator relaunches through UAC.
+As administrator, whole NTFS drives are read directly from the master file table (seconds for millions of files). Otherwise - and for folders, FAT/exFAT and network drives - Quarry enumerates directories with `FILE_ID_BOTH_DIR_INFO`. The status bar names the method used and why MFT reading was not possible; Options → Restart as Administrator relaunches through UAC.
 
 Sizes: **Size** is the logical length of files, **Allocated** the disk space they occupy (smaller for compressed or sparse files). Hard links are counted once, junctions and symbolic links are not followed, and unreadable folders are reported (status bar issue count, Tools → Scan Issues). The volume's used space also contains filesystem overhead, so it is shown separately (Tools → Scan Information).
 

@@ -457,7 +457,7 @@ func (a *App) progressText() string {
 	if p == nil {
 		return "Scanning " + a.target + "…"
 	}
-	text := fmt.Sprintf("Scanning %s — %s files, %s folders · %s · %s", a.target, count(p.Files.Load()), count(p.Folders.Load()), duration(time.Since(a.scanStart)), p.Status())
+	text := fmt.Sprintf("Scanning %s - %s files, %s folders · %s · %s", a.target, count(p.Files.Load()), count(p.Folders.Load()), duration(time.Since(a.scanStart)), p.Status())
 	if total := p.TotalRecords.Load(); total > 0 {
 		text += fmt.Sprintf(" %.0f%%", 100*float64(p.Records.Load())/float64(total))
 	}

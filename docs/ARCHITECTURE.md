@@ -33,15 +33,15 @@ Saved scans keep the original format: 52-byte little-endian records, gzip. They 
 
 ## Desktop
 
-- `app.go` — `App`: scanning, the base snapshot and the filtered view snapshot, the single navigation history (location, back, forward, up, reveal). Hidden NTFS metadata is detached from the base snapshot itself (`Remove`, `Restore` to show it), not kept as a second copy.
-- `commands.go` — every user action once: label, shortcut, availability, check state, action. The native menu bar, row and treemap context menus and the keyboard dispatcher read the same table. Menu labels show shortcuts without registering native accelerators, so text fields keep Ctrl+C, Delete, etc.
-- `tree.go` — Tree View model: flattened rows of the expanded tree below the location, spliced on expand/collapse, keyed by index ID; bounded subtree expansion.
-- `files.go`, `extensions.go` — File View and Extensions: queries and sorts on goroutines with generation counters; results are applied on the UI thread, and a query already running for the shown snapshot is not restarted by later frames. Explorer type names are resolved in parallel after the Extensions table is shown.
-- `treemap.go` — hierarchy built off-thread (6,000 tiles, 7 levels, "Smaller items" aggregates), dominant extension per aggregated block, geometry cached per size, tile colors and labels cached per layout and setting.
-- `selection.go` — selected entries in row order and facts about them (all on disk, total size), cached between frames and rebuilt when a fingerprint of the selection changes; commands always recompute them before running.
-- `ops.go` — file operations through `internal/platform`, each re-validating the on-disk entry first, then updating the index copy-on-write.
-- `view.go`, `tables.go`, `dialogs.go` — layout, grids and modal dialogs.
-- `prefs.go` — persisted settings (atomic write on close).
+- `app.go` - `App`: scanning, the base snapshot and the filtered view snapshot, the single navigation history (location, back, forward, up, reveal). Hidden NTFS metadata is detached from the base snapshot itself (`Remove`, `Restore` to show it), not kept as a second copy.
+- `commands.go` - every user action once: label, shortcut, availability, check state, action. The native menu bar, row and treemap context menus and the keyboard dispatcher read the same table. Menu labels show shortcuts without registering native accelerators, so text fields keep Ctrl+C, Delete, etc.
+- `tree.go` - Tree View model: flattened rows of the expanded tree below the location, spliced on expand/collapse, keyed by index ID; bounded subtree expansion.
+- `files.go`, `extensions.go` - File View and Extensions: queries and sorts on goroutines with generation counters; results are applied on the UI thread, and a query already running for the shown snapshot is not restarted by later frames. Explorer type names are resolved in parallel after the Extensions table is shown.
+- `treemap.go` - hierarchy built off-thread (6,000 tiles, 7 levels, "Smaller items" aggregates), dominant extension per aggregated block, geometry cached per size, tile colors and labels cached per layout and setting.
+- `selection.go` - selected entries in row order and facts about them (all on disk, total size), cached between frames and rebuilt when a fingerprint of the selection changes; commands always recompute them before running.
+- `ops.go` - file operations through `internal/platform`, each re-validating the on-disk entry first, then updating the index copy-on-write.
+- `view.go`, `tables.go`, `dialogs.go` - layout, grids and modal dialogs.
+- `prefs.go` - persisted settings (atomic write on close).
 
 Rule of thumb: the UI thread only reads snapshots and small models; anything proportional to the number of files runs on a goroutine and posts its result back with `App.post`.
 
