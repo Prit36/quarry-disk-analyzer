@@ -3,12 +3,15 @@
 package scan
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -70,7 +73,7 @@ func Run(ctx context.Context, root string, opts Options, p *Progress) (*index.Sn
 		// folder, which scales to about eight concurrent queries on SSDs.
 		opts.Workers = min(8, max(2, runtime.NumCPU()))
 	}
-	opts.Workers = min(16, opts.Workers)
+	opts.Workers = min(64, opts.Workers)
 	var fallback string
 	if !opts.ForceWalk && eligibleMFT(root) {
 		p.Phase.Store("Reading NTFS metadata")
@@ -118,15 +121,48 @@ type entry struct {
 	flags           uint16
 }
 
-// task is a folder to enumerate.
+// task is a folder to enumerate. While parent is set, the folder is opened
+// by its name relative to the parent's open handle: the kernel then resolves
+// one path component instead of every ancestor again, which is most of the
+// cost of opening a folder deep in a drive.
 type task struct {
-	id   index.ID
-	path string
+	id      index.ID
+	path    string
+	parent  *dirHandle // the parent folder, held open for this task; nil for the root
+	nameLen int        // the folder's name is the last nameLen bytes of path; 0: open by path
+}
+
+func (t task) name() string { return t.path[len(t.path)-t.nameLen:] }
+
+// dirHandle is an open folder shared by the tasks of its subfolders. refs
+// counts its holders: the coordinator until the folder's done result, and
+// each queued subfolder task until that task has opened its folder.
+type dirHandle struct {
+	handle uintptr
+	refs   atomic.Int32
+}
+
+func (d *dirHandle) retain() { d.refs.Add(1) }
+
+func (d *dirHandle) release() {
+	if d != nil && d.refs.Add(-1) == 0 {
+		closeDirectory(d.handle)
+	}
+}
+
+// releaseLater is release for the coordinator: closing a handle takes the
+// kernel longer than indexing a folder's entries, so the last reference
+// closes it on another goroutine.
+func (d *dirHandle) releaseLater(closer chan<- uintptr) {
+	if d != nil && d.refs.Add(-1) == 0 {
+		closer <- d.handle
+	}
 }
 
 type result struct {
 	task  task
 	batch *dirBatch
+	dir   *dirHandle // with done: the folder's handle, nil if it did not open
 	err   error
 	done  bool
 }
@@ -137,6 +173,7 @@ type result struct {
 type dirBatch struct {
 	entries []entry
 	names   []byte
+	dir     *dirHandle // the enumerated folder, open
 }
 
 const batchSize = 256
@@ -145,7 +182,7 @@ var batches = sync.Pool{New: func() any { return &dirBatch{entries: make([]entry
 
 func acquireBatch() *dirBatch { return batches.Get().(*dirBatch) }
 func releaseBatch(b *dirBatch) {
-	b.entries, b.names = b.entries[:0], b.names[:0]
+	b.entries, b.names, b.dir = b.entries[:0], b.names[:0], nil
 	batches.Put(b)
 }
 
@@ -166,6 +203,9 @@ func (b *dirBatch) name(e *entry) string {
 
 // A single coordinator owns the index. Workers only enumerate directories.
 // At most two buffered batches per worker, with 256 records in each batch.
+// Folders are taken depth first (last queued, first scanned): the queue,
+// and the parent handles it holds open, stay proportional to the depth
+// of the tree instead of to its widest level.
 func walk(ctx context.Context, root string, opts Options, p *Progress) (*index.Snapshot, error) {
 	b := index.NewBuilder(root)
 	b.Engine = "Directory scan"
@@ -180,7 +220,7 @@ func walk(ctx context.Context, root string, opts Options, p *Progress) (*index.S
 		go func() {
 			defer workers.Done()
 			for t := range jobs {
-				err := enumerate(workerCtx, t.path, func(batch *dirBatch) error {
+				dir, err := enumerate(workerCtx, t, func(batch *dirBatch) error {
 					select {
 					case results <- result{task: t, batch: batch}:
 						return nil
@@ -190,45 +230,70 @@ func walk(ctx context.Context, root string, opts Options, p *Progress) (*index.S
 					}
 				})
 				select {
-				case results <- result{task: t, err: err, done: true}:
+				case results <- result{task: t, dir: dir, err: err, done: true}:
 				case <-workerCtx.Done():
+					dir.release()
 					return
 				}
 			}
 		}()
 	}
-	defer func() { cancel(); close(jobs); workers.Wait() }()
-	pending := []task{{0, root}}
-	head, active := 0, 0
+	pending := []task{{id: 0, path: root}}
+	closer := make(chan uintptr, 256)
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
+		for h := range closer {
+			closeDirectory(h)
+		}
+	}()
+	defer func() {
+		cancel()
+		close(jobs)
+		workers.Wait()
+		// Close what an interrupted scan still holds open.
+		for {
+			select {
+			case r := <-results:
+				if r.done {
+					r.dir.release()
+				} else {
+					releaseBatch(r.batch)
+				}
+				continue
+			default:
+			}
+			break
+		}
+		for _, t := range pending {
+			t.parent.release()
+		}
+		close(closer)
+		<-closed
+	}()
+	active := 0
 	identities := make([]identity, 0, 1<<16)
-	for head < len(pending) || active > 0 {
+	for len(pending) > 0 || active > 0 {
 		var send chan task
 		var next task
-		if head < len(pending) {
+		if len(pending) > 0 {
 			send = jobs
-			next = pending[head]
+			next = pending[len(pending)-1]
 		}
 		select {
 		case <-ctx.Done():
 			b.Cancelled = true
 			p.Phase.Store("Finalizing partial scan")
-			s := b.Build()
-			markHardLinks(s, identities)
-			s.Finalize()
-			return s, nil
+			return finish(b, identities), nil
 		case send <- next:
-			pending[head] = task{}
-			head++
+			pending[len(pending)-1] = task{}
+			pending = pending[:len(pending)-1]
 			active++
-			if head > 4096 && head*2 >= len(pending) {
-				copy(pending, pending[head:])
-				pending = pending[:len(pending)-head]
-				head = 0
-			}
 		case r := <-results:
 			t := r.task
 			if r.done {
 				active--
+				r.dir.releaseLater(closer)
 				if r.err != nil && !errors.Is(r.err, context.Canceled) {
 					b.Node(t.id).Flags |= index.Incomplete
 					b.AddIssue(t.path, r.err)
@@ -263,7 +328,12 @@ func walk(ctx context.Context, root string, opts Options, p *Progress) (*index.S
 						b.SkippedLinks++
 						continue
 					}
-					pending = append(pending, task{id, filepath.Join(t.path, name)})
+					child := task{id: id, path: filepath.Join(t.path, name)}
+					if batch.dir != nil && len(name) > 0 && strings.HasSuffix(child.path, name) {
+						batch.dir.retain()
+						child.parent, child.nameLen = batch.dir, len(name)
+					}
+					pending = append(pending, child)
 				} else {
 					if e.fileID != 0 {
 						identities = append(identities, identity{e.fileID, id})
@@ -279,10 +349,18 @@ func walk(ctx context.Context, root string, opts Options, p *Progress) (*index.S
 		}
 	}
 	p.Phase.Store("Aggregating sizes")
+	return finish(b, identities), nil
+}
+
+// finish builds the index, marks hard links and aggregates sizes. The
+// identities are sorted while the index is assembled.
+func finish(b *index.Builder, identities []identity) *index.Snapshot {
+	sorted := make(chan []identity, 1)
+	go func() { sorted <- sortIdentities(identities) }()
 	s := b.Build()
-	markHardLinks(s, identities)
+	markHardLinks(s, <-sorted)
 	s.Finalize()
-	return s, nil
+	return s
 }
 
 // identity pairs a file's volume file ID with its entry.
@@ -295,11 +373,11 @@ type identity struct {
 // counts each file once: every name after the first seen keeps its entry,
 // marked Shared, without bytes. Sorting a flat list after the scan needs a
 // fraction of the memory of a hash set of every file ID held during it.
-func markHardLinks(s *index.Snapshot, ids []identity) {
-	radixSort(ids)
-	for i := 1; i < len(ids); i++ {
-		if ids[i].file == ids[i-1].file {
-			n := &s.Nodes[ids[i].id]
+// sorted is ids after sortIdentities.
+func markHardLinks(s *index.Snapshot, sorted []identity) {
+	for i := 1; i < len(sorted); i++ {
+		if sorted[i].file == sorted[i-1].file {
+			n := &s.Nodes[sorted[i].id]
 			n.Flags |= index.Shared
 			n.Size, n.Allocated = 0, 0
 			s.HardLinks++
@@ -307,38 +385,58 @@ func markHardLinks(s *index.Snapshot, ids []identity) {
 	}
 }
 
-// radixSort orders identities by file ID in four stable 16-bit passes, so
-// names of one file stay in the order they were added (by entry ID).
-func radixSort(ids []identity) {
+// sortIdentities groups identities of the same file together, each group
+// in entry order (the first name seen first). One counting pass scatters
+// them into 64Ki buckets by a hash of the file ID; the buckets, a few
+// entries each, are then sorted by (file, entry) in parallel. The order
+// between files is arbitrary.
+func sortIdentities(ids []identity) []identity {
 	if len(ids) < 2 {
-		return
+		return ids
 	}
-	tmp := make([]identity, len(ids))
-	counts := make([]int, 1<<16)
-	src, dst := ids, tmp
-	for shift := uint(0); shift < 64; shift += 16 {
-		clear(counts)
-		for _, v := range src {
-			counts[v.file>>shift&0xffff]++
-		}
-		if counts[src[0].file>>shift&0xffff] == len(src) {
-			continue // every key shares this digit
-		}
-		sum := 0
-		for i, c := range counts {
-			counts[i] = sum
-			sum += c
-		}
-		for _, v := range src {
-			d := v.file >> shift & 0xffff
-			dst[counts[d]] = v
-			counts[d]++
-		}
-		src, dst = dst, src
+	const bits = 16
+	bucket := func(file uint64) int { return int(file * 0x9e3779b97f4a7c15 >> (64 - bits)) }
+	starts := make([]int, 1<<bits+1)
+	for _, v := range ids {
+		starts[bucket(v.file)+1]++
 	}
-	if &src[0] != &ids[0] {
-		copy(ids, src)
+	for i := 1; i < len(starts); i++ {
+		starts[i] += starts[i-1]
 	}
+	out := make([]identity, len(ids))
+	next := append([]int(nil), starts[:1<<bits]...)
+	for _, v := range ids {
+		d := bucket(v.file)
+		out[next[d]] = v
+		next[d]++
+	}
+	byFile := func(a, b identity) int {
+		if c := cmp.Compare(a.file, b.file); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.id, b.id)
+	}
+	workers := min(runtime.GOMAXPROCS(0), max(1, len(ids)/32768))
+	var group sync.WaitGroup
+	for w := range workers {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			// Buckets [lo, hi) hold about an equal share of the entries.
+			lo, _ := slices.BinarySearch(starts, len(ids)*w/workers)
+			hi, _ := slices.BinarySearch(starts, len(ids)*(w+1)/workers)
+			if w == workers-1 {
+				hi = 1 << bits
+			}
+			for d := lo; d < hi; d++ {
+				if part := out[starts[d]:starts[d+1]]; len(part) > 1 {
+					slices.SortFunc(part, byFile)
+				}
+			}
+		}()
+	}
+	group.Wait()
+	return out
 }
 
 func unixTime(windowsTime uint64) int64 { return int64(windowsTime/10000000) - 11644473600 }

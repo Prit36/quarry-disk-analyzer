@@ -21,36 +21,39 @@ type Summary struct {
 }
 
 func (s *Snapshot) Summarize(ctx context.Context) (Summary, error) {
-	types := make(map[string]*FileType)
-	byExt := make(map[string]*FileType)
-	for i, n := range s.Nodes {
-		if i%4096 == 0 {
-			if err := ctx.Err(); err != nil {
-				return Summary{}, err
-			}
+	// Ranges of the index are tallied in parallel, then merged: the sums,
+	// and so the result, do not depend on the split. Half the cores are
+	// left to the caller, which runs it beside other work (the treemap's).
+	parts := min(max(1, runtime.GOMAXPROCS(0)/2), max(1, len(s.Nodes)/65536))
+	partial := make([]map[string]*FileType, parts)
+	errs := make([]error, parts)
+	var group sync.WaitGroup
+	for w := range parts {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			partial[w], errs[w] = s.summarizeRange(ctx, len(s.Nodes)*w/parts, len(s.Nodes)*(w+1)/parts)
+		}()
+	}
+	group.Wait()
+	for _, err := range errs {
+		if err != nil {
+			return Summary{}, err
 		}
-		if n.IsDir() {
-			continue
-		}
-		raw := filepath.Ext(s.NameView(ID(i)))
-		v := byExt[raw]
-		if v == nil {
-			ext := strings.ToLower(raw)
-			if ext == "" {
-				ext = "(no extension)"
-			}
-			v = types[ext]
-			if v == nil {
-				v = &FileType{Extension: ext}
+	}
+	types := partial[0]
+	for _, part := range partial[1:] {
+		for ext, v := range part {
+			if t := types[ext]; t != nil {
+				t.Bytes += v.Bytes
+				t.Allocated += v.Allocated
+				t.Count += v.Count
+			} else {
 				types[ext] = v
 			}
-			byExt[raw] = v
 		}
-		v.Bytes += n.Size
-		v.Allocated += n.Allocated
-		v.Count++
 	}
-	result := Summary{}
+	result := Summary{Types: make([]FileType, 0, len(types))}
 	for _, v := range types {
 		result.Types = append(result.Types, *v)
 	}
@@ -64,6 +67,48 @@ func (s *Snapshot) Summarize(ctx context.Context) (Summary, error) {
 		return strings.Compare(a.Extension, b.Extension)
 	})
 	return result, nil
+}
+
+// summarizeRange tallies the files among s.Nodes[lo:hi] by lower-case
+// extension.
+func (s *Snapshot) summarizeRange(ctx context.Context, lo, hi int) (map[string]*FileType, error) {
+	types := make(map[string]*FileType)
+	byExt := make(map[string]*FileType)
+	var last *FileType
+	var lastExt string
+	for i := lo; i < hi; i++ {
+		if (i-lo)%4096 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+		n := &s.Nodes[i]
+		if n.IsDir() {
+			continue
+		}
+		raw := filepath.Ext(s.NameView(ID(i)))
+		v := last
+		if v == nil || raw != lastExt {
+			v = byExt[raw]
+			if v == nil {
+				ext := strings.ToLower(raw)
+				if ext == "" {
+					ext = "(no extension)"
+				}
+				v = types[ext]
+				if v == nil {
+					v = &FileType{Extension: ext}
+					types[ext] = v
+				}
+				byExt[raw] = v
+			}
+			last, lastExt = v, raw
+		}
+		v.Bytes += n.Size
+		v.Allocated += n.Allocated
+		v.Count++
+	}
+	return types, nil
 }
 
 type Row struct {

@@ -188,9 +188,80 @@ func (s *Snapshot) AddIssue(path string, err error) {
 	}
 }
 
-// Finalize aggregates in O(n) using a leaf queue. It handles MFT records arriving
-// before their parents and does not recurse on adversarially deep trees.
+// Finalize aggregates in O(n). When every entry comes after its parent, as
+// a directory scan adds them, one backward pass does it in place; otherwise
+// a leaf queue handles MFT records arriving before their parents. Neither
+// recurses on adversarially deep trees.
 func (s *Snapshot) Finalize() {
+	if !s.aggregateOrdered() {
+		s.aggregateQueue()
+	}
+	s.Elapsed = time.Since(s.Started)
+}
+
+// aggregateOrdered sums every entry into its parent walking backwards, so a
+// folder is complete before it is added to its own parent. It reports false,
+// having changed only the counts aggregateQueue resets, when some entry
+// precedes its parent.
+func (s *Snapshot) aggregateOrdered() bool {
+	nodes := s.Nodes
+	for i := range nodes {
+		n := &nodes[i]
+		if n.Parent != None && n.Parent >= ID(i) {
+			return false
+		}
+		n.Files, n.Dirs = 1, 0
+		if n.IsDir() {
+			n.Files = 0
+		}
+	}
+	for i := len(nodes) - 1; i > 0; i-- {
+		n := &nodes[i]
+		if n.Parent == None {
+			continue
+		}
+		p := &nodes[n.Parent]
+		p.Size += n.Size
+		p.Allocated += n.Allocated
+		p.Files += n.Files
+		p.Dirs += n.Dirs
+		if n.IsDir() {
+			p.Dirs++
+		}
+	}
+	return true
+}
+
+// FinalizeInOrder aggregates like Finalize, along order: the root first,
+// then every placed entry after its parent. Entries left out of it (those
+// without a parent) keep their own counts and are not added anywhere.
+func (s *Snapshot) FinalizeInOrder(order []ID) {
+	nodes := s.Nodes
+	for i := range nodes {
+		n := &nodes[i]
+		n.Files, n.Dirs = 1, 0
+		if n.IsDir() {
+			n.Files = 0
+		}
+	}
+	for k := len(order) - 1; k > 0; k-- {
+		n := &nodes[order[k]]
+		if n.Parent == None {
+			continue
+		}
+		p := &nodes[n.Parent]
+		p.Size += n.Size
+		p.Allocated += n.Allocated
+		p.Files += n.Files
+		p.Dirs += n.Dirs
+		if n.IsDir() {
+			p.Dirs++
+		}
+	}
+	s.Elapsed = time.Since(s.Started)
+}
+
+func (s *Snapshot) aggregateQueue() {
 	remaining := make([]uint32, len(s.Nodes))
 	queue := make([]ID, 0, len(s.Nodes))
 	for i := range s.Nodes {
@@ -234,7 +305,6 @@ func (s *Snapshot) Finalize() {
 			s.Nodes[i].Dirs--
 		}
 	}
-	s.Elapsed = time.Since(s.Started)
 }
 func (s *Snapshot) Children(id ID) []ID {
 	var ids []ID

@@ -1,9 +1,14 @@
 package desktop
 
 import (
+	"cmp"
 	"context"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/egoist/mygo/ui"
 	"quarry/internal/index"
@@ -111,46 +116,56 @@ func (m *treemapModel) ensureStyles(s *index.Snapshot, dark bool) {
 }
 
 // dominantExtensions finds, for every aggregated block, the extension that
-// holds the most bytes inside it. Each entry is visited at most once.
+// holds the most bytes inside it. Each entry is visited at most once. The
+// blocks' subtrees are cut into units of similar size, tallied on all
+// cores and merged per block; sums are exact, so the split does not change
+// the result.
 func dominantExtensions(ctx context.Context, s *index.Snapshot, branches []treemap.Branch, allocated bool) map[tileKey]string {
-	out := map[tileKey]string{}
-	tally := map[string]uint64{}
-	extensions := map[string]string{}
-	add := func(root index.ID) {
-		_ = s.Visit(ctx, root, func(id index.ID) error {
-			n := s.Nodes[id]
-			if n.IsDir() {
-				return nil
-			}
-			v := n.Size
-			if allocated {
-				v = n.Allocated
-			}
-			raw := filepath.Ext(s.NameView(id))
-			ext, ok := extensions[raw]
-			if !ok {
-				ext = strings.ToLower(raw)
-				extensions[raw] = ext
-			}
-			tally[ext] += v
-			return nil
-		})
+	type unit struct {
+		block  int
+		roots  []index.ID
+		weight uint64
 	}
-	best := func() string {
-		ext, top := "", uint64(0)
-		for e, v := range tally {
-			if v > top || v == top && e < ext {
-				ext, top = e, v
+	var blocks []tileKey
+	var units []unit
+	weight := func(id index.ID) uint64 {
+		n := s.Nodes[id]
+		if n.IsDir() {
+			return uint64(n.Files) + uint64(n.Dirs) + 1
+		}
+		return 1
+	}
+	// Half the cores, less one for the interface: the extension ranks are
+	// computed beside this.
+	workers := max(1, (runtime.GOMAXPROCS(0)-1)/2)
+	limit := uint64(4096)
+	if total := uint64(s.Nodes[0].Files) + uint64(s.Nodes[0].Dirs); total/uint64(8*workers) > limit {
+		limit = total / uint64(8*workers)
+	}
+	// add groups roots into units of about limit entries; a folder larger
+	// than that is replaced by its children.
+	var add func(block int, roots []index.ID)
+	add = func(block int, roots []index.ID) {
+		var batch []index.ID
+		var w uint64
+		for _, r := range roots {
+			rw := weight(r)
+			if rw > limit && s.Nodes[r].FirstChild != index.None {
+				add(block, s.Children(r))
+				continue
+			}
+			batch = append(batch, r)
+			if w += rw; w >= limit {
+				units = append(units, unit{block, batch, w})
+				batch, w = nil, 0
 			}
 		}
-		clear(tally)
-		if ext == "" {
-			ext = "(no extension)"
+		if len(batch) > 0 {
+			units = append(units, unit{block, batch, w})
 		}
-		return ext
 	}
-	var walk func(level []treemap.Branch, parent index.ID)
-	walk = func(level []treemap.Branch, parent index.ID) {
+	var walk func(level []treemap.Branch)
+	walk = func(level []treemap.Branch) {
 		shown := map[index.ID]bool{}
 		for _, b := range level {
 			if !b.Item.Other {
@@ -158,26 +173,98 @@ func dominantExtensions(ctx context.Context, s *index.Snapshot, branches []treem
 			}
 		}
 		for _, b := range level {
-			if ctx.Err() != nil {
-				return
-			}
 			switch {
 			case b.Item.Other:
+				var rest []index.ID
 				for c := s.Nodes[b.Item.ID].FirstChild; c != index.None; c = s.Nodes[c].NextSibling {
 					if !shown[c] {
-						add(c)
+						rest = append(rest, c)
 					}
 				}
-				out[tileKey{b.Item.ID, true}] = best()
+				blocks = append(blocks, tileKey{b.Item.ID, true})
+				add(len(blocks)-1, rest)
 			case len(b.Children) > 0:
-				walk(b.Children, b.Item.ID)
+				walk(b.Children)
 			case s.Nodes[b.Item.ID].IsDir():
-				add(b.Item.ID)
-				out[tileKey{b.Item.ID, false}] = best()
+				blocks = append(blocks, tileKey{b.Item.ID, false})
+				add(len(blocks)-1, []index.ID{b.Item.ID})
 			}
 		}
 	}
-	walk(branches, index.None)
+	walk(branches)
+	// Largest units first, so the last to finish are small.
+	slices.SortStableFunc(units, func(a, b unit) int { return cmp.Compare(b.weight, a.weight) })
+
+	type extBytes struct {
+		ext   string
+		bytes uint64
+	}
+	tallies := make([][]extBytes, len(units))
+	var next atomic.Int64
+	var group sync.WaitGroup
+	for range min(workers, max(1, len(units))) {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			tally := map[string]uint64{}
+			extensions := map[string]string{}
+			for u := int(next.Add(1) - 1); u < len(units) && ctx.Err() == nil; u = int(next.Add(1) - 1) {
+				for _, root := range units[u].roots {
+					_ = s.Visit(ctx, root, func(id index.ID) error {
+						n := &s.Nodes[id]
+						if n.IsDir() {
+							return nil
+						}
+						v := n.Size
+						if allocated {
+							v = n.Allocated
+						}
+						raw := filepath.Ext(s.NameView(id))
+						ext, ok := extensions[raw]
+						if !ok {
+							ext = strings.ToLower(raw)
+							extensions[raw] = ext
+						}
+						tally[ext] += v
+						return nil
+					})
+				}
+				out := make([]extBytes, 0, len(tally))
+				for e, v := range tally {
+					out = append(out, extBytes{e, v})
+				}
+				tallies[u] = out
+				clear(tally)
+			}
+		}()
+	}
+	group.Wait()
+	if ctx.Err() != nil {
+		return map[tileKey]string{}
+	}
+	sums := make([]map[string]uint64, len(blocks))
+	for u, t := range tallies {
+		b := units[u].block
+		if sums[b] == nil {
+			sums[b] = map[string]uint64{}
+		}
+		for _, e := range t {
+			sums[b][e.ext] += e.bytes
+		}
+	}
+	out := make(map[tileKey]string, len(blocks))
+	for b, key := range blocks {
+		ext, top := "", uint64(0)
+		for e, v := range sums[b] {
+			if v > top || v == top && e < ext {
+				ext, top = e, v
+			}
+		}
+		if ext == "" {
+			ext = "(no extension)"
+		}
+		out[key] = ext
+	}
 	return out
 }
 
@@ -218,10 +305,15 @@ func (m *treemapModel) ensure() {
 	needRanks := m.rankFor != s
 	allocated := m.allocated
 	go func() {
-		branches := treemap.Hierarchy(ctx, s, root, allocated, 6000)
-		dominant := dominantExtensions(ctx, s, branches, allocated)
+		// The color ranks need a pass over the whole index and the
+		// dominant extensions one over the blocks: run them side by side.
 		var ranks map[string]int
-		if needRanks {
+		ranked := make(chan struct{})
+		go func() {
+			defer close(ranked)
+			if !needRanks {
+				return
+			}
 			if summary, err := s.Summarize(ctx); err == nil {
 				ranks = map[string]int{}
 				for i, t := range summary.Types {
@@ -231,7 +323,10 @@ func (m *treemapModel) ensure() {
 					ranks[t.Extension] = i
 				}
 			}
-		}
+		}()
+		branches := treemap.Hierarchy(ctx, s, root, allocated, 6000)
+		dominant := dominantExtensions(ctx, s, branches, allocated)
+		<-ranked
 		if ctx.Err() != nil {
 			return
 		}

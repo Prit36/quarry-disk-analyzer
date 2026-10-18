@@ -505,7 +505,9 @@ func readMFT(ctx context.Context, root string, p *Progress, v *volumeReader) (*i
 	s.Nodes[0] = rootNode
 	s.Names = make([]byte, 0, capacity*28) // about the average name length
 	parents := make([]uint64, 1, max(1, capacity))
-	references := make([]uint64, 1, max(1, capacity))
+	// The sequence number of each entry's record: dense finds the entry by
+	// record number, so a reference matches when its sequence does too.
+	sequences := make([]uint16, 1, max(1, capacity))
 	ranks := make([]uint8, 1, max(1, capacity))
 	// Dense references avoid a hash-table lookup for every record and parent.
 	// Fall back to a map for exceptionally sparse, very large MFTs.
@@ -533,7 +535,7 @@ func readMFT(ctx context.Context, root string, p *Progress, v *volumeReader) (*i
 				return 0, false
 			}
 			id := dense[n]
-			return id, id != index.None && references[id] == ref
+			return id, id != index.None && sequences[id] == uint16(ref>>48)
 		}
 		id, ok := ids[ref]
 		return id, ok
@@ -624,7 +626,7 @@ func readMFT(ctx context.Context, root string, p *Progress, v *volumeReader) (*i
 			}
 			if c.root != 0 {
 				put(c.root, 0)
-				references[0] = c.root
+				sequences[0] = uint16(c.root >> 48)
 				rootRef = c.root
 			}
 			extensions = append(extensions, c.extensions...)
@@ -639,7 +641,7 @@ func readMFT(ctx context.Context, root string, p *Progress, v *volumeReader) (*i
 				name := c.name(r.nameOff, r.nameLen)
 				id := s.Add(index.None, unsafe.String(unsafe.SliceData(name), len(name)), r.size, r.allocated, r.modified, r.flags)
 				put(r.reference, id)
-				references = append(references, r.reference)
+				sequences = append(sequences, uint16(r.reference>>48))
 				parents = append(parents, r.parent)
 				ranks = append(ranks, r.rank)
 			}
@@ -712,25 +714,32 @@ func readMFT(ctx context.Context, root string, p *Progress, v *volumeReader) (*i
 		s.Nodes[parent].FirstChild = index.ID(i)
 	}
 	// Every node has one parent. Break malformed cycles before aggregation/path use.
+	// Each chain walked up to a finished entry is then listed from its top
+	// down, so order has every entry after its parent: sizes are then summed
+	// in one backward pass along it.
+	order := make([]index.ID, 1, len(s.Nodes))
+	var chain []index.ID
 	for i := 1; i < len(s.Nodes); i++ {
 		id := index.ID(i)
+		chain = chain[:0]
 		for color[id] == 0 {
 			color[id] = 1
+			chain = append(chain, id)
 			id = s.Nodes[id].Parent
 		}
 		if color[id] == 1 {
 			return nil, fmt.Errorf("MFT parent cycle; using directory scan")
 		}
-		for id = index.ID(i); color[id] == 1; {
-			color[id] = 2
-			id = s.Nodes[id].Parent
+		for k := len(chain) - 1; k >= 0; k-- {
+			color[chain[k]] = 2
+			order = append(order, chain[k])
 		}
 	}
 	if s.Unresolved > 0 {
 		s.AddIssue(root, fmt.Errorf("%d records have stale or unavailable parents; displayed at root, paths disabled", s.Unresolved))
 	}
 	p.Phase.Store("Aggregating sizes")
-	s.Finalize()
+	s.FinalizeInOrder(order)
 	return s, nil
 }
 

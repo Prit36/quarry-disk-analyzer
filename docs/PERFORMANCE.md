@@ -284,3 +284,83 @@ Measurements on the 12th Gen Intel Core i5-12400F, 500k-node synthetic benchmark
 - `go test ./...` passed across all packages with zero regressions.
 - Static verification (`go vet ./...`) passed cleanly.
 
+
+# Scan to display — 18 October 2026
+
+Target: the time from starting a scan until its results, treemap included,
+are drawn, and the memory the process needs on the way.
+`TestScanToDisplay` (opt-in, `QUARRY_E2E_ROOT`) drives the real Scan command
+headlessly and stops at the first frame with the treemap laid out. Same
+machine as above, not elevated, so C:\ is read by the directory scan
+(1.44 million entries). HEAD and the change ran alternately.
+
+| C:\, directory scan | HEAD | This change |
+| --- | ---: | ---: |
+| Scan start → first full frame | 6.88–6.94 s | 6.41–6.51 s |
+| Enumeration finished → first full frame | ≈ 165 ms | ≈ 70 ms |
+| Peak working set | 320–354 MB | 212–234 MB |
+| Peak Go heap in use | 203–253 MB | 155–172 MB |
+| Working set after display | ≈ 148 MB | ≈ 146 MB |
+
+## What limits the directory scan
+
+Profiling showed 95% of scan time in system calls, with the process
+spending 37.6 s of kernel CPU in a 6.2 s scan: six physical cores
+saturated by the file-system and filter-driver stack. 8, 12, 16, 24 and 32
+workers all finished in 5.7–6.7 s. Opening a folder for the first time
+costs about 60 µs of that (a cached reopen costs 14 µs whatever the flags),
+so the floor is per-folder kernel work, not Quarry's code.
+
+## Changes
+
+- **Folders are opened relative to their parent.** Each folder is opened
+  with `NtCreateFile` by name against its parent's still-open handle, so
+  the kernel resolves one path component instead of every ancestor (whose
+  locks every worker contended for). Parent handles are reference counted
+  and closed when the last subfolder has opened; a refused relative open
+  falls back to the full path.
+- **Depth-first work queue.** Folders are taken last-in, first-out, so the
+  queue, and the parent handles it keeps open, stay proportional to tree
+  depth rather than to its widest level.
+- **Handles are not closed on the coordinator.** Closing took 4.6 s of the
+  single coordinator goroutine's time in a 7.2 s scan. Leaf folders are
+  closed by the worker that listed them; other last releases go to a
+  closing goroutine.
+- **Builder chunks live outside the Go heap** (`VirtualAlloc`), so they no
+  longer pace the collector during the scan. `Build` copies them on all
+  cores into exactly sized arrays and returns each chunk to Windows as soon
+  as it is copied, which removed the forced collection and most of the
+  peak.
+- **Hard links** are found with a one-pass bucket scatter and parallel
+  per-bucket sorts, overlapped with `Build`.
+- **Finalize** sums sizes in one backward pass, with no extra memory, when
+  every entry follows its parent (always for directory scans). For MFT
+  scans the cycle check now records a parent-before-child order as it
+  walks, and sizes are summed along it: 20 → 12 ms at 1.5 M records, and
+  two four-byte arrays per entry fewer.
+- **MFT reader** keeps a 2-byte sequence number per entry instead of the
+  8-byte record reference to validate parents.
+- **Treemap preparation** runs the extension ranks beside the hierarchy and
+  dominant-extension pass instead of after it, both split across cores
+  (each limited to about half, leaving the interface a core): 64 → about
+  10 ms on C:\.
+- **After display.** The collection that returns the scan's buffers to
+  Windows (13 ms) and the drive-list refresh now run after the first
+  frame with the treemap, not before the results are handed over.
+
+## Not changed / not measured
+
+MFT scans could not be measured end to end without elevation.
+`BenchmarkReadMFTSynthetic` (opt-in, `QUARRY_MFT_BENCH`) parses a synthetic
+MFT through the real reader from the file cache: 1.5 M records take
+361–368 ms at HEAD and 354–355 ms now; disk reads dominate real MFT scans.
+Partial results are still not shown while a scan runs; the index is handed
+to the interface only when complete. The index's resident size (48-byte
+nodes plus names) is unchanged.
+
+New regression tests compare the backward-pass, queue and ordered
+aggregations, the built index against direct construction across several
+chunks, hard-link grouping against a stable sort, parallel and sequential
+extension summaries and dominant extensions, totals and paths of a deep
+Unicode tree with one and eight workers, and check that no folder handle
+outlives 200 complete or stopped scans.
