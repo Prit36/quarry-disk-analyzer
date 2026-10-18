@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+
+	"quarry/internal/platform"
 )
 
 func (s *Snapshot) ExportJSON(ctx context.Context, writer io.Writer, root ID) error {
@@ -61,7 +63,7 @@ func (s *Snapshot) ExportReport(ctx context.Context, writer io.Writer, root ID) 
 		return err
 	}
 	node := s.Nodes[root]
-	_, err = fmt.Fprintf(writer, "Quarry scan report\nScan root: %s\nAnalyzed scope: %s\nStarted: %s\nDuration: %s\nEngine: %s\nPartial: %t\nLogical bytes: %d\nAllocated bytes: %d\nFiles: %d\nFolders: %d\nScan issues: %d\n\nLargest files (logical bytes)\n", s.Root, s.Path(root), s.Started.Format("2006-01-02 15:04:05 -07:00"), s.Elapsed, s.Engine, s.Cancelled, node.Size, node.Allocated, node.Files, node.Dirs, s.Errors)
+	_, err = fmt.Fprintf(writer, "Quarry scan report\nScan root: %s\nAnalyzed scope: %s\nStarted: %s\nDuration: %s\nEngine: %s\nPartial: %t\nLogical bytes: %d\nAllocated bytes: %d\nFiles: %d\nFolders: %d\nScan issues: %d\n\nLargest files (logical bytes)\n", s.Root, s.Path(root), platform.FormatDateTime(s.Started), s.Elapsed, s.Engine, s.Cancelled, node.Size, node.Allocated, node.Files, node.Dirs, s.Errors)
 	if err != nil {
 		return err
 	}

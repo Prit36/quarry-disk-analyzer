@@ -11,6 +11,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	"quarry/internal/index"
+	"quarry/internal/platform"
 )
 
 const (
@@ -355,7 +356,7 @@ func (a *App) dialogs(c *ui.Context, pal palette) {
 			if s.Fallback != "" {
 				line("MFT not used", s.Fallback)
 			}
-			line("Started", s.Started.Format("2006-01-02 15:04:05"))
+			line("Started", platform.FormatDateTime(s.Started))
 			line("Duration", duration(s.Elapsed))
 			line("Files / folders", count(uint64(root.Files))+" / "+count(uint64(root.Dirs)))
 			line("Logical size", a.size(root.Size)+"  ("+count(root.Size)+" bytes)")

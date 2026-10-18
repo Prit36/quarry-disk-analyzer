@@ -209,7 +209,7 @@ func dateText(unix int64) string {
 	if unix == 0 {
 		return ""
 	}
-	return time.Unix(unix, 0).Format("2006-01-02 15:04")
+	return platform.FormatDateTime(time.Unix(unix, 0))
 }
 
 func duration(d time.Duration) string {

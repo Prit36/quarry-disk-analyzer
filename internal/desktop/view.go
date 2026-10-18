@@ -10,6 +10,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	"quarry/internal/index"
+	"quarry/internal/platform"
 )
 
 // view builds the window for every frame.
@@ -475,7 +476,7 @@ func (a *App) scanFlags(c *ui.Context) {
 		ui.Text(c, text).TextColor(t.Warning).SingleLine().Tooltip(tip)
 	}
 	if a.source != "" {
-		warn("Saved scan from "+s.Started.Format("2006-01-02 15:04"), a.source+"\nHistorical data: files may have changed since.")
+		warn("Saved scan from "+platform.FormatDateTime(s.Started), a.source+"\nHistorical data: files may have changed since.")
 	}
 	if s.Cancelled {
 		warn("Partial scan", "The scan was stopped before it finished; totals are incomplete.")

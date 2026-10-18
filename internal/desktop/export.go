@@ -204,7 +204,7 @@ func (a *App) openSnapshot(path string) {
 				a.scanning = false
 			}
 			a.setBase(s, path, meta, hide)
-			a.notify("Opened saved scan of %s from %s. This is historical data.", s.Root, s.Started.Format("2006-01-02 15:04"))
+			a.notify("Opened saved scan of %s from %s. This is historical data.", s.Root, platform.FormatDateTime(s.Started))
 		})
 	}()
 }
@@ -227,7 +227,7 @@ func (a *App) compareDialog() {
 				a.fail("Compare: %v", err)
 				return
 			}
-			a.dlg.compare = compareDialog{open: true, changes: changes, label: filepath.Base(paths[0]) + " (" + previous.Started.Format("2006-01-02 15:04") + ")"}
+			a.dlg.compare = compareDialog{open: true, changes: changes, label: filepath.Base(paths[0]) + " (" + platform.FormatDateTime(previous.Started) + ")"}
 		})
 	}()
 }
