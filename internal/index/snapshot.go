@@ -110,6 +110,9 @@ func readSnapshotHeader(reader io.Reader) (snapshotHeader, SnapshotInfo, error) 
 }
 
 func LoadSnapshot(ctx context.Context, path string) (*Snapshot, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -125,6 +128,9 @@ func LoadSnapshot(ctx context.Context, path string) (*Snapshot, error) {
 // loadSnapshot decodes a saved scan from its file contents. Files written by
 // this version are decoded member by member in parallel when parallel is set.
 func loadSnapshot(ctx context.Context, data []byte, parallel bool) (*Snapshot, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	var compressed io.Reader
 	if starts := gzipMemberStarts(data); parallel && len(starts) > 1 {
 		segments := newSegmentStream(data, starts)

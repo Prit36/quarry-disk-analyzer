@@ -191,30 +191,48 @@ func gzipMemberStarts(data []byte) []int {
 // decoded or waiting, so memory stays bounded.
 type segmentStream struct {
 	results chan *segmentResult
+	free    chan *segmentResult
 	stop    chan struct{}
-	current []byte
+	current *segmentResult
+	offset  int
 	err     error
+	workers sync.WaitGroup
+	closed  sync.Once
 }
 
 type segmentResult struct {
-	data []byte
-	err  error
-	done chan struct{}
+	data  []byte
+	err   error
+	ready chan struct{}
 }
 
 func newSegmentStream(data []byte, starts []int) *segmentStream {
-	s := &segmentStream{results: make(chan *segmentResult, 2*max(1, min(8, runtime.NumCPU()))), stop: make(chan struct{})}
+	queued := 2 * max(1, min(8, runtime.GOMAXPROCS(0)))
+	slots := min(len(starts), queued+2)
+	s := &segmentStream{results: make(chan *segmentResult, queued), free: make(chan *segmentResult, slots), stop: make(chan struct{})}
+	for range slots {
+		s.free <- &segmentResult{ready: make(chan struct{}, 1)}
+	}
+	s.workers.Add(1)
 	go func() {
+		defer s.workers.Done()
 		defer close(s.results)
 		for i, start := range starts {
+			var r *segmentResult
+			select {
+			case r = <-s.free:
+			case <-s.stop:
+				return
+			}
 			end := len(data)
 			if i+1 < len(starts) {
 				end = starts[i+1]
 			}
-			r := &segmentResult{done: make(chan struct{})}
+			s.workers.Add(1)
 			go func(segment []byte) {
-				defer close(r.done)
-				r.data, r.err = decodeGzipSegment(segment)
+				defer s.workers.Done()
+				r.data, r.err = decodeGzipSegment(segment, r.data[:0])
+				r.ready <- struct{}{}
 			}(data[start:end])
 			select {
 			case s.results <- r:
@@ -226,19 +244,32 @@ func newSegmentStream(data []byte, starts []int) *segmentStream {
 	return s
 }
 
-func decodeGzipSegment(segment []byte) ([]byte, error) {
+func decodeGzipSegment(segment, buffer []byte) ([]byte, error) {
 	zr, err := gzip.NewReader(bytes.NewReader(segment))
 	if err != nil {
 		return nil, err
 	}
-	var out bytes.Buffer
-	out.Grow(gzipBlockSize + bytes.MinRead) // one member's output, so ReadFrom never regrows
-	_, err = out.ReadFrom(zr)
+	defer zr.Close()
+	out := bytes.NewBuffer(buffer)
+	out.Grow(gzipBlockSize + bytes.MinRead)
+	// A false boundary can span multiple members. Fall back to the serial
+	// reader before decoding more than one block into a retained buffer.
+	_, err = out.ReadFrom(io.LimitReader(zr, gzipBlockSize+1))
+	if out.Len() > gzipBlockSize && err == nil {
+		err = fmt.Errorf("gzip member exceeds %d bytes", gzipBlockSize)
+	}
 	return out.Bytes(), err
 }
 
 func (s *segmentStream) Read(p []byte) (int, error) {
-	for len(s.current) == 0 {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	for s.current == nil || s.offset == len(s.current.data) {
+		if s.current != nil {
+			s.free <- s.current
+			s.current, s.offset = nil, 0
+		}
 		if s.err != nil {
 			return 0, s.err
 		}
@@ -246,19 +277,25 @@ func (s *segmentStream) Read(p []byte) (int, error) {
 		if !ok {
 			return 0, io.EOF
 		}
-		<-r.done
+		<-r.ready
 		if r.err != nil {
 			s.err = fmt.Errorf("%w: %v", errSnapshotSegment, r.err)
 			return 0, s.err
 		}
-		s.current = r.data
+		s.current = r
 	}
-	n := copy(p, s.current)
-	s.current = s.current[n:]
+	n := copy(p, s.current.data[s.offset:])
+	s.offset += n
 	return n, nil
 }
 
-// Close stops the decoding goroutines that have not been started yet.
+// Close stops scheduling and joins every decoder before releasing its buffers.
+// A canceled load cannot leave workers retaining the compressed scan.
 func (s *segmentStream) Close() {
-	close(s.stop)
+	s.closed.Do(func() {
+		close(s.stop)
+		s.workers.Wait()
+		s.current, s.results, s.free = nil, nil, nil
+		s.err = io.ErrClosedPipe
+	})
 }

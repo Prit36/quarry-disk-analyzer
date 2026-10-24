@@ -72,6 +72,10 @@ func (s *Snapshot) FindDuplicatesOver(ctx context.Context, root ID, minSize uint
 		}
 		progress.TotalBytes.Store(total)
 	}
+	// Scratch belongs to this verification, rather than each size/prefix
+	// group. Thousands of small groups must not each allocate 64 KiB per
+	// worker; prefix reads need only 4 KiB and empty groups need none.
+	buffers := make([][]byte, min(8, runtime.NumCPU()))
 	for size, ids := range candidates {
 		if len(ids) < 2 {
 			continue
@@ -115,7 +119,7 @@ func (s *Snapshot) FindDuplicatesOver(ctx context.Context, root ID, minSize uint
 			return nil
 		}
 		if size <= duplicatePrefix {
-			outcomes := s.hashCandidates(ctx, ids, size, progress)
+			outcomes := s.hashCandidates(ctx, ids, size, progress, buffers)
 			if err := settle(outcomes, func(i int) { add(ids[i], outcomes[i]) }); err != nil {
 				return result, err
 			}
@@ -124,7 +128,7 @@ func (s *Snapshot) FindDuplicatesOver(ctx context.Context, root ID, minSize uint
 			// duplicate, so it is never read further.
 			// Prefix reads are not progress: the bytes counted are the
 			// candidates' full sizes, read in full or ruled out.
-			prefixOutcomes := s.hashCandidates(ctx, ids, duplicatePrefix, nil)
+			prefixOutcomes := s.hashCandidates(ctx, ids, duplicatePrefix, nil, buffers)
 			prefixes := make(map[[32]byte][]ID)
 			if err := settle(prefixOutcomes, func(i int) {
 				prefixes[prefixOutcomes[i].digest] = append(prefixes[prefixOutcomes[i].digest], ids[i])
@@ -142,7 +146,7 @@ func (s *Snapshot) FindDuplicatesOver(ctx context.Context, root ID, minSize uint
 				}
 				pending = append(pending, same...)
 			}
-			outcomes := s.hashCandidates(ctx, pending, size, progress)
+			outcomes := s.hashCandidates(ctx, pending, size, progress, buffers)
 			if err := settle(outcomes, func(i int) { add(pending[i], outcomes[i]) }); err != nil {
 				return result, err
 			}
@@ -171,21 +175,36 @@ func (s *Snapshot) FindDuplicatesOver(ctx context.Context, root ID, minSize uint
 }
 
 // hashCandidates hashes the first limit bytes of each candidate, or all of
-// it when limit is its size, on up to eight workers with pooled buffers.
-func (s *Snapshot) hashCandidates(ctx context.Context, ids []ID, limit uint64, progress *DuplicateProgress) []hashOutcome {
+// it when limit is its size, on up to eight workers. Calls sharing buffers
+// are sequential; each worker owns one scratch slot for the duration of a call.
+func (s *Snapshot) hashCandidates(ctx context.Context, ids []ID, limit uint64, progress *DuplicateProgress, buffers [][]byte) []hashOutcome {
+	if len(ids) == 0 {
+		return nil
+	}
 	outcomes := make([]hashOutcome, len(ids))
 	var next atomic.Int64
 	var wg sync.WaitGroup
-	for range max(1, min(len(ids), 8, runtime.NumCPU())) {
+	work := func(w int) {
+		needed := int(min(limit, 64<<10))
+		buffer := buffers[w]
+		if cap(buffer) < needed {
+			buffer = make([]byte, needed)
+		} else {
+			buffer = buffer[:needed]
+		}
+		buffers[w] = buffer
+		for i := int(next.Add(1)) - 1; i < len(ids); i = int(next.Add(1)) - 1 {
+			outcomes[i] = s.hashCandidate(ctx, ids[i], limit, buffer, progress)
+		}
+	}
+	for w := 1; w < min(len(ids), len(buffers)); w++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			buffer := make([]byte, 64<<10)
-			for i := int(next.Add(1)) - 1; i < len(ids); i = int(next.Add(1)) - 1 {
-				outcomes[i] = s.hashCandidate(ctx, ids[i], limit, buffer, progress)
-			}
+			work(w)
 		}()
 	}
+	work(0)
 	wg.Wait()
 	return outcomes
 }
@@ -252,6 +271,6 @@ func (s *Snapshot) hashCandidate(ctx context.Context, id ID, limit uint64, buffe
 		return hashOutcome{}
 	}
 	var digest [32]byte
-	copy(digest[:], hash.Sum(nil))
+	hash.Sum(digest[:0])
 	return hashOutcome{digest: digest, info: opened, ok: true}
 }
