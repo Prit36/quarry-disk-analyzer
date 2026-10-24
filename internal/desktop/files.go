@@ -334,8 +334,14 @@ func sortEntriesGrouped(ctx context.Context, s *index.Snapshot, ids []index.ID, 
 	desc := order.Descending
 	switch order.Column {
 	case "Folder":
-		parentRanks := make([]uint32, len(s.Nodes))
+		pParentRanks, parentRanks := index.GetUint32s(len(s.Nodes))
 		var parents []index.ID
+		defer func() {
+			for _, p := range parents {
+				parentRanks[p] = 0
+			}
+			index.PutUint32s(pParentRanks)
+		}()
 		for i, id := range ids {
 			if i&4095 == 0 && ctx.Err() != nil {
 				return ctx.Err()
@@ -441,10 +447,11 @@ func sortEntriesGrouped(ctx context.Context, s *index.Snapshot, ids []index.ID, 
 		// more expensive name comparisons and needs only compact scratch IDs.
 		return s.SortByRankGroups(ctx, ids, folderRank, rank, desc, index.Sort{Column: "Name"}, groups)
 	case "Extension":
-		ranks, maxRank, err := extensionRanks(ctx, s, ids)
+		pRanks, ranks, maxRank, err := extensionRanks(ctx, s, ids)
 		if err != nil {
 			return err
 		}
+		defer index.PutUint32s(pRanks)
 		// Within an extension, largest first, then by ID: exactly as
 		// Compare with Sort{Desc: true} orders them.
 		return s.SortByRankValues(ctx, ids, ranks, maxRank, desc, index.Sort{Desc: true, Allocated: allocated}, groups)
@@ -461,9 +468,9 @@ func sortEntriesGrouped(ctx context.Context, s *index.Snapshot, ids []index.ID, 
 // rank. Workers intern the borrowed, original spellings of their ranges
 // (consecutive entries mostly share one), so case folding happens once per
 // distinct spelling and every entry is hashed at most once.
-func extensionRanks(ctx context.Context, s *index.Snapshot, ids []index.ID) ([]uint32, uint32, error) {
+func extensionRanks(ctx context.Context, s *index.Snapshot, ids []index.ID) (*[]uint32, []uint32, uint32, error) {
 	workers := min(runtime.GOMAXPROCS(0), max(1, len(ids)/(1<<15)))
-	ranks := make([]uint32, len(ids)) // slots into the worker's spellings, then ranks
+	pRanks, ranks := index.GetUint32s(len(ids)) // slots into the worker's spellings, then ranks
 	spellings := make([][]string, workers)
 	var wg sync.WaitGroup
 	for w := range workers {
@@ -495,7 +502,8 @@ func extensionRanks(ctx context.Context, s *index.Snapshot, ids []index.ID) ([]u
 	}
 	wg.Wait()
 	if err := ctx.Err(); err != nil {
-		return nil, 0, err
+		index.PutUint32s(pRanks)
+		return nil, nil, 0, err
 	}
 	folded := map[string]uint32{}
 	for _, raws := range spellings {
@@ -529,7 +537,7 @@ func extensionRanks(ctx context.Context, s *index.Snapshot, ids []index.ID) ([]u
 		}()
 	}
 	wg.Wait()
-	return ranks, uint32(max(1, len(exts)) - 1), nil
+	return pRanks, ranks, uint32(max(1, len(exts)) - 1), nil
 }
 
 func extOf(s *index.Snapshot, id index.ID) string {

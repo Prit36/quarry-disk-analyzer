@@ -4,7 +4,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
-	"path/filepath"
+	"math/bits"
 	"runtime"
 	"slices"
 	"strings"
@@ -86,7 +86,7 @@ func (s *Snapshot) summarizeRange(ctx context.Context, lo, hi int) (map[string]*
 		if n.IsDir() {
 			continue
 		}
-		raw := filepath.Ext(s.NameView(ID(i)))
+		raw := fastExt(s.NameView(ID(i)))
 		v := last
 		if v == nil || raw != lastExt {
 			v = byExt[raw]
@@ -306,7 +306,7 @@ func (s *Snapshot) searchSubtreeWalk(ctx context.Context, top, skip ID, f *Filte
 // records in ancestorOK whether the folder or an ancestor satisfies every
 // path: term, which is what its descendants inherit.
 func (s *Snapshot) matchEntry(id ID, f *Filter, ancestorOK []bool, tally *searchTally, paths *pathWalker) bool {
-	n := s.Nodes[id]
+	n := &s.Nodes[id]
 	name := s.NameView(id)
 	inherited := false
 	if ancestorOK != nil {
@@ -580,50 +580,59 @@ func (s *Snapshot) displayName(id ID) string {
 }
 
 func containsFold(s, lower string) bool {
-	if len(lower) == 0 {
+	n := len(lower)
+	if n == 0 {
 		return true
 	}
-	if isASCII(s) {
-		return containsFoldASCII(s, lower)
-	}
-	// Fold ASCII while searching, instead of first scanning the entire name
-	// to classify it. A positive ASCII match is valid even when a later byte
-	// is Unicode; encountering Unicode otherwise uses the full fold.
-	c0 := lower[0]
-	n := len(lower)
-	maxI := len(s) - n
-	for i := 0; i <= maxI; i++ {
-		b := s[i]
-		if b >= 128 {
-			return strings.Contains(strings.ToLower(s), lower)
-		}
-		if b >= 'A' && b <= 'Z' {
-			b += 32
-		}
-		if b != c0 {
-			continue
-		}
-		match := true
-		for j := 1; j < n; j++ {
-			c := s[i+j]
-			if c >= 128 {
+	last := len(s) - n
+	if last < 0 {
+		for i := 0; i < len(s); i++ {
+			if s[i] >= 128 {
 				return strings.Contains(strings.ToLower(s), lower)
 			}
-			if c >= 'A' && c <= 'Z' {
-				c += 32
-			}
-			if c != lower[j] {
-				match = false
-				break
-			}
 		}
-		if match {
+		return false
+	}
+	c0 := lower[0]
+	if c0 >= 0x80 {
+		return strings.Contains(strings.ToLower(s), lower)
+	}
+	pattern := uint64(c0) * swarOnes
+	for i := 0; i <= last; {
+		if i+8 > len(s) {
+			for ; i <= last; i++ {
+				b := s[i]
+				if b >= 128 {
+					return strings.Contains(strings.ToLower(s), lower)
+				}
+				if b >= 'A' && b <= 'Z' {
+					b += 32
+				}
+				if b == c0 && equalFoldASCII(s[i:i+n], lower) {
+					return true
+				}
+			}
+			break
+		}
+		x := load64(s, i)
+		if x&swarHigh != 0 {
+			return strings.Contains(strings.ToLower(s), lower)
+		}
+		m := zeroBytes(foldASCII8(x) ^ pattern)
+		if m == 0 {
+			i += 8
+			continue
+		}
+		j := i + bits.TrailingZeros64(m)/8
+		if j > last {
+			break
+		}
+		if equalFoldASCII(s[j:j+n], lower) {
 			return true
 		}
+		i = j + 1
 	}
-	// A Unicode fold can change encoded length, including in the tail that
-	// was too short to contain the original byte pattern.
-	for i := max(0, maxI+1); i < len(s); i++ {
+	for i := max(0, last+1); i < len(s); i++ {
 		if s[i] >= 128 {
 			return strings.Contains(strings.ToLower(s), lower)
 		}

@@ -19,7 +19,8 @@ func sortNumeric(ctx context.Context, ids []ID, key func(ID) uint64) error {
 		return nil
 	}
 	const digitBits, digits = 11, 1 << 11
-	keys := make([]uint64, len(ids))
+	pKeys, keys := getUint64s(len(ids))
+	defer putUint64s(pKeys)
 	// Read the keys on all cores; each worker summarizes its range.
 	type summary struct {
 		diff           uint64
@@ -111,9 +112,14 @@ func sortNumeric(ctx context.Context, ids []ID, key func(ID) uint64) error {
 		f(0, 0, len(ids)/workers)
 		wg.Wait()
 	}
-	hist := make([]uint32, workers*digits)
-	srcIDs, dstIDs := ids, make([]ID, len(ids))
-	srcKeys, dstKeys := keys, make([]uint64, len(ids))
+	pHist, hist := getUint32s(workers * digits)
+	defer putUint32s(pHist)
+	pDstIDs, dstIDs := getIDs(len(ids))
+	defer putIDs(pDstIDs)
+	pDstKeys, dstKeys := getUint64s(len(ids))
+	defer putUint64s(pDstKeys)
+	srcIDs, dstIDsSlice := ids, dstIDs
+	srcKeys, dstKeysSlice := keys, dstKeys
 	for pass, slot := range slots[:n] {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -149,7 +155,7 @@ func sortNumeric(ctx context.Context, ids []ID, key func(ID) uint64) error {
 					for i := start; i < end; i++ {
 						d := uint32(srcIDs[i]) >> shift & (digits - 1)
 						p := counts[d]
-						dstIDs[p] = srcIDs[i]
+						dstIDsSlice[p] = srcIDs[i]
 						counts[d]++
 					}
 				} else {
@@ -157,7 +163,7 @@ func sortNumeric(ctx context.Context, ids []ID, key func(ID) uint64) error {
 					for i := start; i < end; i++ {
 						d := srcKeys[i] >> shift & (digits - 1)
 						p := counts[d]
-						dstIDs[p] = srcIDs[i]
+						dstIDsSlice[p] = srcIDs[i]
 						counts[d]++
 					}
 				}
@@ -167,7 +173,7 @@ func sortNumeric(ctx context.Context, ids []ID, key func(ID) uint64) error {
 					for i := start; i < end; i++ {
 						d := uint32(srcIDs[i]) >> shift & (digits - 1)
 						p := counts[d]
-						dstIDs[p], dstKeys[p] = srcIDs[i], srcKeys[i]
+						dstIDsSlice[p], dstKeysSlice[p] = srcIDs[i], srcKeys[i]
 						counts[d]++
 					}
 				} else {
@@ -175,14 +181,14 @@ func sortNumeric(ctx context.Context, ids []ID, key func(ID) uint64) error {
 					for i := start; i < end; i++ {
 						d := srcKeys[i] >> shift & (digits - 1)
 						p := counts[d]
-						dstIDs[p], dstKeys[p] = srcIDs[i], srcKeys[i]
+						dstIDsSlice[p], dstKeysSlice[p] = srcIDs[i], srcKeys[i]
 						counts[d]++
 					}
 				}
 			}
 		})
-		srcIDs, dstIDs = dstIDs, srcIDs
-		srcKeys, dstKeys = dstKeys, srcKeys
+		srcIDs, dstIDsSlice = dstIDsSlice, srcIDs
+		srcKeys, dstKeysSlice = dstKeysSlice, srcKeys
 	}
 	if &ids[0] != &srcIDs[0] {
 		copy(ids, srcIDs)
@@ -204,8 +210,11 @@ func sortPackedNumeric(ctx context.Context, ids []ID, keys []uint64, idBits uint
 		f(0, 0, len(ids)/workers)
 		wg.Wait()
 	}
-	hist := make([]uint32, workers*digits)
-	src, dst := keys, make([]uint64, len(keys))
+	pHist, hist := getUint32s(workers * digits)
+	defer putUint32s(pHist)
+	pDst, dst := getUint64s(len(keys))
+	defer putUint64s(pDst)
+	src := keys
 	for shift := uint(0); shift < 64; shift += digitBits {
 		if err := ctx.Err(); err != nil {
 			return err

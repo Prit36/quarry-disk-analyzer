@@ -57,14 +57,14 @@ func (a *App) mutableSelection(ids []index.ID) bool {
 	var localStack [64]index.ID
 	stack := localStack[:0]
 	classify := func(id index.ID, parent uint8) uint8 {
-		n := s.Nodes[id]
+		n := &s.Nodes[id]
 		if parent&pathBlocked != 0 || n.Flags&index.Unplaced != 0 || n.Parent == 0 && s.IsMetadata(id) {
 			return pathBlocked
 		}
 		if parent&pathRegular != 0 && n.NameLength > 0 {
 			name := s.NameView(id)
 			if !(name[0] == '.' && (len(name) == 1 || (len(name) == 2 && name[1] == '.'))) &&
-				strings.IndexByte(name, '/') < 0 && strings.IndexByte(name, '\\') < 0 {
+				!hasSlash(name) {
 				return pathRegular
 			}
 		}
@@ -116,6 +116,15 @@ func (a *App) mutableSelection(ids []index.ID) bool {
 		}
 	}
 	return len(ids) > 0
+}
+
+func hasSlash(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] == '/' || s[i] == '\\' {
+			return true
+		}
+	}
+	return false
 }
 
 func protectedDriveName(name string) bool {

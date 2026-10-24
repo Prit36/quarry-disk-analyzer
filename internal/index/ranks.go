@@ -56,7 +56,9 @@ func (s *Snapshot) SortByRankGroups(ctx context.Context, ids []ID, rank func(ID)
 		}
 		return ctx.Err()
 	}
-	return s.sortRanked(ctx, ids, func(i int) uint32 { return rank(ids[i]) }, make([]uint32, len(ids)), maxRank, desc, tie, groups)
+	pScratch, scratch := getUint32s(len(ids))
+	defer putUint32s(pScratch)
+	return s.sortRanked(ctx, ids, func(i int) uint32 { return rank(ids[i]) }, scratch, maxRank, desc, tie, groups)
 }
 
 // SortByRankValues is SortByRankGroups with the rank of ids[i] given as
@@ -87,9 +89,9 @@ func (s *Snapshot) SortByRankValues(ctx context.Context, ids []ID, ranks []uint3
 func (s *Snapshot) sortRanked(ctx context.Context, ids []ID, rank func(int) uint32, ranks []uint32, maxRank uint32, desc bool, tie Sort, groups *[]uint32) error {
 	buckets := int(maxRank) + 1
 	// Bound histograms even for scans with almost one distinct folder per
-	// result. Small scans also avoid goroutine setup.
 	workers := min(runtime.GOMAXPROCS(0), max(1, len(ids)/(1<<16)), max(1, (8<<20)/(4*buckets)))
-	hist := make([]uint32, workers*buckets)
+	pHist, hist := getUint32s(workers * buckets)
+	defer putUint32s(pHist)
 	runSortWorkers(len(ids), workers, func(w, start, end int) {
 		counts := hist[w*buckets : (w+1)*buckets]
 		for i := start; i < end; i++ {
@@ -117,7 +119,8 @@ func (s *Snapshot) sortRanked(ctx context.Context, ids []ID, rank func(int) uint
 		}
 	}
 	bounds[buckets] = sum
-	spare := make([]ID, len(ids))
+	pSpare, spare := getIDs(len(ids))
+	defer putIDs(pSpare)
 	runSortWorkers(len(ids), workers, func(w, start, end int) {
 		counts := hist[w*buckets : (w+1)*buckets]
 		for i := start; i < end; i++ {

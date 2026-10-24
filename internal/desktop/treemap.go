@@ -3,7 +3,6 @@ package desktop
 import (
 	"cmp"
 	"context"
-	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
@@ -230,7 +229,7 @@ func dominantExtensions(ctx context.Context, s *index.Snapshot, branches []treem
 						if allocated {
 							v = n.Allocated
 						}
-						raw := filepath.Ext(s.NameView(id))
+						raw := rawExtOf(s, id)
 						ext, ok := extensions[raw]
 						if !ok {
 							ext = strings.ToLower(raw)
@@ -545,12 +544,48 @@ func fitMiddleText(s string, maxW float32, measure func(string) float32) string 
 	if measure(s) <= maxW {
 		return s
 	}
-	runes := []rune(s)
+	isASCII := true
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			isASCII = false
+			break
+		}
+	}
+	if isASCII {
+		best := "…"
+		lo, hi := 1, (len(s)-1)/2
+		for lo <= hi {
+			half := lo + (hi-lo)/2
+			candidate := s[:half] + "…" + s[len(s)-half:]
+			if measure(candidate) <= maxW {
+				best, lo = candidate, half+1
+			} else {
+				hi = half - 1
+			}
+		}
+		return best
+	}
+
+	var localOffsets [64]int
+	var offsets []int
+	if len(s) <= len(localOffsets) {
+		offsets = localOffsets[:0]
+	} else {
+		offsets = make([]int, 0, len(s))
+	}
+	for i := range s {
+		offsets = append(offsets, i)
+	}
+	offsets = append(offsets, len(s))
+	runeCount := len(offsets) - 1
+
 	best := "…"
-	lo, hi := 1, (len(runes)-1)/2
+	lo, hi := 1, (runeCount-1)/2
 	for lo <= hi {
 		half := lo + (hi-lo)/2
-		candidate := string(runes[:half]) + "…" + string(runes[len(runes)-half:])
+		headEnd := offsets[half]
+		tailStart := offsets[runeCount-half]
+		candidate := s[:headEnd] + "…" + s[tailStart:]
 		if measure(candidate) <= maxW {
 			best, lo = candidate, half+1
 		} else {

@@ -407,12 +407,12 @@ func ParseSize(s string) (uint64, error) {
 // MatchNode tests an entry. path is only consulted when NeedsPath; ancestor
 // reports whether an ancestor already satisfied every path: term.
 func (f *Filter) MatchNode(name string, n Node, path func() string, ancestor bool) bool {
-	return f.matchNode(name, n, path, nil, ancestor)
+	return f.matchNode(name, &n, path, nil, ancestor)
 }
 
 // matchNode is MatchNode. With paths, the path terms paths tracks are
 // decided by its incremental matches for the path that path() returned.
-func (f *Filter) matchNode(name string, n Node, path func() string, paths *pathWalker, ancestor bool) bool {
+func (f *Filter) matchNode(name string, n *Node, path func() string, paths *pathWalker, ancestor bool) bool {
 	switch f.Kind {
 	case KindFiles:
 		if n.IsDir() {

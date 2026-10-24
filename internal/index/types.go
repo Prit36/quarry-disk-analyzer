@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"context"
 	"fmt"
-	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
@@ -68,7 +67,7 @@ func (s *Snapshot) SummarizeScope(ctx context.Context, root ID, allocated bool) 
 			if n.IsDir() {
 				return nil
 			}
-			raw := filepath.Ext(s.NameView(id))
+			raw := fastExt(s.NameView(id))
 			group := last
 			if group == nil || raw != lastExt {
 				group = bySpelling[raw]

@@ -15,7 +15,15 @@ import (
 // buffer cost 20 bytes/entry; the former full-prefix sort needed 36.
 func (s *Snapshot) sortNames(ctx context.Context, ids []ID, by Sort) error {
 	workers := min(runtime.GOMAXPROCS(0), max(1, len(ids)/(1<<16)))
-	return s.sortNameChunks(ctx, ids, make([]ID, len(ids)), make([]uint64, len(ids)), make([]uint64, len(ids)), make([]uint32, workers*2048), 0, workers, by)
+	pSpareIDs, spareIDs := getIDs(len(ids))
+	defer putIDs(pSpareIDs)
+	pKeys, keys := getUint64s(len(ids))
+	defer putUint64s(pKeys)
+	pSpareKeys, spareKeys := getUint64s(len(ids))
+	defer putUint64s(pSpareKeys)
+	pHist, hist := getUint32s(workers * 2048)
+	defer putUint32s(pHist)
+	return s.sortNameChunks(ctx, ids, spareIDs, keys, spareKeys, hist, 0, workers, by)
 }
 
 func runSortWorkers(n, workers int, f func(w, start, end int)) {

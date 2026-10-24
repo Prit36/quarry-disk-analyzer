@@ -21,7 +21,8 @@ func (s *Snapshot) sortWordKeysFrom(ctx context.Context, ids []ID, key func(ID) 
 	if len(ids) < 2 {
 		return nil
 	}
-	keys := make([]wordKey, len(ids))
+	pKeys, keys := getWordKeys(len(ids))
+	defer putWordKeys(pKeys)
 	workers := min(runtime.GOMAXPROCS(0), max(1, len(ids)/(1<<16)))
 	run := func(f func(w, start, end int)) {
 		var wg sync.WaitGroup
@@ -81,9 +82,14 @@ func (s *Snapshot) sortWordKeysFrom(ctx context.Context, ids []ID, key func(ID) 
 		}
 	}
 	if n > 0 {
-		hist := make([]uint32, workers*256)
-		srcIDs, dstIDs := ids, make([]ID, len(ids))
-		srcKeys, dstKeys := keys, make([]wordKey, len(ids))
+		pHist, hist := getUint32s(workers * 256)
+		defer putUint32s(pHist)
+		pDstIDs, dstIDs := getIDs(len(ids))
+		defer putIDs(pDstIDs)
+		pDstKeys, dstKeys := getWordKeys(len(ids))
+		defer putWordKeys(pDstKeys)
+		srcIDs := ids
+		srcKeys := keys
 		for pass, slot := range slots[:n] {
 			if err := ctx.Err(); err != nil {
 				return err
