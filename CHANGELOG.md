@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.2.4 - 2026-10-24
+
+- Publish from the cleaned public repository with MIT licensing, corrected
+  asset provenance, and application and dependency license notices in downloads.
+- Retain the scanning, search and interface improvements from 0.2.3.
+
 ## 0.2.3 - 2026-10-24
 
 - Reduce first-load preparation: specialize the unrestricted Files query,

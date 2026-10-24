@@ -1,6 +1,6 @@
 <img src="resources/icon.png" width="96" alt="Quarry logo">
 
-# Quarry 0.2.3
+# Quarry 0.2.4
 
 A disk space analyzer for Windows (formerly Stratum), written in Go with the MyGO native UI toolkit (Direct3D, no webview).
 Quarry shows where the space went and gets you from a storage problem to the file or folder responsible in a few clicks.
