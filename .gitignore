@@ -4,3 +4,13 @@ build/
 *.prof
 coverage.out
 .DS_Store
+.claude/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+*.quarry
+*.stratum

@@ -67,5 +67,5 @@ Select All map construction remains a separate UI-thread cost; the improved fram
 The selective path query also prepares metadata eligibility now; its worker cost and allocation tradeoff are shown above.
 Heap figures measure retained Go allocations, not process working set or peak memory. No scan-throughput claim is made.
 
-Raw reports and per-run samples: `C:\Users\My_Home\Desktop\projects\neww\build\latency-pass\rerun-20261018-155137`; aggregated in `summary.json`.
+Raw reports and per-run samples: `build\latency-pass\rerun-20261018-155137`; aggregated in `summary.json`.
 Snapshot SHA-256: `d47d7e07795011538cc9c01c5c174e01b281482a10d9bcb28926e95f09d3509d`.

@@ -9,5 +9,6 @@ golang.org/x/sys v0.48.0 — https://go.googlesource.com/sys
 Fluent UI System Icons — https://github.com/microsoft/fluentui-system-icons
 
 Their license texts accompany this notice. Go's runtime license is included
-as go-LICENSE.txt. These notices describe dependency licenses, not a license
-grant for the original Quarry application source.
+as go-LICENSE.txt. Quarry's original source and generated artwork are licensed
+under MIT; see the repository LICENSE or the distributed Quarry-LICENSE.txt.
+Third-party components retain their respective copyright and license terms.

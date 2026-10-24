@@ -19,6 +19,7 @@ if ($Portable) {
     if ($LASTEXITCODE -ne 0) { throw 'Compilation failed' }
     New-Item -ItemType Directory -Force -Path 'build\portable\licenses' | Out-Null
     Copy-Item -Path 'resources\licenses\*' -Destination 'build\portable\licenses' -Force
+    Copy-Item -LiteralPath 'LICENSE' -Destination 'build\portable\licenses\Quarry-LICENSE.txt' -Force
 } else {
     & $goExecutable tool mygo build
     if ($LASTEXITCODE -ne 0) { throw 'Packaging failed' }
