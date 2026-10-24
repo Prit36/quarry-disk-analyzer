@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.3 - 2026-10-24
+
 - Reduce first-load preparation: specialize the unrestricted Files query,
   share root extension summaries, and replace treemap work arrays with sibling
   ranges. Prepare initial tree rows in scan/load workers, allocate wide child
