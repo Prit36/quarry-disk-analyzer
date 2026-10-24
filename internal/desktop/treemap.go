@@ -132,9 +132,9 @@ func (m *treemapModel) ensureStyles(s *index.Snapshot, dark bool) {
 // the result.
 func dominantExtensions(ctx context.Context, s *index.Snapshot, branches []treemap.Branch, allocated bool) map[tileKey]string {
 	type unit struct {
-		block  int
-		roots  []index.ID
-		weight uint64
+		block       int
+		first, last index.ID // inclusive run of siblings; no per-file root array
+		weight      uint64
 	}
 	var blocks []tileKey
 	var units []unit
@@ -152,27 +152,44 @@ func dominantExtensions(ctx context.Context, s *index.Snapshot, branches []treem
 	if total := uint64(s.Nodes[0].Files) + uint64(s.Nodes[0].Dirs); total/uint64(8*workers) > limit {
 		limit = total / uint64(8*workers)
 	}
-	// add groups roots into units of about limit entries; a folder larger
-	// than that is replaced by its children.
-	var add func(block int, roots []index.ID)
-	add = func(block int, roots []index.ID) {
-		var batch []index.ID
+	// Group linked sibling ranges into units, splitting heavy folders. The
+	// former root arrays grew with every file in large/flat folders, although
+	// their sibling links already describe exactly the same work.
+	var addChildren func(block int, parent index.ID, shown map[index.ID]bool)
+	addChildren = func(block int, parent index.ID, shown map[index.ID]bool) {
+		first, last := index.None, index.None
 		var w uint64
-		for _, r := range roots {
-			rw := weight(r)
-			if rw > limit && s.Nodes[r].FirstChild != index.None {
-				add(block, s.Children(r))
+		flush := func() {
+			if first != index.None {
+				units = append(units, unit{block, first, last, w})
+				first, last, w = index.None, index.None, 0
+			}
+		}
+		count := 0
+		for r := s.Nodes[parent].FirstChild; r != index.None; r = s.Nodes[r].NextSibling {
+			if count&4095 == 0 && ctx.Err() != nil {
+				return
+			}
+			count++
+			if shown[r] {
+				flush() // a range must never include one of the shown subtrees
 				continue
 			}
-			batch = append(batch, r)
+			rw := weight(r)
+			if rw > limit && s.Nodes[r].FirstChild != index.None {
+				flush()
+				addChildren(block, r, nil)
+				continue
+			}
+			if first == index.None {
+				first = r
+			}
+			last = r
 			if w += rw; w >= limit {
-				units = append(units, unit{block, batch, w})
-				batch, w = nil, 0
+				flush()
 			}
 		}
-		if len(batch) > 0 {
-			units = append(units, unit{block, batch, w})
-		}
+		flush()
 	}
 	var walk func(level []treemap.Branch)
 	walk = func(level []treemap.Branch) {
@@ -185,19 +202,18 @@ func dominantExtensions(ctx context.Context, s *index.Snapshot, branches []treem
 		for _, b := range level {
 			switch {
 			case b.Item.Other:
-				var rest []index.ID
-				for c := s.Nodes[b.Item.ID].FirstChild; c != index.None; c = s.Nodes[c].NextSibling {
-					if !shown[c] {
-						rest = append(rest, c)
-					}
-				}
 				blocks = append(blocks, tileKey{b.Item.ID, true})
-				add(len(blocks)-1, rest)
+				addChildren(len(blocks)-1, b.Item.ID, shown)
 			case len(b.Children) > 0:
 				walk(b.Children)
 			case s.Nodes[b.Item.ID].IsDir():
 				blocks = append(blocks, tileKey{b.Item.ID, false})
-				add(len(blocks)-1, []index.ID{b.Item.ID})
+				id := b.Item.ID
+				if weight(id) > limit && s.Nodes[id].FirstChild != index.None {
+					addChildren(len(blocks)-1, id, nil)
+				} else {
+					units = append(units, unit{len(blocks) - 1, id, id, weight(id)})
+				}
 			}
 		}
 	}
@@ -219,7 +235,7 @@ func dominantExtensions(ctx context.Context, s *index.Snapshot, branches []treem
 			tally := map[string]uint64{}
 			extensions := map[string]string{}
 			for u := int(next.Add(1) - 1); u < len(units) && ctx.Err() == nil; u = int(next.Add(1) - 1) {
-				for _, root := range units[u].roots {
+				for root := units[u].first; ; root = s.Nodes[root].NextSibling {
 					_ = s.Visit(ctx, root, func(id index.ID) error {
 						n := &s.Nodes[id]
 						if n.IsDir() {
@@ -238,6 +254,9 @@ func dominantExtensions(ctx context.Context, s *index.Snapshot, branches []treem
 						tally[ext] += v
 						return nil
 					})
+					if root == units[u].last || ctx.Err() != nil {
+						break
+					}
 				}
 				out := make([]extBytes, 0, len(tally))
 				for e, v := range tally {
@@ -314,6 +333,10 @@ func (m *treemapModel) ensure() {
 	m.cancel = cancel
 	m.busy = true
 	needRanks := m.rankFor != s
+	var rootTypes *rootTypeSummary
+	if needRanks {
+		rootTypes = a.rootTypes(s)
+	}
 	allocated := m.allocated
 	go func() {
 		defer cancel()
@@ -326,7 +349,7 @@ func (m *treemapModel) ensure() {
 			if !needRanks {
 				return
 			}
-			if summary, err := s.Summarize(ctx); err == nil {
+			if summary, err := rootTypes.whole(ctx); err == nil {
 				ranks = map[string]int{}
 				for i, t := range summary.Types {
 					if i >= len(categorical) {

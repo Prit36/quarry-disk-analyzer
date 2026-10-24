@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Reduce first-load preparation: specialize the unrestricted Files query,
+  share root extension summaries, and replace treemap work arrays with sibling
+  ranges. Prepare initial tree rows in scan/load workers, allocate wide child
+  lists once, and defer forced scan-memory cleanup until after the ready frame.
 - Show in Explorer opens faster from an administrator window through a
   short-lived helper at the desktop user's level, preserves multi-selection,
   and passes foreground permission so Explorer receives focus.

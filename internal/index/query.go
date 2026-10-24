@@ -202,6 +202,7 @@ type SearchResult struct {
 // counting bytes inside matched folders once. Tallying during the walk avoids
 // rereading every result and walking its ancestors after sorting. Metadata
 // classification shares the temporary ancestry bits for selection validation.
+// Unrestricted file queries follow ancestry in the walk without those bits.
 func (s *Snapshot) SearchResults(ctx context.Context, root ID, f *Filter, allocated bool) (SearchResult, error) {
 	if err := ctx.Err(); err != nil {
 		return SearchResult{}, err
@@ -209,9 +210,15 @@ func (s *Snapshot) SearchResults(ctx context.Context, root ID, f *Filter, alloca
 	if root == None || int(root) >= len(s.Nodes) {
 		return SearchResult{}, fmt.Errorf("invalid search scope")
 	}
-	tally := &searchTally{allocated: allocated, states: make([]atomic.Uint32, (len(s.Nodes)+15)/16)}
-	if s.IsMetadata(root) {
-		tally.states[root>>4].Store(uint32(2) << (2 * (root & 15)))
+	tally := &searchTally{allocated: allocated}
+	unrestricted := *f
+	unrestricted.Kind = KindAny
+	tally.filesOnly = f.Kind == KindFiles && unrestricted.Empty()
+	if !tally.filesOnly {
+		tally.states = make([]atomic.Uint32, (len(s.Nodes)+15)/16)
+		if s.IsMetadata(root) {
+			tally.states[root>>4].Store(uint32(2) << (2 * (root & 15)))
+		}
 	}
 	ids, err := s.search(ctx, root, f, tally)
 	return SearchResult{IDs: ids, Total: tally.total, HasMetadata: tally.metadata}, err
@@ -220,6 +227,7 @@ func (s *Snapshot) SearchResults(ctx context.Context, root ID, f *Filter, alloca
 type searchTally struct {
 	states    []atomic.Uint32 // two bits per entry; adjacent subtrees can share a word
 	allocated bool
+	filesOnly bool   // no name/path/size criteria: the initial Files view
 	total     uint64 // private to the coordinator or one worker's current piece
 	metadata  bool
 }
@@ -271,6 +279,9 @@ func (s *Snapshot) searchSubtree(ctx context.Context, top, skip ID, f *Filter, a
 }
 
 func (s *Snapshot) searchSubtreeWalk(ctx context.Context, top, skip ID, f *Filter, ancestorOK []bool, ids []ID, tally *searchTally, paths *pathWalker) ([]ID, error) {
+	if tally != nil && tally.filesOnly {
+		return s.searchFilePiece(ctx, top, top, skip, ids, tally)
+	}
 	// The same depth-first order as Visit, without two indirect calls per
 	// entry.
 	if top == None || int(top) >= len(s.Nodes) {
@@ -438,7 +449,7 @@ func (s *Snapshot) searchParallel(ctx context.Context, root ID, f *Filter, ances
 		}
 		id := pieces[best].id
 		split := []searchPiece{{}}
-		if s.matchEntry(id, f, ancestorOK, tally, nil) {
+		if (tally == nil || !tally.filesOnly) && s.matchEntry(id, f, ancestorOK, tally, nil) {
 			split[0].ids = []ID{id}
 		}
 		children, err := s.searchPieces(ctx, id, target)
@@ -510,6 +521,11 @@ func (s *Snapshot) searchParallel(ctx context.Context, root ID, f *Filter, ances
 						local.total = 0
 						local.metadata = false
 						pieceTally = &local
+					}
+					if pieceTally != nil && pieceTally.filesOnly {
+						p.ids, errs[i] = s.searchFilePiece(ctx, p.id, p.last, root, p.ids, pieceTally)
+						p.total, p.metadata = local.total, local.metadata
+						continue
 					}
 					var paths *pathWalker
 					if f.NeedsPath() {

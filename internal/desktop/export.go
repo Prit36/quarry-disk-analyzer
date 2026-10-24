@@ -187,11 +187,17 @@ func (a *App) openSnapshotDialog() {
 func (a *App) openSnapshot(path string) {
 	a.notify("Opening %s…", filepath.Base(path))
 	hide := !a.prefs.ShowMetadata
+	treeOrder := a.tree.order()
+	prepareTree := !a.filter.active()
 	go func() {
 		s, err := index.LoadSnapshot(context.Background(), path)
 		var meta []index.ID
+		var tree *initialTree
 		if err == nil {
 			meta = hideMetadata(s, hide)
+			if prepareTree {
+				tree = prepareInitialTree(s, treeOrder)
+			}
 		}
 		a.post(func() {
 			if err != nil {
@@ -203,7 +209,7 @@ func (a *App) openSnapshot(path string) {
 				a.scanGen++
 				a.scanning = false
 			}
-			a.setBase(s, path, meta, hide)
+			a.setPreparedBase(s, path, meta, hide, tree)
 			a.notify("Opened saved scan of %s from %s. This is historical data.", s.Root, platform.FormatDateTime(s.Started))
 		})
 	}()

@@ -90,9 +90,23 @@ func (e *extModel) run() {
 	if !s.Reachable(scope) {
 		scope = 0
 	}
+	var rootTypes *rootTypeSummary
+	if scope == 0 {
+		rootTypes = a.cachedRootTypes(s)
+		if rootTypes == nil && (a.prefs.ShowTreemap || a.tm.maximized) {
+			rootTypes = a.rootTypes(s)
+		}
+	}
 	go func() {
 		defer cancel()
-		analysis, err := s.SummarizeScope(ctx, scope, allocated)
+		var analysis index.Summary
+		var err error
+		if rootTypes != nil {
+			analysis, err = rootTypes.reachable(ctx, allocated)
+		} else {
+			analysis, err = s.SummarizeScope(ctx, scope, allocated)
+		}
+		bySize := typesBySize(analysis.Types, allocated)
 		var total index.FileType
 		for _, t := range analysis.Types {
 			total.Bytes += t.Bytes
@@ -112,7 +126,7 @@ func (e *extModel) run() {
 				return
 			}
 			e.err, e.types, e.total = "", analysis.Types, total
-			e.bySize = typesBySize(analysis.Types, allocated)
+			e.bySize = bySize
 			e.panelCursor = -1
 			e.forText = "\x00"
 			e.cursor = -1

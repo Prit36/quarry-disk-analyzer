@@ -22,15 +22,16 @@ type treeRow struct {
 // below the current location. Rows are spliced on expand/collapse instead of
 // being rebuilt, and everything is keyed by stable index IDs.
 type treeModel struct {
-	a      *App
-	rows   []treeRow
-	open   map[index.ID]bool
-	kids   map[index.ID][]index.ID // children sorted by the current order
-	list   ui.ListState
-	sel    ui.Selection[index.ID]
-	cursor int
-	sort   ui.SortOrder
-	notice string
+	a        *App
+	rows     []treeRow
+	open     map[index.ID]bool
+	kids     map[index.ID][]index.ID // children sorted by the current order
+	list     ui.ListState
+	sel      ui.Selection[index.ID]
+	cursor   int
+	sort     ui.SortOrder
+	notice   string
+	prepared *initialTree // prepared by the scan/load worker, consumed once
 
 	selCache selectionCache
 	cells    cellTextCache // formatted cell text, shared by both grids
@@ -48,6 +49,7 @@ func (t *treeModel) reset() {
 	cols := t.list.Columns
 	t.list = ui.ListState{Columns: cols}
 	t.rows, t.kids = nil, nil
+	t.prepared = nil
 	t.rowsGen++
 	t.open = map[index.ID]bool{0: true}
 	t.sel = ui.Selection[index.ID]{}
@@ -92,7 +94,9 @@ func (t *treeModel) descendants(id index.ID, depth int32, out []treeRow, budget 
 		kids  []index.ID
 		depth int32
 	}
-	stack := []frame{{t.children(id), depth}}
+	kids := t.children(id)
+	out = slices.Grow(out, min(len(kids), budget))
+	stack := []frame{{kids, depth}}
 	for len(stack) > 0 && budget > 0 {
 		top := &stack[len(stack)-1]
 		if len(top.kids) == 0 {
@@ -120,6 +124,16 @@ func (t *treeModel) rebuild() {
 	}
 	cid := t.cursorID()
 	loc := t.a.location
+	prepared := t.prepared
+	t.prepared = nil
+	if prepared != nil && prepared.snap == t.snap() && prepared.order == t.order() && loc == 0 && len(t.open) == 1 && t.open[0] {
+		t.rows = prepared.rows
+		t.kids = map[index.ID][]index.ID{0: prepared.kids}
+		t.rowsGen++
+		t.restoreCursor(cid)
+		t.selCache.invalidate()
+		return
+	}
 	rows := []treeRow{{id: loc, depth: 0, kids: t.hasKids(loc)}}
 	if t.open[loc] {
 		rows = t.descendants(loc, 1, rows, 1<<30)

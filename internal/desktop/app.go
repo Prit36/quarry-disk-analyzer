@@ -68,10 +68,11 @@ type App struct {
 	history  []index.ID
 	histPos  int
 
-	tree  treeModel
-	files fileModel
-	ext   extModel
-	tm    treemapModel
+	tree          treeModel
+	files         fileModel
+	ext           extModel
+	tm            treemapModel
+	typeSummaries [2]*rootTypeSummary
 
 	search         string
 	searchLeftTree bool // typing a search switched Tree View to File View
@@ -94,6 +95,7 @@ type App struct {
 	errorMsg  bool
 
 	trimPending bool // a scan's transient memory is to be released after display
+	trimAt      time.Time
 
 	selFacts selectionFacts // cached facts about the active selection
 	mutMemo  mutableMemo    // cached answer of mutable for the active selection
@@ -174,6 +176,7 @@ func newApp() *App {
 
 func (a *App) shutdown() {
 	a.closed = true
+	a.clearTypeSummaries()
 	a.prefs.Target = a.target
 	_ = a.savePrefs()
 	for _, cancel := range []context.CancelFunc{a.cancelScan, a.filterCancel, a.files.cancel, a.ext.cancel, a.tm.cancel, a.dlg.dup.cancel} {
@@ -264,11 +267,17 @@ func (a *App) startScan() {
 		opts.Exclude = append([]string(nil), a.prefs.Exclusions...)
 	}
 	progress, hide := a.progress, !a.prefs.ShowMetadata
+	treeOrder := a.tree.order()
+	prepareTree := !a.filter.active()
 	go func() {
 		s, err := scan.Run(ctx, target, opts, progress)
 		var meta []index.ID
+		var tree *initialTree
 		if err == nil {
 			meta = hideMetadata(s, hide) // off the UI thread
+			if prepareTree {
+				tree = prepareInitialTree(s, treeOrder)
+			}
 		}
 		a.post(func() {
 			if gen != a.scanGen {
@@ -288,7 +297,7 @@ func (a *App) startScan() {
 			}
 			a.prefs.Recent = remember(a.prefs.Recent, s.Root, 12)
 			a.menu.recentChanged = true
-			a.setBase(s, "", meta, hide)
+			a.setPreparedBase(s, "", meta, hide, tree)
 			a.trimPending = true
 			switch {
 			case s.Cancelled:
@@ -303,15 +312,26 @@ func (a *App) startScan() {
 	}()
 }
 
-// trimAfterShown returns the scan's transient buffers to Windows once its
-// results are on screen, treemap included: otherwise the working set stays
-// near the scan's peak until the runtime gets to it, but doing it before
-// would delay the display.
-func (a *App) trimAfterShown() {
-	if a.trimPending && a.snap != nil && !a.filterBusy && !a.tm.busy {
-		a.trimPending = false
-		go debug.FreeOSMemory()
+// trimAfterShown leaves a short quiet interval after the ready frame before
+// returning transient scan buffers to Windows. Building a view precedes its
+// layout and paint: launching a forced GC there competes with the first render.
+func (a *App) trimAfterShown(c *ui.Context) {
+	if !a.trimPending {
+		return
 	}
+	if a.snap == nil || a.scanning || a.filterBusy || a.tm.busy || a.files.busy || a.ext.busy {
+		a.trimAt = time.Time{}
+		return
+	}
+	if a.trimAt.IsZero() {
+		a.trimAt = c.Now().Add(200 * time.Millisecond)
+	}
+	if delay := a.trimAt.Sub(c.Now()); delay > 0 {
+		c.After(delay)
+		return
+	}
+	a.trimPending, a.trimAt = false, time.Time{}
+	go debug.FreeOSMemory()
 }
 
 func (a *App) stopScan() {
@@ -379,11 +399,18 @@ func (a *App) restartElevated() {
 // setBase installs a new scan or loaded snapshot and resets views. meta
 // lists its NTFS metadata entries; hidden says they are already detached.
 func (a *App) setBase(s *index.Snapshot, source string, meta []index.ID, hidden bool) {
+	a.setPreparedBase(s, source, meta, hidden, nil)
+}
+
+func (a *App) setPreparedBase(s *index.Snapshot, source string, meta []index.ID, hidden bool, tree *initialTree) {
+	a.clearTypeSummaries()
+	a.trimAt = time.Time{}
 	a.base, a.source, a.stale = s, source, ""
 	a.meta, a.metaHidden = meta, hidden && len(meta) > 0
 	a.target = s.Root
 	a.location, a.history, a.histPos = 0, []index.ID{0}, 0
 	a.tree.reset()
+	a.tree.prepared = tree
 	a.files.reset()
 	a.ext.reset()
 	a.tm.reset()
@@ -550,6 +577,7 @@ func (a *App) setView(s *index.Snapshot) {
 		}
 		a.dlg.dup.reset()
 	}
+	a.pruneTypeSummaries()
 	if !s.Reachable(a.location) {
 		a.location = 0
 	}

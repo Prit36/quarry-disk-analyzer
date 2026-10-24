@@ -75,7 +75,7 @@ func (a *App) view(c *ui.Context) {
 		a.statusBar(c, pal)
 	})
 	a.dialogs(c, pal)
-	a.trimAfterShown()
+	a.trimAfterShown(c)
 }
 
 func (a *App) scanProgress() {

@@ -329,7 +329,16 @@ func (s *Snapshot) aggregateQueue() {
 	}
 }
 func (s *Snapshot) Children(id ID) []ID {
-	var ids []ID
+	// Allocate once, exactly: wide folders otherwise leave several times
+	// their child-ID storage in transient buffers during first display.
+	count := 0
+	for child := s.Nodes[id].FirstChild; child != None; child = s.Nodes[child].NextSibling {
+		count++
+	}
+	if count == 0 {
+		return nil
+	}
+	ids := make([]ID, 0, count)
 	for child := s.Nodes[id].FirstChild; child != None; child = s.Nodes[child].NextSibling {
 		ids = append(ids, child)
 	}

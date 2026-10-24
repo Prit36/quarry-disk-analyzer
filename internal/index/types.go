@@ -62,10 +62,10 @@ func (s *Snapshot) SummarizeScope(ctx context.Context, root ID, allocated bool) 
 		bySpelling := make(map[string]*FileType)
 		var last *FileType
 		var lastExt string
-		add := func(id ID) error {
-			n := s.Nodes[id]
+		add := func(id ID) {
+			n := &s.Nodes[id]
 			if n.IsDir() {
-				return nil
+				return
 			}
 			raw := fastExt(s.NameView(id))
 			group := last
@@ -88,8 +88,8 @@ func (s *Snapshot) SummarizeScope(ctx context.Context, root ID, allocated bool) 
 			group.Bytes += n.Size
 			group.Allocated += n.Allocated
 			group.Count++
-			return nil
 		}
+		count := 0
 		for {
 			i := int(next.Add(1) - 1)
 			if i >= len(pieces) {
@@ -97,9 +97,27 @@ func (s *Snapshot) SummarizeScope(ctx context.Context, root ID, allocated bool) 
 			}
 			p := pieces[i]
 			for id := p.id; ; id = s.Nodes[id].NextSibling {
-				if err := s.Visit(ctx, id, add); err != nil {
-					errs[w] = err
-					return
+				// Walk inline, checking cancellation once per batch instead of
+				// starting a callback-based Visit for every leaf in a flat folder.
+				current := id
+				for {
+					if count&4095 == 0 && ctx.Err() != nil {
+						errs[w] = ctx.Err()
+						return
+					}
+					count++
+					add(current)
+					if child := s.Nodes[current].FirstChild; child != None {
+						current = child
+						continue
+					}
+					for current != id && s.Nodes[current].NextSibling == None {
+						current = s.Nodes[current].Parent
+					}
+					if current == id {
+						break
+					}
+					current = s.Nodes[current].NextSibling
 				}
 				if id == p.last {
 					break
