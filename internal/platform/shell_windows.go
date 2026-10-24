@@ -34,6 +34,7 @@ var (
 	procSHGetFileInfo             = shell32.NewProc("SHGetFileInfoW")
 	procSHChangeNotify            = shell32.NewProc("SHChangeNotify")
 	procCoInitializeEx            = ole32.NewProc("CoInitializeEx")
+	procCoUninitialize            = ole32.NewProc("CoUninitialize")
 	procAttachConsole             = kernel32.NewProc("AttachConsole")
 )
 
@@ -55,12 +56,14 @@ func pidl(path string) (uintptr, error) {
 // Paths in different folders open one window per folder; a drive root opens
 // the drive itself.
 //
-// An elevated process cannot hand SHOpenFolderAndSelectItems to the user's
-// (unelevated) Explorer, so the shell opens the window inside this process,
-// on a thread without a message loop, where it never appears. There, and
-// whenever the shell call fails, Explorer is started as its own process.
+// Elevated callers delegate to a short-lived copy of Quarry running at the
+// desktop shell's level. This keeps the direct shell API (and multi-selection)
+// without launching explorer.exe and waiting for its startup/de-elevation.
+// The process-launch route remains a fallback when delegation is unavailable.
 func ShowInExplorer(paths []string) error {
-	coInit()
+	if len(paths) == 0 {
+		return nil
+	}
 	groups := map[string][]string{}
 	var order []string
 	for _, p := range paths {
@@ -77,14 +80,38 @@ func ShowInExplorer(paths []string) error {
 		}
 		groups[dir] = append(groups[dir], p)
 	}
+	if len(order) == 0 {
+		return nil // drive roots were opened directly; no selection to delegate
+	}
 	elevated := Elevated()
+	if elevated {
+		var selection []string
+		for _, dir := range order {
+			selection = append(selection, groups[dir]...)
+		}
+		if revealFromShell(selection) == nil {
+			return nil
+		}
+	}
+	canSelect := false
+	if !elevated {
+		// COM initialization and cleanup must belong to the same OS thread.
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		hr, _, _ := procCoInitializeEx.Call(0, 0x2)
+		if int32(hr) >= 0 {
+			defer procCoUninitialize.Call()
+			canSelect = true
+		}
+	}
 	var firstErr error
 	for _, dir := range order {
 		var err error
-		if !elevated {
+		if canSelect {
+			allowExplorerForeground()
 			err = selectIn(dir, groups[dir])
 		}
-		if elevated || err != nil {
+		if !canSelect || err != nil {
 			err = explorerProcess(groups[dir][0], true)
 		}
 		if err != nil && firstErr == nil {
@@ -101,6 +128,7 @@ func OpenFolder(path string) error { return explorerProcess(path, false) }
 // explorerProcess starts explorer.exe on path, selecting it in its folder.
 // Explorer passes the request to the running shell, at the user's level.
 func explorerProcess(path string, sel bool) error {
+	allowExplorerForeground()
 	exe := filepath.Join(os.Getenv("SystemRoot"), "explorer.exe")
 	if os.Getenv("SystemRoot") == "" {
 		exe = "explorer.exe"
@@ -119,6 +147,20 @@ func explorerProcess(path string, sel bool) error {
 }
 
 func selectIn(dir string, items []string) error {
+	if len(items) == 1 {
+		// cidl=0 accepts the item's absolute PIDL and selects it in its
+		// parent. Avoid parsing the parent a second time for the usual case.
+		item, err := pidl(items[0])
+		if err != nil {
+			return err
+		}
+		defer procILFree.Call(item)
+		hr, _, _ := procSHOpenFolderAndSelectItem.Call(item, 0, 0, 0)
+		if int32(hr) < 0 {
+			return fmt.Errorf("Explorer could not open %s (0x%x)", dir, uint32(hr))
+		}
+		return nil
+	}
 	folder, err := pidl(dir)
 	if err != nil {
 		return err

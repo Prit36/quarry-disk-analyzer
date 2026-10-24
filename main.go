@@ -25,6 +25,11 @@ func (p *patterns) String() string     { return strings.Join(*p, ";") }
 func (p *patterns) Set(v string) error { *p = append(*p, v); return nil }
 
 func main() {
+	// An elevated window delegates Explorer selection to an unelevated copy
+	// of Quarry. Handle it before console attachment and GUI initialization.
+	if len(os.Args) > 1 && os.Args[1] == "--reveal-in-explorer" {
+		os.Exit(revealInExplorer(os.Args[2:]))
+	}
 	desktop.Version = version
 	// The executable is a GUI program; attach to the console it was started
 	// from only for command-line use, so double-clicking opens no console.
@@ -33,6 +38,16 @@ func main() {
 		platform.AttachParentConsole()
 	}
 	os.Exit(run(os.Args[1:], cli))
+}
+
+func revealInExplorer(paths []string) int {
+	if len(paths) == 0 || platform.Elevated() {
+		return 2
+	}
+	if err := platform.ShowInExplorer(paths); err != nil {
+		return 1
+	}
+	return 0
 }
 
 func run(args []string, cli bool) int {

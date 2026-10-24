@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Show in Explorer opens faster from an administrator window through a
+  short-lived helper at the desktop user's level, preserves multi-selection,
+  and passes foreground permission so Explorer receives focus.
 - Folder and Extension heading direction changes reuse exact group lengths
   from the first sort, preserving each group's name/size order and selections.
 - Full-path searches reuse a path buffer during traversal.

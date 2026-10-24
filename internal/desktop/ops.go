@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 
@@ -270,9 +269,8 @@ func (a *App) revealPaths(paths []string) {
 		a.fail("The selection is spread over %d folders. Select items in at most 8 folders to show them in Explorer.", len(folders))
 		return
 	}
+	a.notify("Opening in File Explorer…")
 	go func() {
-		runtime.LockOSThread()
-		defer runtime.UnlockOSThread()
 		if err := platform.ShowInExplorer(paths); err != nil {
 			a.post(func() { a.fail("%v", err) })
 		}
