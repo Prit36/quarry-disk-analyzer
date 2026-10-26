@@ -184,7 +184,7 @@ func (a *App) itemIcon(c *ui.Context, id index.ID) {
 	case n.IsDir():
 		name = "folder"
 	}
-	if b := shellIcons[name]; b != nil {
+	if b := a.shellIcons[name]; b != nil {
 		ui.Image(c, b).Size(16, 16).Shrink(0)
 		return
 	}

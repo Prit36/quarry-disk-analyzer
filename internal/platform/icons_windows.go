@@ -4,6 +4,7 @@ package platform
 
 import (
 	"image"
+	"runtime"
 	"sync"
 	"unsafe"
 
@@ -15,6 +16,10 @@ var stockIconImages map[string]image.Image
 
 func StockIcons() map[string]image.Image {
 	stockIconOnce.Do(func() {
+		// GetDC and ReleaseDC must run on the same thread, including when
+		// startup loads these icons from a background goroutine.
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
 		stockIconImages = make(map[string]image.Image)
 		for name, identifier := range map[string]uintptr{"file": 0, "folder": 3, "drive": 8} {
 			if icon := renderStockIcon(identifier, 48); icon != nil {

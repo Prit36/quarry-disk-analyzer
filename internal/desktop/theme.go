@@ -25,14 +25,15 @@ var icons = func() map[string]*ui.SVG {
 	return m
 }()
 
-// Shell stock icons (folder, file, drive) so rows look like Explorer's.
-var shellIcons = func() map[string]*ui.Bitmap {
+// Shell stock icons are loaded after the first frame. Keeping this out of
+// package initialization also avoids loading the shell for command-line scans.
+func loadShellIcons() map[string]*ui.Bitmap {
 	m := map[string]*ui.Bitmap{}
 	for name, img := range platform.StockIcons() {
 		m[name] = ui.NewBitmap(img)
 	}
 	return m
-}()
+}
 
 // palette holds the colors that are not part of ui.Theme.
 type palette struct {

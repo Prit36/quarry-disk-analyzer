@@ -986,6 +986,9 @@ func (a *App) startPage(c *ui.Context, pal palette) {
 		return b.Clicked()
 	}
 	ui.Column(c).Fill().Padding(14, 16).Gap(2).Children(func() {
+		if !a.drivesReady {
+			ui.Text(c, "Loading drives…").TextColor(t.TextMuted).Margin(0, 8, 6, 8)
+		}
 		cols := []ui.TableColumn{{Title: "Drive", Width: 70}, {Title: "Label", Width: 180}, {Title: "File system", Width: 90}, {Title: "Capacity", Width: 90, Align: ui.End}, {Title: "Used", Width: 160}, {Title: "Free", Width: 90, Align: ui.End}}
 		a.dlg.driveList.Selected = &a.dlg.driveRow
 		table := ui.Table(c.Key("drives"), &a.dlg.driveList, cols, len(a.drives), func(row, col int) {
@@ -1004,7 +1007,7 @@ func (a *App) startPage(c *ui.Context, pal palette) {
 			cell.Children(func() {
 				switch col {
 				case 0:
-					if b := shellIcons["drive"]; b != nil {
+					if b := a.shellIcons["drive"]; b != nil {
 						ui.Image(c, b).Size(16, 16)
 					}
 					ui.Text(c, d.Path).SingleLine()
@@ -1044,7 +1047,7 @@ func (a *App) startPage(c *ui.Context, pal palette) {
 				for _, r := range recent {
 					r := r
 					if row("recent"+r, "Scan "+r, func() {
-						if bm := shellIcons["folder"]; bm != nil {
+						if bm := a.shellIcons["folder"]; bm != nil {
 							ui.Image(c, bm).Size(16, 16).Shrink(0)
 						}
 						ui.Text(c, r).SingleLine().MinWidth(0).Shrink(1)

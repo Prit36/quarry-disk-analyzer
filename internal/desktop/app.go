@@ -36,8 +36,11 @@ type App struct {
 	cmds   map[string]*command
 	menu   *menuBar
 
-	admin  bool
-	drives []platform.Drive
+	admin          bool
+	drives         []platform.Drive
+	drivesReady    bool
+	startupStarted bool
+	shellIcons     map[string]*ui.Bitmap
 
 	// Scanning.
 	target     string // the folder the last scan was started on
@@ -112,60 +115,65 @@ func isScanFile(path string) bool {
 
 // Run opens the main window. initial is a folder to scan or a .quarry file.
 func Run(initial string) error {
+	// MyGo uses the GPU by default, with MYGO_GPU=0 as a software fallback.
 	// Most of the heap is the scan index: large arrays without pointers,
 	// which a collection does not need to scan. Collecting when the heap
 	// has grown by a quarter instead of doubling costs little CPU and keeps
 	// the working set near the live data instead of up to twice it.
 	debug.SetGCPercent(25)
-	a := newApp()
+	a := newAppState()
+	if initial != "" && !isScanFile(initial) {
+		a.target = initial
+	}
 	mygo.App.WhenReady(func() {
 		a.setTheme(a.prefs.Theme) // also themes the native title bar and menus
 		a.win = mygo.NewWindow(mygo.WindowOptions{
 			Title: "Quarry", StateKey: "main", Width: 1280, Height: 800, UseContentSize: true,
 			MinWidth: 760, MinHeight: 480, Content: ui.View(a.view),
-			Hidden: true,
+			Hidden:          true,
+			BackgroundColor: "light-dark(#ffffff, #161616)",
 		})
 		a.menu = a.buildMenu()
 		a.win.SetMenu(a.menu.menu)
-		// The drawing surface stays white until the first frame, which a
-		// hidden window does not draw: show the window cloaked, so it draws
-		// unseen, and reveal it with that frame, or after a second if the
-		// frame never reports.
-		hwnd, revealed := a.win.NativeHandle(), false
-		reveal := func() {
-			if !revealed {
-				revealed = true
-				platform.Cloak(hwnd, false)
-			}
-		}
-		platform.Cloak(hwnd, true)
-		a.win.OnReadyToShow(reveal)
-		a.win.Show()
-		time.AfterFunc(time.Second, func() { a.post(reveal) })
 		a.win.OnClosed(a.shutdown)
-		switch {
-		case isScanFile(initial):
-			a.openSnapshot(initial)
-		case initial != "":
-			a.target = initial
-			a.startScan()
-		}
+		a.win.OnReadyToShow(func() {
+			a.win.SetOpacity(1)
+			a.win.Show()
+			a.loadStartupInfo()
+			if initial != "" {
+				a.post(func() {
+					if isScanFile(initial) {
+						a.openSnapshot(initial)
+					} else {
+						a.startScan()
+					}
+				})
+			}
+		})
+		// A hidden Windows surface does not paint. Let it draw its first
+		// frame without exposing the empty client area or taking focus.
+		// Opacity 1 removes this temporary layered-window style afterwards.
+		a.win.SetOpacity(0)
+		a.win.ShowInactive()
 	})
 	return mygo.App.Run()
 }
 
 func newApp() *App {
-	a := &App{prefs: loadPrefs(), admin: platform.Elevated(), drives: platform.Drives(), focused: map[string]bool{}, queue: make(chan func(), 64)}
-	a.target = a.prefs.Target
-	if a.target == "" && len(a.drives) > 0 {
-		a.target = a.drives[0].Path
-	}
-	a.cmds = newCommands()
+	a := newAppState()
+	a.setDrives(platform.Drives())
 	a.dlg.explorerVerb = platform.ExplorerVerbInstalled()
+	a.shellIcons = loadShellIcons()
+	return a
+}
+
+// newAppState contains only what the first frame needs. Windows shell and
+// volume queries run after presentation instead of delaying the window.
+func newAppState() *App {
+	a := &App{prefs: loadPrefs(), admin: platform.Elevated(), focused: map[string]bool{}, queue: make(chan func(), 64)}
+	a.target = a.prefs.Target
+	a.cmds = newCommands()
 	a.dlg.driveRow = -1
-	if len(a.drives) > 0 {
-		a.dlg.driveRow = 0
-	}
 	a.tree.init(a)
 	a.files.init(a)
 	a.ext.init(a)
@@ -251,10 +259,6 @@ func (a *App) startScan() {
 	if len(target) == 2 && target[1] == ':' {
 		target += `\`
 	}
-	if info, err := os.Stat(target); err != nil || !info.IsDir() {
-		a.fail("Cannot scan %s: the folder does not exist or is not accessible.", target)
-		return
-	}
 	a.target = target
 	a.scanGen++
 	gen := a.scanGen
@@ -270,6 +274,8 @@ func (a *App) startScan() {
 	treeOrder := a.tree.order()
 	prepareTree := !a.filter.active()
 	go func() {
+		// scan.Run also validates the target here. A slow or disconnected
+		// path must not block the window while handling a startup argument.
 		s, err := scan.Run(ctx, target, opts, progress)
 		var meta []index.ID
 		var tree *initialTree

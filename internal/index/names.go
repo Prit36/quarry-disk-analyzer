@@ -159,7 +159,8 @@ func (s *Snapshot) sortNameChunks(ctx context.Context, ids, spareIDs []ID, keys,
 				start, limit := spans[i].start, spans[i].end
 				for start < limit {
 					end := start + 1
-					for end < len(ids) && keys[end] == keys[start] {
+					// The next span may already be sorting its keys in place.
+					for end < limit && keys[end] == keys[start] {
 						end++
 					}
 					part := ids[start:end]
