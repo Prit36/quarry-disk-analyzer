@@ -180,54 +180,58 @@ func loadSnapshot(ctx context.Context, data []byte, parallel bool) (*Snapshot, e
 }
 
 func (s *Snapshot) validate(ctx context.Context) error {
-	if !s.Nodes[0].IsDir() || s.Nodes[0].Parent != None || s.Nodes[0].NextSibling != None {
+	if len(s.Nodes) == 0 || !s.Nodes[0].IsDir() || s.Nodes[0].Parent != None || s.Nodes[0].NextSibling != None {
 		return fmt.Errorf("invalid snapshot root")
 	}
+	// Validate while walking from the root, rather than scanning every child
+	// list and then coloring every parent chain. Each edge must agree with the
+	// parent we reached it from and each record may be visited only once. A
+	// final count rejects disconnected records (including detached cycles).
+	// All links used to ascend were checked on descent, so no stack is needed.
 	seen := make([]bool, len(s.Nodes))
-	seen[0] = true
-	for position, node := range s.Nodes {
-		if position&4095 == 0 {
+	current, parent := ID(0), None
+	count, ascents := 0, 0
+	for {
+		if count&4095 == 0 {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
 		}
+		if int(current) >= len(s.Nodes) || seen[current] {
+			return fmt.Errorf("invalid snapshot child graph")
+		}
+		node := &s.Nodes[current]
+		if node.Parent != parent {
+			return fmt.Errorf("invalid snapshot parent")
+		}
 		if uint64(node.NameOffset)+uint64(node.NameLength) > uint64(len(s.Names)) {
 			return fmt.Errorf("invalid snapshot name")
-		}
-		if position > 0 && (node.Parent == None || int(node.Parent) >= len(s.Nodes)) {
-			return fmt.Errorf("invalid snapshot parent")
 		}
 		if !node.IsDir() && node.FirstChild != None {
 			return fmt.Errorf("file has snapshot children")
 		}
-		for child := node.FirstChild; child != None; child = s.Nodes[child].NextSibling {
-			if int(child) >= len(s.Nodes) || seen[child] || s.Nodes[child].Parent != ID(position) {
-				return fmt.Errorf("invalid snapshot child graph")
+		seen[current] = true
+		count++
+		if node.FirstChild != None {
+			parent, current = current, node.FirstChild
+			continue
+		}
+		for current != 0 && s.Nodes[current].NextSibling == None {
+			ascents++
+			if ascents&4095 == 0 && ctx.Err() != nil {
+				return ctx.Err()
 			}
-			seen[child] = true
-		}
-	}
-	colors := make([]uint8, len(s.Nodes))
-	colors[0] = 2
-	for position := 1; position < len(s.Nodes); position++ {
-		if !seen[position] {
-			return fmt.Errorf("unreachable snapshot record")
-		}
-		current := ID(position)
-		for colors[current] == 0 {
-			colors[current] = 1
 			current = s.Nodes[current].Parent
 		}
-		if colors[current] == 1 {
-			return fmt.Errorf("snapshot parent cycle")
+		if current == 0 {
+			break
 		}
-		current = ID(position)
-		for colors[current] == 1 {
-			colors[current] = 2
-			current = s.Nodes[current].Parent
-		}
+		parent, current = s.Nodes[current].Parent, s.Nodes[current].NextSibling
 	}
-	return nil
+	if count != len(s.Nodes) {
+		return fmt.Errorf("unreachable snapshot record")
+	}
+	return ctx.Err()
 }
 
 func ListSnapshots(directory string) ([]SnapshotInfo, error) {

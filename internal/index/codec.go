@@ -187,8 +187,8 @@ func gzipMemberStarts(data []byte) []int {
 }
 
 // segmentStream decodes consecutive gzip segments on several cores and
-// yields their output in order. At most about two segments per core are
-// decoded or waiting, so memory stays bounded.
+// yields their output in order. At most GOMAXPROCS+2 slots (capped at 14)
+// are decoded or waiting, so memory stays bounded without idle-core buffers.
 type segmentStream struct {
 	results chan *segmentResult
 	free    chan *segmentResult
@@ -204,10 +204,12 @@ type segmentResult struct {
 	data  []byte
 	err   error
 	ready chan struct{}
+	input bytes.Reader
+	zr    *gzip.Reader
 }
 
 func newSegmentStream(data []byte, starts []int) *segmentStream {
-	queued := 2 * max(1, min(8, runtime.GOMAXPROCS(0)))
+	queued := max(1, min(12, runtime.GOMAXPROCS(0)))
 	slots := min(len(starts), queued+2)
 	s := &segmentStream{results: make(chan *segmentResult, queued), free: make(chan *segmentResult, slots), stop: make(chan struct{})}
 	for range slots {
@@ -231,7 +233,7 @@ func newSegmentStream(data []byte, starts []int) *segmentStream {
 			s.workers.Add(1)
 			go func(segment []byte) {
 				defer s.workers.Done()
-				r.data, r.err = decodeGzipSegment(segment, r.data[:0])
+				r.data, r.err = r.decode(segment)
 				r.ready <- struct{}{}
 			}(data[start:end])
 			select {
@@ -244,17 +246,25 @@ func newSegmentStream(data []byte, starts []int) *segmentStream {
 	return s
 }
 
-func decodeGzipSegment(segment, buffer []byte) ([]byte, error) {
-	zr, err := gzip.NewReader(bytes.NewReader(segment))
+// A reusable result slot owns its inflater as well as its output buffer. Reset
+// retains the DEFLATE window and tables instead of allocating them per member.
+func (r *segmentResult) decode(segment []byte) ([]byte, error) {
+	r.input.Reset(segment)
+	var err error
+	if r.zr == nil {
+		r.zr, err = gzip.NewReader(&r.input)
+	} else {
+		err = r.zr.Reset(&r.input)
+	}
 	if err != nil {
 		return nil, err
 	}
-	defer zr.Close()
-	out := bytes.NewBuffer(buffer)
+	defer r.zr.Close()
+	out := bytes.NewBuffer(r.data[:0])
 	out.Grow(gzipBlockSize + bytes.MinRead)
 	// A false boundary can span multiple members. Fall back to the serial
 	// reader before decoding more than one block into a retained buffer.
-	_, err = out.ReadFrom(io.LimitReader(zr, gzipBlockSize+1))
+	_, err = out.ReadFrom(io.LimitReader(r.zr, gzipBlockSize+1))
 	if out.Len() > gzipBlockSize && err == nil {
 		err = fmt.Errorf("gzip member exceeds %d bytes", gzipBlockSize)
 	}

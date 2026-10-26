@@ -78,9 +78,6 @@ func NestedLayout(branches []Branch, bounds Rect) []Cell {
 	// every folder, eliminating intermediate slice allocations during recursion.
 	items := make([]Item, 0, 128)
 	var levelTiles [16][]Tile
-	for i := range levelTiles {
-		levelTiles[i] = make([]Tile, 0, 128)
-	}
 	var layout func([]Branch, Rect, int)
 	layout = func(nodes []Branch, r Rect, depth int) {
 		items = items[:0]
@@ -89,6 +86,9 @@ func NestedLayout(branches []Branch, bounds Rect) []Cell {
 		}
 		var tiles []Tile
 		if depth < len(levelTiles) {
+			if cap(levelTiles[depth]) < len(nodes) {
+				levelTiles[depth] = make([]Tile, 0, max(128, len(nodes)))
+			}
 			tiles = LayoutAppend(items, r, levelTiles[depth][:0])
 			levelTiles[depth] = tiles
 		} else {

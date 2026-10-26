@@ -48,26 +48,19 @@ func (s *Snapshot) FindDuplicates(ctx context.Context, root ID, progress *Duplic
 // FindDuplicatesOver verifies duplicates among files of at least minSize
 // bytes: same-size candidates are confirmed by a full SHA-256 of the content,
 // and only those that also agree on their first 4 KiB are read in full.
-// Hashing runs on a few workers; results are counted in index order.
+// Hashing runs on a few workers; equal-size candidates are ordered by ID.
 func (s *Snapshot) FindDuplicatesOver(ctx context.Context, root ID, minSize uint64, progress *DuplicateProgress) (DuplicateResult, error) {
 	result := DuplicateResult{}
-	minSize = max(minSize, 1)
-	candidates := make(map[uint64][]ID)
-	err := s.Visit(ctx, root, func(id ID) error {
-		node := s.Nodes[id]
-		if !node.IsDir() && node.Size >= minSize && node.Flags&(Reparse|Shared|Unplaced|Incomplete) == 0 {
-			candidates[node.Size] = append(candidates[node.Size], id)
-		}
-		return nil
-	})
+	candidates, err := s.duplicateCandidates(ctx, root, max(minSize, 1))
 	if err != nil {
 		return result, err
 	}
 	if progress != nil {
 		var total uint64
-		for size, ids := range candidates {
-			if len(ids) > 1 {
-				total += size * uint64(len(ids))
+		for i, id := range candidates {
+			size := s.Nodes[id].Size
+			if i > 0 && s.Nodes[candidates[i-1]].Size == size || i+1 < len(candidates) && s.Nodes[candidates[i+1]].Size == size {
+				total += size
 			}
 		}
 		progress.TotalBytes.Store(total)
@@ -76,7 +69,20 @@ func (s *Snapshot) FindDuplicatesOver(ctx context.Context, root ID, minSize uint
 	// group. Thousands of small groups must not each allocate 64 KiB per
 	// worker; prefix reads need only 4 KiB and empty groups need none.
 	buffers := make([][]byte, min(8, runtime.NumCPU()))
-	for size, ids := range candidates {
+	for start := 0; start < len(candidates); {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
+		size := s.Nodes[candidates[start]].Size
+		end := start + 1
+		for end < len(candidates) && s.Nodes[candidates[end]].Size == size {
+			if end&4095 == 0 && ctx.Err() != nil {
+				return result, ctx.Err()
+			}
+			end++
+		}
+		ids := candidates[start:end]
+		start = end
 		if len(ids) < 2 {
 			continue
 		}
@@ -174,6 +180,33 @@ func (s *Snapshot) FindDuplicatesOver(ctx context.Context, root ID, minSize uint
 	return result, nil
 }
 
+// Keep one compact ID array instead of a map and a separately allocated slice
+// for every distinct size. The existing cancellable radix sorter groups equal
+// sizes and gives aliases a deterministic ID order before content verification.
+func (s *Snapshot) duplicateCandidates(ctx context.Context, root ID, minSize uint64) ([]ID, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if root == None || int(root) >= len(s.Nodes) {
+		return nil, fmt.Errorf("invalid scope")
+	}
+	ids := make([]ID, 0, int(min(uint64(s.Nodes[root].Files), uint64(len(s.Nodes)))))
+	err := s.Visit(ctx, root, func(id ID) error {
+		node := &s.Nodes[id]
+		if !node.IsDir() && node.Size >= minSize && node.Flags&(Reparse|Shared|Unplaced|Incomplete) == 0 {
+			ids = append(ids, id)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := s.SortContext(ctx, ids, Sort{Column: "Size"}); err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+
 // hashCandidates hashes the first limit bytes of each candidate, or all of
 // it when limit is its size, on up to eight workers. Calls sharing buffers
 // are sequential; each worker owns one scratch slot for the duration of a call.
@@ -194,6 +227,10 @@ func (s *Snapshot) hashCandidates(ctx context.Context, ids []ID, limit uint64, p
 		}
 		buffers[w] = buffer
 		for i := int(next.Add(1)) - 1; i < len(ids); i = int(next.Add(1)) - 1 {
+			if err := ctx.Err(); err != nil {
+				outcomes[i].err = err
+				return
+			}
 			outcomes[i] = s.hashCandidate(ctx, ids[i], limit, buffer, progress)
 		}
 	}
@@ -213,6 +250,9 @@ func (s *Snapshot) hashCandidates(ctx context.Context, ids []ID, limit uint64, p
 // when limit is its size, after checking that the file on disk is still the
 // indexed one.
 func (s *Snapshot) hashCandidate(ctx context.Context, id ID, limit uint64, buffer []byte, progress *DuplicateProgress) hashOutcome {
+	if err := ctx.Err(); err != nil {
+		return hashOutcome{err: err}
+	}
 	path := s.Path(id)
 	before, err := os.Lstat(path)
 	if err != nil || !before.Mode().IsRegular() {
