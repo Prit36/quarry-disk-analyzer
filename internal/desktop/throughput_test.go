@@ -86,7 +86,7 @@ func TestSnapshotChangeReleasesHiddenCachesAndQueuedWork(t *testing.T) {
 	waitModel(t, a, func() bool { return !a.ext.busy })
 	a.tree.cells.snap = old
 	a.selFacts.snap, a.mutMemo.snap = old, old
-	a.dlg.dup.forSnap, a.dlg.dup.isOpen, a.dlg.dup.minSize = old, true, "1MB"
+	a.duplicates.forSnap, a.duplicates.minSize = old, "1MB"
 	a.tm.forSnap, a.tm.rankFor, a.tm.tipSnap = old, old, old
 	// A result posted before the snapshot change must also be rejected.
 	a.files.run()
@@ -102,13 +102,13 @@ func TestSnapshotChangeReleasesHiddenCachesAndQueuedWork(t *testing.T) {
 		"extensions": a.ext.forSnap, "extension worker": a.ext.runFor,
 		"file selection": a.files.selCache.key.snap, "tree selection": a.tree.selCache.key.snap,
 		"cells": a.tree.cells.snap, "facts": a.selFacts.snap, "operations": a.mutMemo.snap,
-		"treemap": a.tm.forSnap, "ranks": a.tm.rankFor, "tooltip": a.tm.tipSnap, "duplicates": a.dlg.dup.forSnap,
+		"treemap": a.tm.forSnap, "ranks": a.tm.rankFor, "tooltip": a.tm.tipSnap, "duplicates": a.duplicates.forSnap,
 	} {
 		if cached == old {
 			t.Fatalf("%s retained obsolete snapshot", label)
 		}
 	}
-	if !a.files.sel.Has(7) || !a.dlg.dup.isOpen || a.dlg.dup.minSize != "1MB" {
+	if !a.files.sel.Has(7) || a.duplicates.minSize != "1MB" {
 		t.Fatal("discarding cache lost view state")
 	}
 	a.files.run()

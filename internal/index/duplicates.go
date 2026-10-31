@@ -1,6 +1,7 @@
 package index
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"fmt"
@@ -12,9 +13,10 @@ import (
 	"sync/atomic"
 )
 
-// duplicatePrefix is how much of each same-size candidate is hashed before
-// the rest: files that differ near their start are never read in full.
-const duplicatePrefix = 4 << 10
+const (
+	duplicatePrefix   = 4 << 10  // bytes per region of a large-file sample
+	duplicateFullRead = 64 << 10 // small files cost less to read in one pass
+)
 
 type DuplicateGroup struct {
 	IDs  []ID
@@ -25,192 +27,272 @@ type DuplicateResult struct {
 	Issues           []Issue
 	Checked, Skipped uint64
 }
-type DuplicateProgress struct{ Files, Bytes, TotalBytes atomic.Uint64 }
+type DuplicateProgress struct {
+	Files, Bytes, TotalBytes atomic.Uint64 // logical progress, including ruled-out candidates
+}
 type hashedFile struct {
 	id   ID
 	info os.FileInfo
 }
 
+type duplicateIdentity [3]uint32 // volume serial number and 64-bit file index
+
 // hashOutcome is the result of hashing one candidate. ok is false when the
-// file was skipped; issue is set when it could not be opened.
+// file was skipped; issue explains why it could not be verified.
 type hashOutcome struct {
-	digest [32]byte
-	info   os.FileInfo
-	ok     bool
-	issue  *Issue
-	err    error
+	digest      [32]byte
+	info        os.FileInfo
+	ok          bool
+	issue       *Issue
+	err         error
+	bytes       uint64 // bytes read during this hash
+	identity    duplicateIdentity
+	hasIdentity bool
 }
 
 func (s *Snapshot) FindDuplicates(ctx context.Context, root ID, progress *DuplicateProgress) (DuplicateResult, error) {
-	return s.FindDuplicatesOver(ctx, root, 1, progress)
+	return s.FindDuplicatesOver(ctx, root, 0, progress)
 }
 
-// FindDuplicatesOver verifies duplicates among files of at least minSize
-// bytes: same-size candidates are confirmed by a full SHA-256 of the content,
-// and only those that also agree on their first 4 KiB are read in full.
-// Hashing runs on a few workers; equal-size candidates are ordered by ID.
+// FindDuplicatesOver confirms same-size files using full SHA-256. Files up to
+// 64 KiB are read once. Larger files are sampled at the start, middle and end;
+// only matching samples proceed to a full hash. Samples never prove equality.
+// Batches span size groups, keeping workers busy even with many tiny pairs.
 func (s *Snapshot) FindDuplicatesOver(ctx context.Context, root ID, minSize uint64, progress *DuplicateProgress) (DuplicateResult, error) {
 	result := DuplicateResult{}
-	candidates, err := s.duplicateCandidates(ctx, root, max(minSize, 1))
+	if progress != nil {
+		progress.Files.Store(0)
+		progress.Bytes.Store(0)
+		progress.TotalBytes.Store(0)
+	}
+	candidates, err := s.duplicateCandidates(ctx, root, minSize)
 	if err != nil {
 		return result, err
 	}
-	if progress != nil {
-		var total uint64
-		for i, id := range candidates {
-			size := s.Nodes[id].Size
-			if i > 0 && s.Nodes[candidates[i-1]].Size == size || i+1 < len(candidates) && s.Nodes[candidates[i+1]].Size == size {
-				total += size
-			}
-		}
-		progress.TotalBytes.Store(total)
-	}
-	// Scratch belongs to this verification, rather than each size/prefix
-	// group. Thousands of small groups must not each allocate 64 KiB per
-	// worker; prefix reads need only 4 KiB and empty groups need none.
-	buffers := make([][]byte, min(8, runtime.NumCPU()))
+	// Discard unique sizes without opening them. Compact in place and retain
+	// ascending IDs within each size for deterministic hard-link selection.
+	kept := candidates[:0]
+	var total uint64
 	for start := 0; start < len(candidates); {
-		if err := ctx.Err(); err != nil {
-			return result, err
+		if ctx.Err() != nil {
+			return result, ctx.Err()
 		}
-		size := s.Nodes[candidates[start]].Size
 		end := start + 1
+		size := s.Nodes[candidates[start]].Size
 		for end < len(candidates) && s.Nodes[candidates[end]].Size == size {
 			if end&4095 == 0 && ctx.Err() != nil {
 				return result, ctx.Err()
 			}
 			end++
 		}
-		ids := candidates[start:end]
+		if end-start > 1 {
+			kept = append(kept, candidates[start:end]...)
+			total += size * uint64(end-start)
+		}
 		start = end
-		if len(ids) < 2 {
-			continue
+	}
+	candidates = kept
+	if progress != nil {
+		progress.TotalBytes.Store(total)
+	}
+	buffers := make([][]byte, min(8, runtime.GOMAXPROCS(0)))
+	// Never split a size group across batches: all possible matches for a
+	// given size must be compared together. Normal batches bound FileInfo
+	// and digest scratch to a few thousand files instead of the whole scan.
+	for start := 0; start < len(candidates); {
+		if ctx.Err() != nil {
+			return result, ctx.Err()
 		}
-		groups := make(map[[32]byte][]hashedFile)
-		count := func() {
-			result.Checked++
-			if progress != nil {
-				progress.Files.Add(1)
+		end := min(start+4096, len(candidates))
+		for end < len(candidates) && s.Nodes[candidates[end]].Size == s.Nodes[candidates[end-1]].Size {
+			if end&4095 == 0 && ctx.Err() != nil {
+				return result, ctx.Err()
 			}
+			end++
 		}
-		add := func(id ID, outcome hashOutcome) {
-			alias := false
-			for _, existing := range groups[outcome.digest] {
+		if err := s.verifyDuplicateBatch(ctx, candidates[start:end], progress, buffers, &result); err != nil {
+			return result, err
+		}
+		start = end
+	}
+	sortDuplicateGroups(result.Groups)
+	return result, ctx.Err()
+}
+
+type duplicateDigest struct {
+	size   uint64
+	digest [32]byte
+}
+
+func (s *Snapshot) verifyDuplicateBatch(ctx context.Context, ids []ID, progress *DuplicateProgress, buffers [][]byte, result *DuplicateResult) error {
+	groups := make(map[duplicateDigest][]hashedFile)
+	identities := make(map[duplicateIdentity]struct{})
+	unknownIdentities := make(map[duplicateDigest][]os.FileInfo)
+	count := func() {
+		result.Checked++
+		if progress != nil {
+			progress.Files.Add(1)
+		}
+	}
+	add := func(id ID, outcome hashOutcome) {
+		key := duplicateDigest{s.Nodes[id].Size, outcome.digest}
+		alias := false
+		if outcome.hasIdentity {
+			_, alias = identities[outcome.identity]
+			if !alias {
+				for _, info := range unknownIdentities[key] {
+					if os.SameFile(info, outcome.info) {
+						alias = true
+						break
+					}
+				}
+			}
+		} else {
+			for _, existing := range groups[key] {
 				if os.SameFile(existing.info, outcome.info) {
 					alias = true
 					break
 				}
 			}
-			if !alias {
-				groups[outcome.digest] = append(groups[outcome.digest], hashedFile{id: id, info: outcome.info})
-			}
-			count()
 		}
-		// settle counts outcomes in order and reports verified ones to
-		// verified; the first cancellation error stops it.
-		settle := func(outcomes []hashOutcome, verified func(int)) error {
-			for i, outcome := range outcomes {
-				if outcome.err != nil {
-					return outcome.err
-				}
-				if outcome.issue != nil && len(result.Issues) < 100 {
-					result.Issues = append(result.Issues, *outcome.issue)
-				}
-				if !outcome.ok {
-					result.Skipped++
-					continue
-				}
-				verified(i)
+		if !alias {
+			groups[key] = append(groups[key], hashedFile{id: id, info: outcome.info})
+			if outcome.hasIdentity {
+				identities[outcome.identity] = struct{}{}
+			} else {
+				unknownIdentities[key] = append(unknownIdentities[key], outcome.info)
 			}
-			return nil
 		}
-		if size <= duplicatePrefix {
-			outcomes := s.hashCandidates(ctx, ids, size, progress, buffers)
-			if err := settle(outcomes, func(i int) { add(ids[i], outcomes[i]) }); err != nil {
-				return result, err
+		count()
+	}
+	settle := func(batch []ID, outcomes []hashOutcome, sampled bool, verified func(int)) error {
+		for i, outcome := range outcomes {
+			if i&4095 == 0 && ctx.Err() != nil {
+				return ctx.Err()
 			}
-		} else {
-			// A file whose prefix no other candidate shares cannot have a
-			// duplicate, so it is never read further.
-			// Prefix reads are not progress: the bytes counted are the
-			// candidates' full sizes, read in full or ruled out.
-			prefixOutcomes := s.hashCandidates(ctx, ids, duplicatePrefix, nil, buffers)
-			prefixes := make(map[[32]byte][]ID)
-			if err := settle(prefixOutcomes, func(i int) {
-				prefixes[prefixOutcomes[i].digest] = append(prefixes[prefixOutcomes[i].digest], ids[i])
-			}); err != nil {
-				return result, err
+			if outcome.err != nil {
+				return outcome.err
 			}
-			var pending []ID
-			for _, same := range prefixes {
-				if len(same) == 1 {
-					count()
-					if progress != nil {
-						progress.Bytes.Add(size)
+			if outcome.issue != nil && len(result.Issues) < 100 {
+				result.Issues = append(result.Issues, *outcome.issue)
+			}
+			if !outcome.ok {
+				result.Skipped++
+				if progress != nil {
+					size, read := s.Nodes[batch[i]].Size, outcome.bytes
+					if sampled && size > duplicateFullRead {
+						read = 0
 					}
-					continue
+					progress.Bytes.Add(size - read)
 				}
-				pending = append(pending, same...)
-			}
-			outcomes := s.hashCandidates(ctx, pending, size, progress, buffers)
-			if err := settle(outcomes, func(i int) { add(pending[i], outcomes[i]) }); err != nil {
-				return result, err
-			}
-		}
-		for _, matches := range groups {
-			if len(matches) < 2 {
 				continue
 			}
-			group := DuplicateGroup{Size: s.Nodes[matches[0].id].Size}
-			for _, match := range matches {
-				group.IDs = append(group.IDs, match.id)
+			verified(i)
+		}
+		return nil
+	}
+	outcomes := s.hashCandidates(ctx, ids, true, progress, buffers)
+	samples := make(map[duplicateDigest][]ID)
+	if err := settle(ids, outcomes, true, func(i int) {
+		id := ids[i]
+		if size := s.Nodes[id].Size; size <= duplicateFullRead {
+			add(id, outcomes[i])
+		} else {
+			key := duplicateDigest{size, outcomes[i].digest}
+			samples[key] = append(samples[key], id)
+		}
+	}); err != nil {
+		return err
+	}
+	var pending []ID
+	for key, same := range samples {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if len(same) == 1 {
+			count()
+			if progress != nil {
+				progress.Bytes.Add(key.size)
 			}
-			result.Groups = append(result.Groups, group)
+		} else {
+			pending = append(pending, same...)
 		}
 	}
-	slices.SortFunc(result.Groups, func(first, second DuplicateGroup) int {
-		if first.Size > second.Size {
-			return -1
+	slices.Sort(pending)
+	outcomes = s.hashCandidates(ctx, pending, false, progress, buffers)
+	if err := settle(pending, outcomes, false, func(i int) { add(pending[i], outcomes[i]) }); err != nil {
+		return err
+	}
+	for key, matches := range groups {
+		if len(matches) < 2 {
+			continue
 		}
-		if first.Size < second.Size {
-			return 1
+		group := DuplicateGroup{Size: key.size, IDs: make([]ID, len(matches))}
+		for i, match := range matches {
+			group.IDs[i] = match.id
 		}
-		return 0
+		slices.Sort(group.IDs)
+		result.Groups = append(result.Groups, group)
+	}
+	return ctx.Err()
+}
+
+// A stable order makes group numbers and the representative hard-link path
+// independent of map iteration and worker completion order.
+func sortDuplicateGroups(groups []DuplicateGroup) {
+	slices.SortFunc(groups, func(a, b DuplicateGroup) int {
+		if c := cmp.Compare(b.Size, a.Size); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.IDs[0], b.IDs[0])
 	})
-	return result, nil
 }
 
 // Keep one compact ID array instead of a map and a separately allocated slice
 // for every distinct size. The existing cancellable radix sorter groups equal
 // sizes and gives aliases a deterministic ID order before content verification.
 func (s *Snapshot) duplicateCandidates(ctx context.Context, root ID, minSize uint64) ([]ID, error) {
+	ids, err := s.unsortedDuplicateCandidates(ctx, root, minSize)
+	if err == nil {
+		err = s.SortContext(ctx, ids, Sort{Column: "Size"})
+	}
+	return ids, err
+}
+
+// Metadata grouping has no use for a size sort. Content verification keeps
+// the sorted variant so unique sizes never reach the filesystem.
+func (s *Snapshot) unsortedDuplicateCandidates(ctx context.Context, root ID, minSize uint64) ([]ID, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	if root == None || int(root) >= len(s.Nodes) {
 		return nil, fmt.Errorf("invalid scope")
 	}
+	for parent := s.Nodes[root].Parent; parent != None; parent = s.Nodes[parent].Parent {
+		if s.Nodes[parent].Flags&(Unplaced|Reparse) != 0 {
+			return nil, nil
+		}
+	}
 	ids := make([]ID, 0, int(min(uint64(s.Nodes[root].Files), uint64(len(s.Nodes)))))
-	err := s.Visit(ctx, root, func(id ID) error {
+	err := s.walk(ctx, root, func(id ID) (bool, error) {
 		node := &s.Nodes[id]
+		if node.IsDir() && node.Flags&(Reparse|Unplaced) != 0 {
+			return false, nil // descendants have no reliable ordinary file path
+		}
 		if !node.IsDir() && node.Size >= minSize && node.Flags&(Reparse|Shared|Unplaced|Incomplete) == 0 {
 			ids = append(ids, id)
 		}
-		return nil
+		return true, nil
 	})
 	if err != nil {
-		return nil, err
-	}
-	if err := s.SortContext(ctx, ids, Sort{Column: "Size"}); err != nil {
 		return nil, err
 	}
 	return ids, nil
 }
 
-// hashCandidates hashes the first limit bytes of each candidate, or all of
-// it when limit is its size, on up to eight workers. Calls sharing buffers
-// are sequential; each worker owns one scratch slot for the duration of a call.
-func (s *Snapshot) hashCandidates(ctx context.Context, ids []ID, limit uint64, progress *DuplicateProgress, buffers [][]byte) []hashOutcome {
+// Hash workers share a batch across sizes. Each owns reusable scratch;
+// sampling uses 4 KiB, while a full hash grows scratch only up to 64 KiB.
+func (s *Snapshot) hashCandidates(ctx context.Context, ids []ID, sample bool, progress *DuplicateProgress, buffers [][]byte) []hashOutcome {
 	if len(ids) == 0 {
 		return nil
 	}
@@ -218,20 +300,25 @@ func (s *Snapshot) hashCandidates(ctx context.Context, ids []ID, limit uint64, p
 	var next atomic.Int64
 	var wg sync.WaitGroup
 	work := func(w int) {
-		needed := int(min(limit, 64<<10))
 		buffer := buffers[w]
-		if cap(buffer) < needed {
-			buffer = make([]byte, needed)
-		} else {
-			buffer = buffer[:needed]
-		}
-		buffers[w] = buffer
+		defer func() { buffers[w] = buffer }()
 		for i := int(next.Add(1)) - 1; i < len(ids); i = int(next.Add(1)) - 1 {
 			if err := ctx.Err(); err != nil {
 				outcomes[i].err = err
 				return
 			}
-			outcomes[i] = s.hashCandidate(ctx, ids[i], limit, buffer, progress)
+			limit := s.Nodes[ids[i]].Size
+			sampled := sample && limit > duplicateFullRead
+			if sampled {
+				limit = duplicatePrefix
+			}
+			needed := int(max(1, min(limit, 64<<10)))
+			if cap(buffer) < needed {
+				buffer = make([]byte, max(duplicatePrefix, needed))
+			} else {
+				buffer = buffer[:needed]
+			}
+			outcomes[i] = s.readDuplicateCandidate(ctx, ids[i], limit, buffer, progress, sampled)
 		}
 	}
 	for w := 1; w < min(len(ids), len(buffers)); w++ {
@@ -250,67 +337,105 @@ func (s *Snapshot) hashCandidates(ctx context.Context, ids []ID, limit uint64, p
 // when limit is its size, after checking that the file on disk is still the
 // indexed one.
 func (s *Snapshot) hashCandidate(ctx context.Context, id ID, limit uint64, buffer []byte, progress *DuplicateProgress) hashOutcome {
+	return s.readDuplicateCandidate(ctx, id, limit, buffer, progress, false)
+}
+
+func (s *Snapshot) readDuplicateCandidate(ctx context.Context, id ID, limit uint64, buffer []byte, progress *DuplicateProgress, sample bool) hashOutcome {
 	if err := ctx.Err(); err != nil {
 		return hashOutcome{err: err}
 	}
 	path := s.Path(id)
+	skipped := func(message string, bytes uint64) hashOutcome {
+		return hashOutcome{issue: &Issue{Path: path, Message: message}, bytes: bytes}
+	}
 	before, err := os.Lstat(path)
-	if err != nil || !before.Mode().IsRegular() {
-		return hashOutcome{}
+	if err != nil {
+		return skipped(err.Error(), 0)
+	}
+	if !before.Mode().IsRegular() {
+		return skipped("not a regular file", 0)
 	}
 	file, err := os.Open(path)
 	if err != nil {
-		return hashOutcome{issue: &Issue{Path: path, Message: err.Error()}}
+		return skipped(err.Error(), 0)
 	}
+	defer file.Close()
 	opened, err := file.Stat()
 	node := s.Nodes[id]
-	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(before, opened) || opened.Size() < 0 || uint64(opened.Size()) != node.Size || (node.Modified != 0 && opened.ModTime().Unix() != node.ModTime()) {
-		file.Close()
-		return hashOutcome{}
+	if err != nil {
+		return skipped(err.Error(), 0)
+	}
+	if !opened.Mode().IsRegular() || !os.SameFile(before, opened) || opened.Size() < 0 || uint64(opened.Size()) != node.Size || (node.Modified != 0 && unixSeconds(opened.ModTime().Unix()) != node.Modified) {
+		return skipped("file changed since the scan; rescan to include it", 0)
 	}
 	hash := sha256.New()
+	type region struct{ offset, length uint64 }
+	regions := [3]region{{length: limit}}
+	expected := limit
+	if sample {
+		regions[1] = region{(node.Size - duplicatePrefix) / 2, duplicatePrefix}
+		regions[2] = region{node.Size - duplicatePrefix, duplicatePrefix}
+		expected += 2 * duplicatePrefix
+	}
 	var readBytes uint64
-	for {
-		if err = ctx.Err(); err != nil {
-			break
+readRegions:
+	for _, region := range regions {
+		if region.length == 0 {
+			continue
 		}
-		chunk := buffer
-		if limit < node.Size {
-			if readBytes == limit {
+		if region.offset > 0 {
+			if _, err = file.Seek(int64(region.offset), io.SeekStart); err != nil {
 				break
 			}
-			chunk = buffer[:min(uint64(len(buffer)), limit-readBytes)]
 		}
-		var count int
-		count, err = file.Read(chunk)
-		if count > 0 {
-			_, _ = hash.Write(chunk[:count])
-			readBytes += uint64(count)
-			if progress != nil {
-				progress.Bytes.Add(uint64(count))
+		for remaining := region.length; remaining > 0; {
+			if err = ctx.Err(); err != nil {
+				break readRegions
 			}
-		}
-		if err == io.EOF {
-			err = nil
-			break
-		}
-		if err != nil {
-			break
-		}
-		if readBytes > node.Size {
-			err = fmt.Errorf("file grew during duplicate verification")
-			break
+			chunk := buffer[:min(uint64(len(buffer)), remaining)]
+			var count int
+			count, err = file.Read(chunk)
+			if count > 0 {
+				_, _ = hash.Write(chunk[:count])
+				readBytes += uint64(count)
+				remaining -= uint64(count)
+				if progress != nil {
+					if !sample {
+						progress.Bytes.Add(uint64(count))
+					}
+				}
+			}
+			if err == io.EOF {
+				err = nil
+				break readRegions
+			}
+			if err != nil {
+				break readRegions
+			}
 		}
 	}
 	after, statErr := file.Stat()
-	file.Close()
 	if ctx.Err() != nil {
 		return hashOutcome{err: ctx.Err()}
 	}
-	if err != nil || statErr != nil || after.Size() != opened.Size() || !after.ModTime().Equal(opened.ModTime()) || readBytes != limit {
-		return hashOutcome{}
+	if err != nil {
+		return skipped(err.Error(), readBytes)
+	}
+	if statErr != nil {
+		return skipped(statErr.Error(), readBytes)
+	}
+	if after.Size() != opened.Size() || !after.ModTime().Equal(opened.ModTime()) || readBytes != expected {
+		return skipped("file changed during duplicate verification", readBytes)
+	}
+	current, err := os.Lstat(path)
+	if err != nil {
+		return skipped(err.Error(), readBytes)
+	}
+	if !os.SameFile(opened, current) || !current.Mode().IsRegular() || current.Size() != opened.Size() || !current.ModTime().Equal(opened.ModTime()) {
+		return skipped("file was replaced during duplicate verification", readBytes)
 	}
 	var digest [32]byte
 	hash.Sum(digest[:0])
-	return hashOutcome{digest: digest, info: opened, ok: true}
+	identity, hasIdentity := readDuplicateIdentity(file)
+	return hashOutcome{digest: digest, info: opened, ok: true, bytes: readBytes, identity: identity, hasIdentity: hasIdentity}
 }

@@ -73,6 +73,7 @@ type App struct {
 
 	tree          treeModel
 	files         fileModel
+	duplicates    duplicateModel
 	ext           extModel
 	tm            treemapModel
 	typeSummaries [2]*rootTypeSummary
@@ -187,7 +188,7 @@ func (a *App) shutdown() {
 	a.clearTypeSummaries()
 	a.prefs.Target = a.target
 	_ = a.savePrefs()
-	for _, cancel := range []context.CancelFunc{a.cancelScan, a.filterCancel, a.files.cancel, a.ext.cancel, a.tm.cancel, a.dlg.dup.cancel} {
+	for _, cancel := range []context.CancelFunc{a.cancelScan, a.filterCancel, a.files.cancel, a.ext.cancel, a.tm.cancel, a.duplicates.cancel} {
 		if cancel != nil {
 			cancel()
 		}
@@ -420,7 +421,7 @@ func (a *App) setPreparedBase(s *index.Snapshot, source string, meta []index.ID,
 	a.files.reset()
 	a.ext.reset()
 	a.tm.reset()
-	a.dlg.dup.reset()
+	a.duplicates.reset()
 	a.selFacts, a.mutMemo = selectionFacts{}, mutableMemo{}
 	title := s.Root
 	if source != "" {
@@ -581,7 +582,7 @@ func (a *App) setView(s *index.Snapshot) {
 		if a.tm.forSnap != a.mapSnapshot() {
 			a.tm.reset()
 		}
-		a.dlg.dup.reset()
+		a.duplicates.reset()
 	}
 	a.pruneTypeSummaries()
 	if !s.Reachable(a.location) {

@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Parallelize metadata duplicate matching, eliminate per-singleton allocations,
+  and reuse prepared group ordering in Files.
+- Batch content verification across file sizes and sample the start, middle
+  and end of large files before full SHA-256. Small files are read once;
+  matching samples still require a full content hash.
+- Keep duplicate checking in a compact menu in the Files header, with group
+  numbers, normal file selection/actions/export, scope and searchable results.
+- Default to a fast name-and-size check without reading file contents. Content
+  verification is an explicit optional action; scope and scan changes return
+  to the fast check. Include empty files when the minimum size is 0.
+- Share candidate eligibility rules, stabilize duplicate and hard-link ordering,
+  report skipped-file details, complete progress when files are skipped, and
+  reject obsolete results after cancellation, navigation or snapshot changes.
+- Use file identities on Windows to avoid quadratic alias checks for large
+  groups of identical files, with a portable fallback.
+
 ## 0.2.4 - 2026-10-24
 
 - Publish from the cleaned public repository with MIT licensing, corrected

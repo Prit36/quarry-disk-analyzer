@@ -557,16 +557,26 @@ func (a *App) fileTable(c *ui.Context, pal palette) {
 	f := &a.files
 	t := c.Theme()
 	s := a.snap
-	cols, ids := visibleColumns(fileColumns, a.prefs.FileHidden)
+	columns := fileColumns
+	if a.duplicates.active {
+		group := column{ui.TableColumn{Title: "Group", Width: 100, MinWidth: 70, Sortable: true}, false}
+		columns = append([]column{group}, fileColumns...)
+	}
+	cols, ids := visibleColumns(columns, a.prefs.FileHidden)
 	before := f.sort
 	f.list.Selected = &f.cursor
 	f.list.Selection = &f.sel
 	f.list.Sort = &f.sort
 	f.list.Key = func(i int) any { return f.ids[i] }
 	f.list.Label = func(i int) string { return a.name(f.ids[i]) }
-	text := func(row int, id string) string { return a.treeCellText(f.ids[row], id) }
+	text := func(row int, id string) string {
+		if id == "Group" {
+			return a.duplicateGroupText(f.ids[row])
+		}
+		return a.treeCellText(f.ids[row], id)
+	}
 	f.list.HeaderMenu = func(m *ui.Menu, col int) {
-		a.headerMenu(c, m, col, fileColumns, ids, a.prefs.FileHidden, &f.list, text, len(f.ids))
+		a.headerMenu(c, m, col, columns, ids, a.prefs.FileHidden, &f.list, text, len(f.ids))
 	}
 	restore := tableTheme(c, &f.list, a.focused["files"], pal)
 	table := ui.Table(c.Key("files"), &f.list, cols, len(f.ids), func(row, col int) {
@@ -585,6 +595,8 @@ func (a *App) fileTable(c *ui.Context, pal palette) {
 			a.rowMenu(m)
 		})
 		switch ids[col] {
+		case "Group":
+			cell.Children(func() { ui.Text(c, a.duplicateGroupText(id)).SingleLine().TextColor(t.TextMuted) })
 		case "Name":
 			a.dragFrom(cell, func() []index.ID {
 				if f.sel.Has(id) {
@@ -617,8 +629,17 @@ func (a *App) fileTable(c *ui.Context, pal palette) {
 		}
 	}).Grow(1).MinHeight(0).Background(pal.grid)
 	table.Children(func() {
-		if len(f.ids) == 0 && !f.busy && f.err == "" && s != nil {
+		if len(f.ids) == 0 && !f.busy && !a.duplicates.busy && f.err == "" && s != nil {
 			msg := "No files in this scope."
+			if a.duplicates.active {
+				msg = "No files with matching names and sizes in this scope."
+				if a.duplicates.verified {
+					msg = "No files with identical contents in this scope."
+				}
+				if a.duplicates.err != "" || a.duplicates.notice != "" {
+					msg = "Choose Refresh from the Duplicates menu to check again."
+				}
+			}
 			if strings.TrimSpace(f.ran) != "" {
 				msg = "No matches for “" + f.ran + "” in " + f.scopeName() + ". Search is case-insensitive; use * and ? as wildcards (Help → Search Syntax)."
 				if a.filter.active() {

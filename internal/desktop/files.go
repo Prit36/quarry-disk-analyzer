@@ -17,25 +17,27 @@ import (
 // a search also matches folders unless it says type:file. Every match is
 // kept; the virtualized table only builds rows in view.
 type fileModel struct {
-	a              *App
-	ids            []index.ID
-	total          uint64
-	busy           bool
-	err            string
-	gen            uint64
-	cancel         context.CancelFunc
-	dirty          bool
-	due            time.Time
-	forSnap        *index.Snapshot // snapshot of the shown results
-	runFor         *index.Snapshot // snapshot of the running query
-	ran            string          // query of the shown results
-	scope          index.ID
-	pinned         bool // scope chosen by the user; otherwise it follows the location
-	shownScope     index.ID
-	shownAllocated bool
-	shownOnDisk    bool
-	shownSort      ui.SortOrder
-	shownGroups    []uint32 // immutable group lengths for Folder/Extension sorts
+	a                 *App
+	ids               []index.ID
+	total             uint64
+	busy              bool
+	err               string
+	gen               uint64
+	cancel            context.CancelFunc
+	dirty             bool
+	due               time.Time
+	forSnap           *index.Snapshot // snapshot of the shown results
+	runFor            *index.Snapshot // snapshot of the running query
+	ran               string          // query of the shown results
+	scope             index.ID
+	pinned            bool // scope chosen by the user; otherwise it follows the location
+	shownScope        index.ID
+	shownAllocated    bool
+	shownOnDisk       bool
+	shownSort         ui.SortOrder
+	shownGroups       []uint32 // immutable group lengths for Folder/Extension sorts
+	shownDuplicates   bool
+	shownDuplicateGen uint64
 
 	list   ui.ListState
 	sel    ui.Selection[index.ID]
@@ -69,6 +71,23 @@ func (f *fileModel) reset() {
 	f.cursor = -1
 	f.dirty = true
 	f.selCache.reset()
+}
+
+// A change of result source must not leave unrelated files actionable while
+// verification is running. Preserve column layout, scope and sort order.
+func (f *fileModel) clearResults() {
+	if f.cancel != nil {
+		f.cancel()
+	}
+	f.gen++
+	f.cancel, f.runFor, f.forSnap = nil, nil, nil
+	f.ids, f.total, f.busy, f.err = nil, 0, false, ""
+	f.shownGroups, f.due = nil, time.Time{}
+	f.sel, f.cursor = ui.Selection[index.ID]{}, -1
+	f.idsGen++
+	f.selCache.reset()
+	f.list.ScrollTo(0, ui.Start)
+	f.dirty = true
 }
 
 func (f *fileModel) invalidate() {
@@ -162,15 +181,22 @@ func (f *fileModel) run() {
 	if !a.snap.Reachable(f.scope) {
 		f.scope = 0
 	}
+	d := &a.duplicates
+	if d.active && !d.ensure(a) {
+		return
+	}
 	f.gen++
 	gen := f.gen
 	ctx, cancel := context.WithCancel(context.Background())
 	f.cancel = cancel
 	f.busy, f.dirty, f.due, f.runFor = true, false, time.Time{}, a.snap
 	s, query, scope, order, allocated := a.snap, strings.TrimSpace(a.search), f.scope, f.sort, a.metricAllocated()
+	duplicates, duplicateGen, duplicateGroups := d.active, d.gen, d.groups
+	duplicateRows := d.ids
+	duplicateGroupOrder := duplicates && query == "" && order.Column == "Group" && !order.Descending
 	// Results remain immutable while a worker sorts its own copy. Changing
 	// order or size metric need not search the same snapshot and scope again.
-	reuse := f.forSnap == s && f.ran == query && f.shownScope == scope && f.err == ""
+	reuse := f.forSnap == s && f.ran == query && f.shownScope == scope && f.err == "" && f.shownDuplicates == duplicates && (!duplicates || f.shownDuplicateGen == duplicateGen)
 	previous, previousTotal, sameMetric := f.ids, f.total, f.shownAllocated == allocated
 	previousOnDisk := f.shownOnDisk
 	previousSort := f.shownSort
@@ -183,7 +209,9 @@ func (f *fileModel) run() {
 		var groups []uint32
 		onDisk := previousOnDisk
 		if err == nil && reuse {
-			if sameMetric && previousSort == order {
+			if duplicateGroupOrder {
+				ids = duplicateRows
+			} else if sameMetric && previousSort == order {
 				ids = previous // unchanged, immutable results need no new buffer
 			} else {
 				ids = slices.Clone(previous)
@@ -193,8 +221,42 @@ func (f *fileModel) run() {
 				filter.Kind = index.KindFiles
 			}
 			var results index.SearchResult
-			results, err = s.SearchResults(ctx, scope, &filter, allocated)
+			if duplicates && query == "" {
+				// The duplicate source is usually tiny beside the scan. Do not
+				// allocate an ID for every unrelated file just to discard it.
+				results.IDs = duplicateRows
+				if !duplicateGroupOrder {
+					results.IDs = slices.Clone(duplicateRows)
+				}
+			} else {
+				results, err = s.SearchResults(ctx, scope, &filter, allocated)
+			}
 			ids, total, onDisk = results.IDs, results.Total, !results.HasMetadata
+			if err == nil && duplicates {
+				kept := ids[:0]
+				total, onDisk = 0, true
+				for i, id := range ids {
+					if i&4095 == 0 && ctx.Err() != nil {
+						return
+					}
+					if query != "" && duplicateGroups[id] == 0 {
+						continue
+					}
+					if query != "" {
+						kept = append(kept, id)
+					}
+					n := s.Nodes[id]
+					if allocated {
+						total += n.Allocated
+					} else {
+						total += n.Size
+					}
+					onDisk = onDisk && !s.IsMetadata(id)
+				}
+				if query != "" {
+					ids = kept
+				}
+			}
 		}
 		if err == nil && reuse && sameMetric {
 			total = previousTotal
@@ -216,8 +278,20 @@ func (f *fileModel) run() {
 				}
 			}
 		}
-		if err == nil && !(reuse && sameMetric && previousSort == order) {
-			if reuse && sameMetric && previousSort.Column == order.Column && previousSort.Descending != order.Descending {
+		if duplicateGroupOrder {
+			groups = nil
+		}
+		if err == nil && !duplicateGroupOrder && !(reuse && sameMetric && previousSort == order) {
+			if duplicates && order.Column == "Group" {
+				groups = nil
+				err = s.SortByKeys(ctx, ids, func(id index.ID) uint64 {
+					group := uint64(duplicateGroups[id])
+					if order.Descending {
+						return ^group
+					}
+					return group
+				}, nil, &index.Sort{Column: "Name"})
+			} else if reuse && sameMetric && previousSort.Column == order.Column && previousSort.Descending != order.Descending {
 				if order.Column == "Folder" || order.Column == "Extension" {
 					groups, err = reverseEntryGroups(ctx, ids, previousGroups)
 				} else {
@@ -265,6 +339,7 @@ func (f *fileModel) run() {
 			f.shownScope, f.shownAllocated = scope, allocated
 			f.shownOnDisk = onDisk
 			f.shownSort = order
+			f.shownDuplicates, f.shownDuplicateGen = duplicates, duplicateGen
 			f.shownGroups = groups
 			f.idsGen++
 			f.cursor = cursor

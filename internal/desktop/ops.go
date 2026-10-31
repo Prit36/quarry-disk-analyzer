@@ -377,6 +377,7 @@ func (a *App) searchHere() {
 	if id == index.None {
 		return
 	}
+	a.setDuplicateMode(false)
 	a.files.pinScope(id)
 	a.setViewMode(viewFiles)
 	a.focusSearch()

@@ -134,7 +134,7 @@ func newCommands() map[string]*command {
 		"tools.search":      {label: "Advanced Search…", keys: "Ctrl+Shift+F", mods: ui.Ctrl | ui.Shift, key: ui.KeyF, inText: true, enabled: hasScan, run: func(a *App) { a.dlg.openSearch(a) }},
 		"tools.filter":      {label: "Show/Hide Filter…", keys: "Ctrl+Shift+L", mods: ui.Ctrl | ui.Shift, key: ui.KeyL, inText: true, enabled: hasScan, run: func(a *App) { a.dlg.openFilter(a) }},
 		"tools.clearFilter": {label: "Clear Filter", enabled: func(a *App) bool { return a.filter.active() }, run: (*App).clearFilter},
-		"tools.dups":        {label: "Find Duplicates…", enabled: hasScan, run: func(a *App) { a.dlg.dup.open(a) }},
+		"tools.dups":        {label: "Find Duplicates", enabled: hasScan, run: func(a *App) { a.showDuplicates(true) }},
 		"tools.compare":     {label: "Compare with Saved Scan…", enabled: hasScan, run: (*App).compareDialog},
 		"tools.issues":      {label: "Scan Issues…", enabled: func(a *App) bool { return a.snap != nil && a.snap.Errors > 0 }, run: func(a *App) { a.dlg.issues = true }},
 		"tools.info":        {label: "Scan Information…", enabled: hasScan, run: func(a *App) { a.dlg.info = true }},

@@ -156,6 +156,9 @@ func (a *App) savePrefs() error {
 	a.prefs.FileColumns = a.files.list.Columns
 	a.prefs.ExtColumns = a.ext.list.Columns
 	a.prefs.TreeSort, a.prefs.FileSort, a.prefs.ExtSort = a.tree.sort, a.files.sort, a.ext.sort
+	if a.duplicates.active && a.files.sort.Column == "Group" {
+		a.prefs.FileSort = a.duplicates.fileSort
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}

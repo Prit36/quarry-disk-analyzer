@@ -26,7 +26,7 @@ From top to bottom: the toolbar (Scan, Rescan, back, forward, up, the location a
 - **Drive header** - the drive, its use as a bar in three parts (the scan, used space the scan does not list or the rest of the drive, free space) with a legend, free space as the large number (in the warning color at 90 % or more), and the scan's file and folder counts and method.
 - **Tree** - the folder hierarchy below the current location, sorted by size, with each entry's share of its parent as a bar beside its name. Right/Left expand and collapse (Shift for the whole subtree, bounded at 200,000 rows), Enter or double-click expands folders and opens files, Backspace or Alt+Up goes up.
 - **File types panel** - beside the tree: the kinds of files in the scope, largest first, in the treemap's colors, so it is also its legend. Double-click lists a type's files; F8 shows or hides it.
-- **Files** - every file in the scope, largest first, or every match of the search. Results are complete (no silent limit) and virtualized.
+- **Files** - every file in the scope, largest first, or every match of the search. Choose **Duplicates** from its **All files** menu to review duplicate candidates in the same table, with the usual selection, file actions, sorting and export. Results are complete (no silent limit) and virtualized.
 - **Extensions** - space by file type with Windows' type names. Double-click an extension to list its files.
 - **Treemap** - area proportional to size, colored by extension (aggregated blocks take their dominant type), by top-level folder, or monochrome. Click selects the item in Tree View, double-click a folder goes into it, the mouse back button returns.
 
@@ -67,7 +67,11 @@ Sizes: **Size** is the logical length of files, **Allocated** the disk space the
 
 ## Saving, exporting, comparing
 
-File → Save Scan As writes a `.quarry` file that opens instantly later (marked as historical data). File → Export writes CSV of the current view, the selection, the entire scan or the extension summary, or JSON. Tools → Compare with Saved Scan shows growth per top-level folder. Tools → Find Duplicates groups same-name/same-size candidates or verifies identical content with SHA-256; it never deletes anything.
+File → Save Scan As writes a `.quarry` file that opens instantly later (marked as historical data). File → Export writes CSV of the current view, the selection, the entire scan or the extension summary, or JSON. Tools → Compare with Saved Scan shows growth per top-level folder.
+
+In **Files**, open the **All files** menu and choose **Duplicates (name and size)** for a fast candidate search using the existing scan. It does not read file contents. The same menu holds minimum-size presets, refresh and stop actions. **Verify contents (slow)** explicitly checks the current scope with SHA-256, including renamed copies; it can take a long time on a large scan. Changing scope, opening a new scan or re-enabling Duplicates returns to the fast check. The scope and search box apply to the results; hover over the compact result count for details, including skipped-file reasons. Hard-link aliases are excluded, and Quarry never deletes duplicates automatically. Tools → Find Duplicates also opens this Files view.
+
+Duplicate matching runs in parallel using compact scratch storage. Optional verification reads small files once and samples the start, middle and end of larger files before hashing remaining matches in full.
 
 ## Command line
 

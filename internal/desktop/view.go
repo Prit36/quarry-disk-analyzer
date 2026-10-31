@@ -425,6 +425,7 @@ func (a *App) searchBox(c *ui.Context) {
 		if field.Changed() && !ext {
 			switch {
 			case a.prefs.View == viewTree && strings.TrimSpace(a.search) != "":
+				a.setDuplicateMode(false)
 				a.setViewMode(viewFiles)
 				a.searchLeftTree = true
 				a.focusTable = false
@@ -446,6 +447,9 @@ func (a *App) searchBox(c *ui.Context) {
 				if m.Item(q).Chosen() {
 					a.search = q
 					fromTree := a.prefs.View == viewTree
+					if fromTree {
+						a.setDuplicateMode(false)
+					}
 					a.setViewMode(viewFiles)
 					a.searchLeftTree = fromTree || a.searchLeftTree
 					a.files.invalidate()
@@ -636,10 +640,13 @@ func (a *App) viewContext(c *ui.Context) {
 		}
 	case viewFiles, viewExtensions:
 		if a.prefs.View == viewFiles {
+			a.fileDisplayMenu(c)
 			f := &a.files
 			switch {
 			case f.err != "":
 				ui.Text(c, f.err).TextColor(t.Danger).SingleLine().MaxWidth(420)
+			case a.duplicates.active:
+				a.duplicateSummary(c)
 			case f.busy:
 				muted("Searching…")
 			default:

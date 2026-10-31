@@ -218,6 +218,7 @@ func (e *extModel) currentExt() (string, bool) {
 
 // showFiles opens File View filtered to an extension, in the same scope.
 func (a *App) showExtensionFiles(ext string) {
+	a.setDuplicateMode(false)
 	q := "ext:" + strings.TrimPrefix(ext, ".")
 	if ext == "(no extension)" {
 		q = "ext:none"
