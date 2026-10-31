@@ -287,6 +287,16 @@ func (a *App) duplicateBar(c *ui.Context, pal palette) {
 			}
 		}
 		ui.Spacer(c)
+		if f := &a.files; len(f.dupLens) < len(f.ids) {
+			open := f.allGroupsOpen()
+			label := "Expand All"
+			if open {
+				label = "Collapse All"
+			}
+			if textButton(c, "dup-fold", label, "Show or hide the copies under each group's first file", true).Clicked() {
+				a.post(func() { f.openAllGroups(!open) })
+			}
+		}
 		ui.Text(c, "Minimum size:").TextColor(t.TextMuted).SingleLine().Shrink(0)
 		choice := minSizes[0].label
 		labels := make([]string, len(minSizes))

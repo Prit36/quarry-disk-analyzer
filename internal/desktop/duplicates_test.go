@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"context"
+	"image/png"
 	"os"
 	"path/filepath"
 	"slices"
@@ -392,5 +393,64 @@ func TestDuplicateCancelRejectsQueuedResult(t *testing.T) {
 	waitDuplicates(t, a)
 	if a.duplicates.busy || len(a.files.ids) != 0 || !strings.Contains(a.duplicateStatus(), "canceled") {
 		t.Fatal("cancel applied a queued result or restarted verification")
+	}
+}
+
+// As WizTree's duplicates, a group is one row, its first file, until it is
+// opened to show the other copies under it; the results stay every file.
+func TestDuplicateGroupsFoldUnderTheirFirstFile(t *testing.T) {
+	a, ids := duplicateApp(t)
+	a.refreshDuplicates(true)
+	waitDuplicates(t, a)
+	f := &a.files
+	if len(f.ids) != 6 || len(f.rows) != 3 || f.allGroupsOpen() {
+		t.Fatalf("groups not folded: %d files, %d rows", len(f.ids), len(f.rows))
+	}
+	tt := ui.NewTester(a.view, 1280, 800)
+	settle(tt, func() bool { return !a.duplicates.busy && !a.files.busy })
+	if !tt.HasText("Expand All") {
+		t.Fatalf("no Expand All: %q", tt.Texts())
+	}
+	head := f.rows[0]
+	var dup index.ID
+	for _, id := range f.ids {
+		if id != head && a.duplicates.groups[id] == a.duplicates.groups[head] {
+			dup = id
+		}
+	}
+	if tt.HasText(a.name(dup)) && a.name(dup) != a.name(head) {
+		t.Fatal("a closed group shows its dup")
+	}
+	f.toggleGroup(0, true)
+	if len(f.rows) != 4 || f.rows[1] != dup || f.rowCopies[0] != 2 || f.rowCopies[1] != 0 {
+		t.Fatalf("opening the group did not show its dup under it: %v", f.rows)
+	}
+	tt.Frame()
+	if path := os.Getenv("QUARRY_SNAPSHOTS"); path != "" {
+		out, err := os.Create(filepath.Join(path, "duplicates-groups.png"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		png.Encode(out, tt.Image())
+		out.Close()
+	}
+	// Left on the dup closes its group and moves to its first file.
+	f.cursor = 1
+	f.toggleGroup(1, false)
+	if len(f.rows) != 3 || f.cursor != 0 {
+		t.Fatalf("closing from a dup: rows %v, cursor %d", f.rows, f.cursor)
+	}
+	if err := tt.Click("Expand All"); err != nil {
+		t.Fatal(err)
+	}
+	settle(tt, func() bool { return len(f.rows) == 6 })
+	if len(f.rows) != 6 || !f.allGroupsOpen() || !tt.HasText("Collapse All") {
+		t.Fatalf("Expand All: %d rows", len(f.rows))
+	}
+	f.openAllGroups(false)
+	// Selecting a hidden dup opens its group.
+	f.selectOnly(ids["renamed.bin"])
+	if f.cursor < 0 || f.rows[f.cursor] != ids["renamed.bin"] {
+		t.Fatal("selecting a dup in a closed group did not show it")
 	}
 }

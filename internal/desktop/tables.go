@@ -431,10 +431,10 @@ func (a *App) treeActivate(row int) {
 // are revealed in Tree View.
 func (a *App) fileActivate(row int) {
 	f := &a.files
-	if row < 0 || row >= len(f.ids) {
+	if row < 0 || row >= len(f.rows) {
 		return
 	}
-	if id := f.ids[row]; a.snap.Nodes[id].IsDir() {
+	if id := f.rows[row]; a.snap.Nodes[id].IsDir() {
 		a.reveal(id)
 	} else {
 		a.exec("item.open")
@@ -567,23 +567,34 @@ func (a *App) fileTable(c *ui.Context, pal palette) {
 	f.list.Selected = &f.cursor
 	f.list.Selection = &f.sel
 	f.list.Sort = &f.sort
-	f.list.Key = func(i int) any { return f.ids[i] }
-	f.list.Label = func(i int) string { return a.name(f.ids[i]) }
+	f.list.Key = func(i int) any { return f.rows[i] }
+	f.list.Label = func(i int) string { return a.name(f.rows[i]) }
+	// copies is the number of files in the group a duplicate row heads, 0
+	// for a copy under it, and -1 outside duplicate mode.
+	copies := func(row int) int {
+		if f.rowCopies == nil {
+			return -1
+		}
+		return int(f.rowCopies[row])
+	}
 	text := func(row int, id string) string {
 		if id == "Group" {
-			return a.duplicateGroupText(f.ids[row])
+			if copies(row) == 0 {
+				return ""
+			}
+			return a.duplicateGroupText(f.rows[row])
 		}
-		return a.treeCellText(f.ids[row], id)
+		return a.treeCellText(f.rows[row], id)
 	}
 	f.list.HeaderMenu = func(m *ui.Menu, col int) {
-		a.headerMenu(c, m, col, columns, ids, a.prefs.FileHidden, &f.list, text, len(f.ids))
+		a.headerMenu(c, m, col, columns, ids, a.prefs.FileHidden, &f.list, text, len(f.rows))
 	}
 	restore := tableTheme(c, &f.list, a.focused["files"], pal)
-	table := ui.Table(c.Key("files"), &f.list, cols, len(f.ids), func(row, col int) {
-		if row >= len(f.ids) {
+	table := ui.Table(c.Key("files"), &f.list, cols, len(f.rows), func(row, col int) {
+		if row >= len(f.rows) {
 			return
 		}
-		id := f.ids[row]
+		id := f.rows[row]
 		cell := cellBox(c, cols[col].Align)
 		if cell.Hovered() {
 			a.hover = id
@@ -596,7 +607,9 @@ func (a *App) fileTable(c *ui.Context, pal palette) {
 		})
 		switch ids[col] {
 		case "Group":
-			cell.Children(func() { ui.Text(c, a.duplicateGroupText(id)).SingleLine().TextColor(t.TextMuted) })
+			if copies(row) != 0 {
+				cell.Children(func() { ui.Text(c, a.duplicateGroupText(id)).SingleLine().TextColor(t.TextMuted) })
+			}
 		case "Name":
 			a.dragFrom(cell, func() []index.ID {
 				if f.sel.Has(id) {
@@ -604,7 +617,7 @@ func (a *App) fileTable(c *ui.Context, pal palette) {
 				}
 				return []index.ID{id}
 			})
-			if clickSelect(cell, &f.sel, &f.cursor, row, func(i int) index.ID { return f.ids[i] }) {
+			if clickSelect(cell, &f.sel, &f.cursor, row, func(i int) index.ID { return f.rows[i] }) {
 				f.selCache.invalidate()
 				a.focusTable = true
 			}
@@ -613,6 +626,24 @@ func (a *App) fileTable(c *ui.Context, pal palette) {
 				a.post(func() { a.fileActivate(row) })
 			}
 			cell.Gap(5).Children(func() {
+				// A group's first file has the expander of the copies under
+				// it, which are indented past it, as in Tree View.
+				switch n := copies(row); {
+				case n > 1:
+					icon := "chevron_right"
+					open := f.dupGroupOpen(id)
+					if open {
+						icon = "chevron_down"
+					}
+					row := row
+					ui.ButtonBase(c.Key(id)).Size(14, 14).Shrink(0).Center().Label("Show or hide the copies").
+						Children(func() { ui.Icon(c, icons[icon]).FontSize(10).TextColor(t.TextMuted) }).
+						OnClick(func() { f.toggleGroup(row, !open) })
+				case n == 1: // its copies are not among the results: the expander's room
+					ui.Box(c).Width(14).Shrink(0)
+				case n == 0: // a copy, a level in
+					ui.Box(c).Width(14 + 14*a.zoom()).Shrink(0)
+				}
 				a.itemIcon(c, id)
 				a.nameText(c, id)
 			})
@@ -629,7 +660,7 @@ func (a *App) fileTable(c *ui.Context, pal palette) {
 		}
 	}).Grow(1).MinHeight(0).Background(pal.grid)
 	table.Children(func() {
-		if len(f.ids) == 0 && !f.busy && !a.duplicates.busy && f.err == "" && s != nil {
+		if len(f.rows) == 0 && !f.busy && !a.duplicates.busy && f.err == "" && s != nil {
 			msg := "No files in this scope."
 			if a.duplicates.active {
 				msg = "No files with matching names and sizes in this scope."
@@ -665,6 +696,15 @@ func (a *App) fileTable(c *ui.Context, pal palette) {
 	}
 	if table.Submitted() {
 		a.fileActivate(f.cursor)
+	}
+	// Right and Left open and close the duplicate group of the focused row.
+	if f.rowCopies != nil {
+		switch {
+		case f.list.Shortcut(c, 0, ui.KeyRight):
+			f.toggleGroup(f.cursor, true)
+		case f.list.Shortcut(c, 0, ui.KeyLeft):
+			f.toggleGroup(f.cursor, false)
+		}
 	}
 }
 

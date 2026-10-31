@@ -39,9 +39,23 @@ type fileModel struct {
 	shownDuplicates   bool
 	shownDuplicateGen uint64
 
+	// rows are the table's rows: ids, or in duplicate mode one row per
+	// group, its first file, with the other copies under it while it is
+	// open, as WizTree's duplicates. dupOrder is ids with each group's
+	// files together, in the order of their first file, and dupLens the
+	// groups' lengths; rowCopies is a row's number of files in its group
+	// when it heads one, and 0 for a copy under it.
+	rows       []index.ID
+	rowCopies  []uint32
+	dupOrder   []index.ID
+	dupLens    []uint32
+	dupOpen    map[int]bool // groups toggled from dupOpenAll
+	dupOpenAll bool
+	dupOpenGen uint64 // the duplicate check dupOpen is for
+
 	list   ui.ListState
 	sel    ui.Selection[index.ID]
-	cursor int
+	cursor int // a row of rows
 	sort   ui.SortOrder
 
 	selCache selectionCache
@@ -64,6 +78,7 @@ func (f *fileModel) reset() {
 	cols := f.list.Columns
 	f.list = ui.ListState{Columns: cols}
 	f.ids, f.total, f.busy, f.err, f.forSnap, f.ran = nil, 0, false, "", nil, ""
+	f.rows, f.rowCopies, f.dupOrder, f.dupLens = nil, nil, nil, nil
 	f.shownGroups = nil
 	f.idsGen++
 	f.scope, f.pinned = 0, false
@@ -82,6 +97,7 @@ func (f *fileModel) clearResults() {
 	f.gen++
 	f.cancel, f.runFor, f.forSnap = nil, nil, nil
 	f.ids, f.total, f.busy, f.err = nil, 0, false, ""
+	f.rows, f.rowCopies, f.dupOrder, f.dupLens = nil, nil, nil, nil
 	f.shownGroups, f.due = nil, time.Time{}
 	f.sel, f.cursor = ui.Selection[index.ID]{}, -1
 	f.idsGen++
@@ -302,6 +318,11 @@ func (f *fileModel) run() {
 				err = sortEntriesGrouped(ctx, s, ids, order, allocated, &groups)
 			}
 		}
+		var dupOrder []index.ID
+		var dupLens []uint32
+		if err == nil && duplicates {
+			dupOrder, dupLens = groupDuplicates(ids, duplicateGroups)
+		}
 		if ctx.Err() != nil {
 			return
 		}
@@ -341,7 +362,15 @@ func (f *fileModel) run() {
 			f.shownSort = order
 			f.shownDuplicates, f.shownDuplicateGen = duplicates, duplicateGen
 			f.shownGroups = groups
+			f.dupOrder, f.dupLens = dupOrder, dupLens
+			if f.dupOpenGen != duplicateGen {
+				f.dupOpen, f.dupOpenAll, f.dupOpenGen = nil, false, duplicateGen
+			}
+			f.layOutRows()
 			f.idsGen++
+			if cursor >= 0 {
+				cursor = slices.Index(f.rows, cid)
+			}
 			f.cursor = cursor
 			if !reuse {
 				f.sel.Clear()
@@ -630,9 +659,131 @@ func rawExtOf(s *index.Snapshot, id index.ID) string {
 	return ""
 }
 
+// groupDuplicates puts each duplicate group's files together, in the order
+// of the group's first file in ids, keeping their order within the group.
+func groupDuplicates(ids []index.ID, groups map[index.ID]int) ([]index.ID, []uint32) {
+	rank := map[int]int{}
+	var lens []uint32
+	for _, id := range ids {
+		g := groups[id]
+		r, ok := rank[g]
+		if !ok {
+			r = len(lens)
+			rank[g] = r
+			lens = append(lens, 0)
+		}
+		lens[r]++
+	}
+	// Results sorted by group are already together and need no copy.
+	together, at := true, 0
+	for _, n := range lens {
+		r := rank[groups[ids[at]]]
+		for _, id := range ids[at : at+int(n)] {
+			if rank[groups[id]] != r {
+				together = false
+				break
+			}
+		}
+		if !together {
+			break
+		}
+		at += int(n)
+	}
+	if together {
+		return ids, lens
+	}
+	next := make([]int, len(lens))
+	for r, start := 1, 0; r < len(lens); r++ {
+		start += int(lens[r-1])
+		next[r] = start
+	}
+	order := make([]index.ID, len(ids))
+	for _, id := range ids {
+		r := rank[groups[id]]
+		order[next[r]] = id
+		next[r]++
+	}
+	return order, lens
+}
+
+// layOutRows shows the results, in duplicate mode each group's first file
+// with its other copies under it while the group is open.
+func (f *fileModel) layOutRows() {
+	if f.dupLens == nil {
+		f.rows, f.rowCopies = f.ids, nil
+		return
+	}
+	// Never the ids' array, which rows otherwise share.
+	rows, copies := make([]index.ID, 0, len(f.dupLens)), make([]uint32, 0, len(f.dupLens))
+	at := 0
+	for _, n := range f.dupLens {
+		group := f.dupOrder[at : at+int(n)]
+		rows, copies = append(rows, group[0]), append(copies, n)
+		if n > 1 && f.dupGroupOpen(group[0]) {
+			for _, id := range group[1:] {
+				rows, copies = append(rows, id), append(copies, 0)
+			}
+		}
+		at += int(n)
+	}
+	f.rows, f.rowCopies = rows, copies
+}
+
+func (f *fileModel) dupGroupOpen(id index.ID) bool {
+	return f.dupOpenAll != f.dupOpen[f.a.duplicates.groups[id]]
+}
+
+// toggleGroup opens or closes the duplicate group of row, keeping the
+// cursor on the row it was on, or on the group's first file when its row
+// goes.
+func (f *fileModel) toggleGroup(row int, open bool) {
+	if row < 0 || row >= len(f.rows) || f.dupLens == nil {
+		return
+	}
+	id := f.rows[row]
+	g := f.a.duplicates.groups[id]
+	if f.dupGroupOpen(id) == open {
+		return
+	}
+	if f.dupOpen == nil {
+		f.dupOpen = map[int]bool{}
+	}
+	f.dupOpen[g] = !f.dupOpen[g]
+	head := row
+	for head > 0 && f.rowCopies[head] == 0 {
+		head--
+	}
+	cid := f.cursorID()
+	f.layOutRows()
+	if f.cursor = slices.Index(f.rows, cid); f.cursor < 0 && cid != index.None {
+		f.cursor = head
+	}
+}
+
+// openAllGroups opens or closes every duplicate group.
+func (f *fileModel) openAllGroups(open bool) {
+	f.dupOpen, f.dupOpenAll = nil, open
+	cid := f.cursorID()
+	f.layOutRows()
+	f.cursor = slices.Index(f.rows, cid)
+}
+
+// allGroupsOpen reports whether every duplicate group is open.
+func (f *fileModel) allGroupsOpen() bool {
+	if !f.dupOpenAll {
+		return false
+	}
+	for _, toggled := range f.dupOpen {
+		if toggled {
+			return false
+		}
+	}
+	return true
+}
+
 func (f *fileModel) cursorID() index.ID {
-	if f.cursor >= 0 && f.cursor < len(f.ids) {
-		return f.ids[f.cursor]
+	if f.cursor >= 0 && f.cursor < len(f.rows) {
+		return f.rows[f.cursor]
 	}
 	return index.None
 }
@@ -673,7 +824,17 @@ func (f *fileModel) selectOnly(id index.ID) {
 	f.sel.Add(id)
 	f.selCache.peak = 1
 	f.selCache.invalidate()
-	f.cursor = slices.Index(f.ids, id)
+	f.cursor = slices.Index(f.rows, id)
+	if f.cursor < 0 && f.dupLens != nil && slices.Contains(f.ids, id) {
+		// A copy in a closed group: open it to show the file.
+		if f.dupOpen == nil {
+			f.dupOpen = map[int]bool{}
+		}
+		g := f.a.duplicates.groups[id]
+		f.dupOpen[g] = !f.dupOpen[g]
+		f.layOutRows()
+		f.cursor = slices.Index(f.rows, id)
+	}
 	if f.cursor >= 0 {
 		f.list.ScrollIntoView(f.cursor)
 	}
