@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.6 - 2026-10-31
 
 - **One layout from the start.** The window opens on its usual toolbar, tabs,
   table and treemap, empty until the first scan, instead of a page of drives.
