@@ -63,8 +63,6 @@ type dialogs struct {
 	issueList    ui.ListState
 	help         int
 	explorerVerb bool
-	driveList    ui.ListState
-	driveRow     int
 }
 
 func dialogTitle(c *ui.Context, title string) {
@@ -244,7 +242,7 @@ func (a *App) dialogs(c *ui.Context, pal palette) {
 					}
 					if ui.PrimaryButton(c, "Save and Rescan").Clicked() {
 						save()
-						a.post(func() { a.exec("scan.rescan") })
+						a.post(a.rescan)
 					}
 				} else if ui.PrimaryButton(c, "Save").Clicked() {
 					save()

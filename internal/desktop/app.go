@@ -174,7 +174,6 @@ func newAppState() *App {
 	a := &App{prefs: loadPrefs(), admin: platform.Elevated(), focused: map[string]bool{}, queue: make(chan func(), 64)}
 	a.target = a.prefs.Target
 	a.cmds = newCommands()
-	a.dlg.driveRow = -1
 	a.tree.init(a)
 	a.files.init(a)
 	a.ext.init(a)
@@ -347,6 +346,7 @@ func (a *App) stopScan() {
 	}
 }
 
+// rescan scans the current results' folder again.
 func (a *App) rescan() {
 	if a.base != nil && a.source == "" {
 		a.target = a.base.Root

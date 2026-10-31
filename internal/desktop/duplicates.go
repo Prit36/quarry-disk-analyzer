@@ -216,86 +216,96 @@ func (a *App) duplicateGroupText(id index.ID) string {
 	return fmt.Sprintf("%d · %d files", g, len(d.result.Groups[g-1].IDs))
 }
 
-// Files shares the existing view header. Less common actions stay inside its
-// menu, rather than taking table space with another toolbar or helper rows.
-func (a *App) fileDisplayMenu(c *ui.Context) {
+// duplicatesToggle sits beside the view tabs: Files lists every file, or
+// with it checked only those that appear to be copies of each other.
+func (a *App) duplicatesToggle(c *ui.Context) {
+	on := a.duplicates.active
+	if ui.Checkbox(c.Key("dups"), &on, "Duplicates only").Label("Duplicates").Tooltip("List only files with the same name and size, in groups").Shrink(0).Changed() {
+		if on {
+			a.refreshDuplicates(false)
+		} else {
+			a.showDuplicates(false)
+		}
+	}
+}
+
+var minSizes = []struct{ label, size string }{{"Any size", "0"}, {"1 KB", "1KB"}, {"1 MB", "1MB"}, {"10 MB", "10MB"}, {"100 MB", "100MB"}, {"1 GB", "1GB"}}
+
+// duplicateBar is the duplicate check's line under the tabs: what it found,
+// how it matched, and its options.
+func (a *App) duplicateBar(c *ui.Context, pal palette) {
 	d := &a.duplicates
 	t := c.Theme()
-	label := "All files"
-	if d.active {
-		label = "Duplicates"
-	}
-	b := ui.ButtonBase(c.Key("file-display")).Height(22).Padding(0, 6).Radius(4).Border(1, t.Border).AlignItems(ui.Center).Gap(5).Shrink(0).Label("File display").Tooltip("Choose all files or duplicate candidates. Duplicates uses names and sizes without reading file contents.")
-	b.Children(func() {
-		ui.Text(c, label).SingleLine()
-		ui.Icon(c, icons["chevron_down"]).FontSize(10).TextColor(t.TextMuted)
-	}).Menu(func(m *ui.Menu) {
-		if m.Item("All files").Checked(!d.active).Chosen() {
-			a.post(func() { a.showDuplicates(false) })
-		}
-		if m.Item("Duplicates (name and size)").Checked(d.active && !d.verify).Chosen() {
-			a.post(func() { a.refreshDuplicates(false) })
-		}
-		if !d.active {
-			return
-		}
-		m.Separator()
-		if d.busy {
-			if m.Item("Stop checking").Chosen() {
-				a.post(a.cancelDuplicates)
-			}
-		} else if m.Item("Refresh").Chosen() {
-			a.post(func() { a.refreshDuplicates(false) })
-		}
-		m.Submenu("Minimum size", func(sm *ui.Menu) {
-			for _, option := range []struct{ label, size string }{{"All sizes", "0"}, {"1 KB", "1KB"}, {"1 MB", "1MB"}, {"10 MB", "10MB"}, {"100 MB", "100MB"}, {"1 GB", "1GB"}} {
-				if sm.Item(option.label).Checked(d.minSize == option.size).Disabled(d.busy).Chosen() {
-					a.post(func() { d.minSize = option.size; a.refreshDuplicates(false) })
+	ui.Row(c).Height(30).Shrink(0).Padding(0, 10).Gap(10).AlignItems(ui.Center).Background(pal.chrome).BorderWidth(0, 0, 1, 0).BorderColor(pal.separator).Clip().Children(func() {
+		switch {
+		case d.busy:
+			value, label := -1.0, "Finding files with the same name and size…"
+			if d.verify {
+				label = "Comparing contents…"
+				if total := d.progress.TotalBytes.Load(); total > 0 {
+					value = float64(d.progress.Bytes.Load()) / float64(total)
+					label = fmt.Sprintf("Comparing contents: %s of %s, %s files", a.size(d.progress.Bytes.Load()), a.size(total), count(d.progress.Files.Load()))
 				}
 			}
-		})
-		m.Separator()
-		if m.Item("Verify contents (slow)").Disabled(d.busy).Chosen() {
+			ui.Progress(c, value).Size(140, 10).Shrink(0)
+			ui.Text(c, label).SingleLine().MinWidth(0).Shrink(1)
+			ui.Spacer(c)
+			if textButton(c, "dup-stop", "Stop checking", "", true).Clicked() {
+				a.post(a.cancelDuplicates)
+			}
+			c.After(200 * time.Millisecond)
+			return
+		case d.err != "":
+			ui.Text(c, d.err).TextColor(t.Danger).SingleLine().MinWidth(0).Shrink(1).Tooltip(d.err)
+		case d.notice != "":
+			ui.Text(c, "Check canceled.").TextColor(t.TextMuted).SingleLine()
+			if linkButton(c, "dup-retry", "Check again", "") {
+				a.post(func() { a.refreshDuplicates(false) })
+			}
+		case d.forSnap != nil:
+			infoField(c, "Groups", count(uint64(len(d.result.Groups))))
+			infoField(c, "Files", count(uint64(len(a.files.ids))))
+			infoField(c, "In extra copies", a.size(d.waste)).Tooltip("Space taken by all but one file of each group")
+			infoSep(c, pal)
+			if d.verified {
+				ui.Text(c, fmt.Sprintf("Contents verified: %s compared, %s skipped", count(d.result.Checked), count(d.result.Skipped))).TextColor(t.Success).SingleLine().MinWidth(0).Shrink(1)
+			} else {
+				ui.Text(c, "Matched by name and size; contents not compared").TextColor(t.TextMuted).SingleLine().MinWidth(0).Shrink(1)
+			}
+			if len(d.result.Issues) > 0 {
+				var detail strings.Builder
+				for i, issue := range d.result.Issues {
+					if i > 0 {
+						detail.WriteString("\n")
+					}
+					fmt.Fprintf(&detail, "%s: %s", issue.Path, issue.Message)
+				}
+				warnText(c, plural(uint64(len(d.result.Issues)), "file skipped", "files skipped"), detail.String())
+			}
+			if strings.TrimSpace(a.search) != "" {
+				ui.Text(c, "· filtered by the search").TextColor(t.Focus).SingleLine().Shrink(0)
+			}
+		}
+		ui.Spacer(c)
+		ui.Text(c, "Minimum size:").TextColor(t.TextMuted).SingleLine().Shrink(0)
+		choice := minSizes[0].label
+		labels := make([]string, len(minSizes))
+		for i, o := range minSizes {
+			labels[i] = o.label
+			if o.size == d.minSize {
+				choice = o.label
+			}
+		}
+		if ui.Select(c.Key("dup-min"), &choice, labels).Label("Minimum size").Width(96).Height(24).Shrink(0).Changed() {
+			for _, o := range minSizes {
+				if o.label == choice {
+					size := o.size
+					a.post(func() { d.minSize = size; a.refreshDuplicates(false) })
+				}
+			}
+		}
+		if !d.verified && textButton(c, "dup-verify", "Verify Contents", "Read the files and keep only true copies. This can take a while.", true).Clicked() {
 			a.post(func() { a.refreshDuplicates(true) })
 		}
 	})
-}
-
-func (a *App) duplicateSummary(c *ui.Context) {
-	d := &a.duplicates
-	t := c.Theme()
-	text, color := "", t.TextMuted
-	groups := plural(uint64(len(d.result.Groups)), "group", "groups")
-	switch {
-	case d.busy && d.verify:
-		text = "Checking contents…"
-	case d.busy:
-		text = "Finding duplicates…"
-	case d.err != "":
-		text, color = "Check failed", t.Danger
-	case d.notice != "":
-		text = "Check canceled"
-	case a.files.busy:
-		text = "Filtering…"
-	case d.verified:
-		text = fmt.Sprintf("%s · %s verified files", groups, count(uint64(len(a.files.ids))))
-	default:
-		text = groups + " · " + plural(uint64(len(a.files.ids)), "candidate", "candidates")
-	}
-	var detail strings.Builder
-	detail.WriteString(a.duplicateStatus())
-	fmt.Fprintf(&detail, "\nMinimum size: %s", d.minSize)
-	if strings.TrimSpace(a.search) != "" {
-		detail.WriteString("\nSearch filters these results; other files in a group may be hidden.")
-	}
-	for _, issue := range d.result.Issues {
-		fmt.Fprintf(&detail, "\n%s: %s", issue.Path, issue.Message)
-	}
-	ui.Text(c, text).TextColor(color).SingleLine().MinWidth(0).Shrink(1).Tooltip(detail.String())
-	if len(d.result.Issues) > 0 {
-		ui.Icon(c, icons["warning"]).FontSize(12).TextColor(t.Warning).Tooltip(detail.String())
-	}
-	if d.busy {
-		c.After(200 * time.Millisecond)
-	}
 }

@@ -2,13 +2,30 @@
 
 ## Unreleased
 
+- **One layout from the start.** The window opens on its usual toolbar, tabs,
+  table and treemap, empty until the first scan, instead of a page of drives.
+  Nothing is scanned until Scan is pressed.
+- **Drive drop-down and one Scan button** at the start of the toolbar replace
+  the Scan menu and the separate Rescan button. Choosing a drive, a recent
+  folder, Scan Folder… or Open Saved Scan… selects; Scan (F5) starts and is
+  Stop while scanning.
+- **Info bar.** The drive header's stacked values, legend and large number
+  are one line of labeled values in one size: usage bar, percent used, free of
+  capacity, file system, scanned and unlisted space, files, folders and scan
+  method and time, followed by partial-scan, skipped, unreadable and filter
+  notices. Scan progress, counts and elapsed time are shown here once.
+- **Duplicates only** is a check box beside the tabs. Its results, match
+  method, Minimum size and Verify Contents are a line above the table instead
+  of a menu and a tooltip.
+- Tree View hides Allocated and Files hides Extension by default; they
+  repeated Size and the file name.
 - Parallelize metadata duplicate matching, eliminate per-singleton allocations,
   and reuse prepared group ordering in Files.
 - Batch content verification across file sizes and sample the start, middle
   and end of large files before full SHA-256. Small files are read once;
   matching samples still require a full content hash.
-- Keep duplicate checking in a compact menu in the Files header, with group
-  numbers, normal file selection/actions/export, scope and searchable results.
+- Show duplicate checking in Files with group numbers, normal file
+  selection/actions/export, scope and searchable results.
 - Default to a fast name-and-size check without reading file contents. Content
   verification is an explicit optional action; scope and scan changes return
   to the fast check. Include empty files when the minimum size is 0.

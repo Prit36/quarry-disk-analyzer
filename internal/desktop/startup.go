@@ -26,12 +26,7 @@ func (a *App) loadStartupInfo() {
 func (a *App) setDrives(drives []platform.Drive) {
 	a.drives, a.drivesReady = drives, true
 	if a.target == "" && len(drives) > 0 {
-		a.target = drives[0].Path
-	}
-	if len(drives) == 0 {
-		a.dlg.driveRow = -1
-	} else if a.dlg.driveRow < 0 || a.dlg.driveRow >= len(drives) {
-		a.dlg.driveRow = 0
+		a.target = systemDrive(drives)
 	}
 	if a.menu != nil {
 		// This menu also owns the drive list; rebuild it on the next frame.

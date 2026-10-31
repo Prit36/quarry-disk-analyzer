@@ -265,21 +265,28 @@ func settle(tt *ui.Tester, done func() bool) {
 	tt.Frame()
 }
 
-func TestStartPageListsDrives(t *testing.T) {
+// Before any scan the window has its usual layout, the default drive in
+// the drop-down, and starts nothing by itself.
+func TestStartsEmptyWithoutScanning(t *testing.T) {
 	t.Setenv("QUARRY_CONFIG_DIR", t.TempDir())
 	a := newApp()
 	a.prefs.Theme = "Dark"
 	tt := ui.NewTester(a.view, 1000, 700)
 	tt.Frame()
-	if len(a.drives) > 0 && !tt.HasText(a.drives[0].Path) {
-		t.Fatalf("drive %s not listed", a.drives[0].Path)
+	if len(a.drives) > 0 && !tt.HasText(a.targetLabel()) {
+		t.Fatalf("target %s not shown in %q", a.target, tt.Texts())
+	}
+	for _, want := range []string{"Scan", "Tree", "Name", "Treemap"} {
+		if !tt.HasText(want) {
+			t.Fatalf("missing %q in %q", want, tt.Texts())
+		}
 	}
 	for i := 0; i < 5; i++ {
 		tt.Advance(100 * time.Millisecond)
 		tt.Frame()
 	}
 	if a.scanning {
-		t.Fatal("the start page began a scan without a click")
+		t.Fatal("the window began a scan without a click")
 	}
 }
 
@@ -389,31 +396,6 @@ func TestLocationBarPath(t *testing.T) {
 	}
 }
 
-// One click on a drive on the start page selects it; a double-click scans it.
-func TestStartPageDoubleClickScansDrive(t *testing.T) {
-	t.Setenv("QUARRY_CONFIG_DIR", t.TempDir())
-	a := newApp()
-	a.prefs.Theme = "Dark"
-	dir := t.TempDir()
-	a.menu = &menuBar{} // windowless: scan completion marks the recent list
-	a.drives = []platform.Drive{{Path: dir, Name: "Test volume", FileSystem: "NTFS", Total: 100, Free: 40}}
-	tt := ui.NewTester(a.view, 1000, 700)
-	tt.Frame()
-	if err := tt.Click("Test volume"); err != nil {
-		t.Fatalf("click: %v; texts %q", err, tt.Texts())
-	}
-	tt.Frame()
-	if a.scanning || a.snap != nil || a.dlg.driveRow != 0 {
-		t.Fatalf("one click should only select the drive: scanning %v, row %d", a.scanning, a.dlg.driveRow)
-	}
-	if err := tt.Click("Test volume"); err != nil { // the second click of a double-click
-		t.Fatalf("click: %v", err)
-	}
-	settle(tt, func() bool { return a.snap != nil })
-	if a.snap == nil || a.snap.Root != dir {
-		t.Fatalf("a double-click should scan %s, scanning %v", dir, a.scanning)
-	}
-}
 
 // Clearing a search that typing started in Tree View returns to Tree View;
 // a view the user chose stays.
@@ -459,8 +441,9 @@ func TestScopeFollowsLocation(t *testing.T) {
 	}
 }
 
-// Tree View shows the drive header and the file types panel beside the tree.
-func TestDriveHeaderAndTypesPanel(t *testing.T) {
+// The info bar shows every fact about the drive and the scan as labeled
+// values; Tree View has the file types panel beside it.
+func TestInfoBarAndTypesPanel(t *testing.T) {
 	a := testApp(t)
 	drives := []platform.Drive{{Path: `C:\`, Name: "Windows", FileSystem: "NTFS", Total: 100 << 30, Free: 5 << 30}}
 	a.drives = drives
@@ -468,7 +451,7 @@ func TestDriveHeaderAndTypesPanel(t *testing.T) {
 	settle(tt, func() bool { return !a.ext.busy && len(a.ext.bySize) > 0 })
 	a.drives = drives
 	tt.Frame()
-	for _, want := range []string{"Windows (C:)", "NTFS · 95 % full", "5.0 GiB", "free of 100.0 GiB", "Rest of drive", "Scanned with", "File Type", ".mp4", ".pdf"} {
+	for _, want := range []string{`C:\data`, "95.0 % used", "Free 5.0 GiB of 100.0 GiB", "NTFS", "This folder", "Rest of drive", "95.0 GiB", "Files", "Folders", "Read by", "File Type", ".mp4", ".pdf"} {
 		if !tt.HasText(want) {
 			t.Fatalf("missing %q in %q", want, tt.Texts())
 		}
@@ -497,4 +480,44 @@ func TestMetricNamedOnlyWhenAllocated(t *testing.T) {
 	if !tt.HasText("Allocated size") {
 		t.Fatalf("allocated metric not named: %q", tt.Texts())
 	}
+}
+
+// One Scan button, which is Stop while a scan runs. Choosing a drive in the
+// drop-down only selects it; Scan starts.
+func TestDrivePickerAndScanButton(t *testing.T) {
+	t.Setenv("QUARRY_CONFIG_DIR", t.TempDir())
+	a := newApp()
+	a.prefs.Theme = "Dark"
+	dir := t.TempDir()
+	a.menu = &menuBar{}
+	d := platform.Drive{Path: dir, Name: "Other volume", FileSystem: "NTFS", Total: 100, Free: 40}
+	a.drives, a.drivesReady = []platform.Drive{d}, true
+	tt := ui.NewTester(a.view, 1280, 800)
+	tt.Frame()
+	if !tt.HasText("Scan") || tt.HasText("Stop") || tt.HasText("Rescan") {
+		t.Fatalf("idle scan controls %q", tt.Texts())
+	}
+	if err := tt.Click("Drive or folder"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tt.ChooseMenuItem(driveTitle(d) + "  —  40 B free of 100 B"); err != nil {
+		t.Fatalf("%v; menu %q", err, tt.Menu())
+	}
+	tt.Frame()
+	if a.target != dir || a.scanning || a.snap != nil {
+		t.Fatalf("choosing should only select: target %q scanning %v", a.target, a.scanning)
+	}
+	if err := tt.Click("Scan"); err != nil {
+		t.Fatal(err)
+	}
+	settle(tt, func() bool { return !a.scanning && a.snap != nil })
+	if a.snap == nil || a.snap.Root != dir {
+		t.Fatal("chosen drive was not scanned")
+	}
+	a.scanning = true // as during a scan
+	tt.Frame()
+	if !tt.HasText("Stop") || tt.HasText("Rescan") {
+		t.Fatalf("scanning controls %q", tt.Texts())
+	}
+	a.scanning = false
 }

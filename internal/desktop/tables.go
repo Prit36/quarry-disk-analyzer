@@ -637,7 +637,7 @@ func (a *App) fileTable(c *ui.Context, pal palette) {
 					msg = "No files with identical contents in this scope."
 				}
 				if a.duplicates.err != "" || a.duplicates.notice != "" {
-					msg = "Choose Refresh from the Duplicates menu to check again."
+					msg = "The duplicate check did not finish."
 				}
 			}
 			if strings.TrimSpace(f.ran) != "" {

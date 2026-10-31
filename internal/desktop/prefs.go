@@ -51,10 +51,10 @@ func defaultPrefs() prefs {
 	return prefs{
 		Version: 3, Metric: "Logical", Units: "Binary", Theme: "System", Compact: true, Zoom: 1,
 		ShowInfo: true, ShowTreemap: true, TreemapPct: 62, TreemapColors: "Extension", FilterMap: true, ShowTypes: true, TypesPct: 74,
-		TreeHidden: map[string]bool{"% of Scan": true, "Folders": true}, FileHidden: map[string]bool{"Allocated": true},
+		TreeHidden: map[string]bool{"% of Scan": true, "Folders": true, "Allocated": true}, FileHidden: map[string]bool{"Allocated": true, "Extension": true},
 		TreeSort: ui.SortOrder{Column: "Size", Descending: true}, FileSort: ui.SortOrder{Column: "Size", Descending: true},
 		ExtSort: ui.SortOrder{Column: "Size", Descending: true}, ScanMode: "Automatic", ConfirmRecycle: true,
-		Exclusions: []string{}, UseExclusions: true, LayoutRev: 1,
+		Exclusions: []string{}, UseExclusions: true, LayoutRev: 2,
 	}
 }
 
@@ -130,6 +130,11 @@ func loadPrefs() prefs {
 	}
 	if p.FileHidden == nil {
 		p.FileHidden = map[string]bool{}
+	}
+	if p.LayoutRev < 2 {
+		// Allocated nearly always repeats Size, and Extension the end of
+		// the name; both stay one header menu away.
+		p.TreeHidden["Allocated"], p.FileHidden["Extension"], p.LayoutRev = true, true, 2
 	}
 	delete(p.TreeHidden, "Name")
 	delete(p.FileHidden, "Name")

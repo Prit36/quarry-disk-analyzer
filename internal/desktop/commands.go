@@ -61,7 +61,7 @@ func newCommands() map[string]*command {
 	return map[string]*command{
 		// File
 		"scan.folder":      {label: "Scan Folder…", keys: "Ctrl+O", mods: ui.Ctrl, key: ui.KeyO, inText: true, enabled: idle, run: (*App).chooseFolder},
-		"scan.rescan":      {label: "Rescan", keys: "F5", key: ui.KeyF5, inText: true, enabled: func(a *App) bool { return idle(a) && (a.base != nil || a.target != "") }, run: (*App).rescan},
+		"scan.rescan":      {label: "Scan", keys: "F5", key: ui.KeyF5, inText: true, enabled: func(a *App) bool { return idle(a) && a.target != "" }, run: (*App).startScan},
 		"scan.stop":        {label: "Stop Scan", keys: "Esc", enabled: func(a *App) bool { return a.scanning }, run: (*App).stopScan},
 		"file.newWindow":   {label: "New Window", keys: "Ctrl+N", mods: ui.Ctrl, key: ui.KeyN, inText: true, run: func(a *App) { a.newWindow("") }},
 		"file.openScan":    {label: "Open Saved Scan…", enabled: idle, run: (*App).openSnapshotDialog},

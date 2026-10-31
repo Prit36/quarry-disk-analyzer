@@ -240,7 +240,9 @@ func TestDuplicateSettingsErrorsAndCandidateMode(t *testing.T) {
 	}
 }
 
-func TestDuplicateMenuKeepsTheTableHeaderCompact(t *testing.T) {
+// Duplicates is a check box beside the tabs; its results and options are
+// a strip of their own above the table, all inside the window.
+func TestDuplicateControlsAreVisible(t *testing.T) {
 	for _, width := range []int{760, 1280} {
 		a, ids := duplicateApp(t)
 		s := a.snap.Clone()
@@ -257,57 +259,36 @@ func TestDuplicateMenuKeepsTheTableHeaderCompact(t *testing.T) {
 		waitModel(t, a, func() bool { return !a.files.busy })
 		tt := ui.NewTester(a.view, width, 480)
 		tt.Frame()
-		header, _ := tt.Find("Name")
-		if err := tt.Click("File display"); err != nil {
-			t.Fatal(err)
-		}
-		if err := tt.ChooseMenuItem("Duplicates (name and size)"); err != nil {
+		if err := tt.Click("Duplicates"); err != nil {
 			t.Fatal(err)
 		}
 		settle(tt, func() bool { return !a.duplicates.busy && !a.files.busy && a.files.forSnap == a.snap })
 		if a.duplicates.verify || a.duplicates.verified || len(a.files.ids) != 2 || a.duplicates.progress.Bytes.Load() != 0 {
 			t.Fatal("the normal Duplicates action read contents instead of using metadata")
 		}
-		for _, want := range []string{"Duplicates", "2 candidates", "Group", "backup.dat"} {
+		for _, want := range []string{"Duplicates only", "Groups", "In extra copies", "Matched by name and size; contents not compared", "Group", "backup.dat"} {
 			if !tt.HasText(want) {
 				t.Fatalf("width %v: missing %q in %q", width, want, tt.Texts())
 			}
 		}
-		for _, unwanted := range []string{"Minimum size", "Verify content", "Some files were skipped", "Search filters duplicate results"} {
-			if tt.HasText(unwanted) {
-				t.Fatalf("advanced controls or helper text clutter the Files view: %q", unwanted)
+		if width >= 1280 {
+			for _, label := range []string{"Duplicates", "Scope", "Minimum size", "Verify Contents", "Name"} {
+				r, ok := tt.Find(label)
+				if !ok || r.X < 0 || r.X+r.W > float32(width) || r.Y < 0 || r.Y+r.H > 480 {
+					t.Fatalf("width %d: %q is outside the window: %+v", width, label, r)
+				}
 			}
 		}
-		for _, label := range []string{"File display", "Scope", "Name"} {
-			r, ok := tt.Find(label)
-			if !ok || r.X < 0 || r.X+r.W > float32(width) || r.Y < 0 || r.Y+r.H > 480 {
-				t.Fatalf("width %d: %q is outside the window: %+v", width, label, r)
-			}
-		}
-		if compact, _ := tt.Find("Name"); compact.Y != header.Y {
-			t.Fatalf("duplicate controls added a row above the table: %v vs %v", compact.Y, header.Y)
-		}
-		if err := tt.Click("File display"); err != nil {
-			t.Fatal(err)
-		}
-		if err := tt.ChooseMenuItem("Minimum size", "1 KB"); err != nil {
-			t.Fatal(err)
-		}
+		a.duplicates.minSize = "1KB"
+		a.refreshDuplicates(false)
 		settle(tt, func() bool { return !a.duplicates.busy && !a.files.busy && a.files.forSnap == a.snap })
 		if a.duplicates.minSize != "1KB" || len(a.files.ids) != 0 || a.duplicates.verify {
 			t.Fatal("minimum-size menu failed or started content verification")
 		}
-		if err := tt.Click("File display"); err != nil {
-			t.Fatal(err)
-		}
-		if err := tt.ChooseMenuItem("Minimum size", "All sizes"); err != nil {
-			t.Fatal(err)
-		}
+		a.duplicates.minSize = "0"
+		a.refreshDuplicates(false)
 		settle(tt, func() bool { return !a.duplicates.busy && !a.files.busy && a.files.forSnap == a.snap })
-		if err := tt.Click("File display"); err != nil {
-			t.Fatal(err)
-		}
-		if err := tt.ChooseMenuItem("Verify contents (slow)"); err != nil {
+		if err := tt.Click("Verify Contents"); err != nil {
 			t.Fatal(err)
 		}
 		settle(tt, func() bool { return !a.duplicates.busy && !a.files.busy && a.files.forSnap == a.snap })
@@ -321,10 +302,10 @@ func TestDuplicateMenuKeepsTheTableHeaderCompact(t *testing.T) {
 		if !slices.Equal(a.selected(), []index.ID{ids["original.txt"]}) {
 			t.Fatal("inline duplicate file not selectable")
 		}
-		if err := tt.Click("File display"); err != nil {
-			t.Fatal(err)
+		if tt.HasText("Verify Contents") || !tt.HasText("Contents verified: 9 compared, 0 skipped") {
+			t.Fatal("verified results still offer verification")
 		}
-		if err := tt.ChooseMenuItem("All files"); err != nil {
+		if err := tt.Click("Duplicates"); err != nil {
 			t.Fatal(err)
 		}
 		tt.Frame()
@@ -401,12 +382,9 @@ func TestDuplicateCancelRejectsQueuedResult(t *testing.T) {
 	a.findDuplicates()
 	waitQueued(t, a)
 	// Keep the result queued until the real Cancel control has handled input.
-	tt := ui.NewTester(func(c *ui.Context) { a.fileDisplayMenu(c) }, 760, 130)
+	tt := ui.NewTester(func(c *ui.Context) { a.duplicateBar(c, palette{}) }, 760, 60)
 	tt.Frame()
-	if err := tt.Click("File display"); err != nil {
-		t.Fatal(err)
-	}
-	if err := tt.ChooseMenuItem("Stop checking"); err != nil {
+	if err := tt.Click("Stop checking"); err != nil {
 		t.Fatal(err)
 	}
 	tt.Frame()
