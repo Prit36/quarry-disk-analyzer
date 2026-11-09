@@ -443,6 +443,22 @@ func (a *App) deleteItems(permanent bool) {
 	if len(ids) == 0 {
 		return
 	}
+	d := &a.duplicates
+	if a.prefs.View == viewFiles && d.active && d.forSnap != nil {
+		if !d.verified {
+			a.deleteSelected(permanent, ids, "These files were matched by name and size only; their contents were not compared. Verify Contents first to be sure they are copies.")
+			return
+		}
+		// Verified copies: one of each group stays, and the files are read
+		// again to be sure nothing changed since the check.
+		a.recheckDuplicates(ids, func() { a.deleteSelected(permanent, ids, "") })
+		return
+	}
+	a.deleteSelected(permanent, ids, "")
+}
+
+// deleteSelected confirms and deletes ids; note adds to the confirmation.
+func (a *App) deleteSelected(permanent bool, ids []index.ID, note string) {
 	for _, id := range ids {
 		if reason := a.blocked(id); reason != "" {
 			a.fail("Quarry does not delete %s (%s).", a.name(id), reason)
@@ -481,6 +497,9 @@ func (a *App) deleteItems(permanent bool) {
 	if warning != "" {
 		detail += "\n\n" + warning
 	}
+	if note != "" {
+		detail += "\n\n" + note
+	}
 	run := func() {
 		owner := a.win.NativeHandle()
 		go func() {
@@ -488,14 +507,14 @@ func (a *App) deleteItems(permanent bool) {
 			a.post(func() { a.afterDelete(ids, paths, permanent, aborted, err) })
 		}()
 	}
-	if !permanent && !a.prefs.ConfirmRecycle && warning == "" {
+	if !permanent && !a.prefs.ConfirmRecycle && warning == "" && note == "" {
 		run()
 		return
 	}
 	// Enter confirms a move to the Recycle Bin, as in Explorer; it can be
 	// restored. Permanent deletion, or a warned location, defaults to Cancel.
 	message, button, kind, def := "Move "+what+" to the Recycle Bin?", "Move to Recycle Bin", mygo.MessageQuestion, 0
-	if warning != "" {
+	if warning != "" || note != "" {
 		def = 1
 	}
 	if permanent {
@@ -530,10 +549,6 @@ func (a *App) afterDelete(ids []index.ID, paths []string, permanent, aborted boo
 			a.post(func() { a.drives = drives })
 		}()
 	}
-	verb := "Moved %s (%s) to the Recycle Bin."
-	if permanent {
-		verb = "Deleted %s (%s) permanently."
-	}
 	switch {
 	case err != nil:
 		a.fail("%v", err)
@@ -543,7 +558,7 @@ func (a *App) afterDelete(ids []index.ID, paths []string, permanent, aborted boo
 		a.stale = "Some items could not be deleted."
 		a.fail("%d of %d items could not be deleted.", len(ids)-len(gone), len(ids))
 	default:
-		a.notify(verb, plural(uint64(len(gone)), "item", "items"), a.size(freed))
+		a.notify("%s", cleanupFeedback(len(gone), len(ids), a.size(freed), permanent, false))
 	}
 }
 

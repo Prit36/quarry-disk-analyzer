@@ -431,6 +431,9 @@ func (c *mftChunk) parse(v *volumeReader) {
 		if r.Reparse {
 			flags |= index.Reparse
 		}
+		if r.Cloud && !r.Directory {
+			flags |= index.CloudOnly
+		}
 		if r.Links > 1 && !r.Directory {
 			c.hardLinks += uint64(r.Links - 1)
 		}

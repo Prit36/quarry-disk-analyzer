@@ -39,6 +39,7 @@ var fileColumns = []column{
 var extColumns = []ui.TableColumn{
 	{Title: "Extension", Width: 130, MinWidth: 60, Sortable: true},
 	{Title: "Type", Width: 200, MinWidth: 60, Sortable: true},
+	{Title: "Category", Width: 110, MinWidth: 60, Sortable: true},
 	{Title: "Files", Width: 90, MinWidth: 40, Align: ui.End, Sortable: true},
 	{Title: "Size", Width: 90, MinWidth: 50, Align: ui.End, Sortable: true},
 	{Title: "Allocated", Width: 90, MinWidth: 50, Align: ui.End, Sortable: true},
@@ -208,6 +209,8 @@ func (a *App) nameText(c *ui.Context, id index.ID) {
 		ui.Text(c, "hard link").FontSize(t.FontSize - 1).TextColor(t.TextMuted).Tooltip("Another name for a file counted elsewhere; its size is counted once.")
 	case n.Flags&index.Reparse != 0 && n.IsDir():
 		ui.Text(c, "link").FontSize(t.FontSize - 1).TextColor(t.TextMuted).Tooltip("Junction or symbolic link. Not followed, so its target is not counted here.")
+	case n.Flags&index.CloudOnly != 0:
+		ui.Text(c, "online-only").FontSize(t.FontSize - 1).TextColor(t.TextMuted).Tooltip("A cloud file (OneDrive or similar) whose contents are not on this drive. Its size is what the cloud holds; it takes almost no local space.")
 	}
 	if n.Flags&index.Incomplete != 0 {
 		ui.Icon(c, icons["warning"]).FontSize(12).TextColor(t.Warning).Shrink(0).Tooltip("Some contents could not be read; this total may be incomplete.")
@@ -279,13 +282,14 @@ func (a *App) rowMenu(m *ui.Menu) {
 		"item.open", "item.explorer", "-",
 		"edit.cut", "edit.copy", "edit.copyPath", "-",
 		"item.goInto", "item.reveal", "item.searchHere", "item.scanHere", "-",
-		"edit.rename", "edit.delete", "-",
+		"edit.rename", "edit.delete", "item.basketAdd", "item.basketRemove", "-",
 		"item.properties")
+	a.duplicateRowItems(m)
 	a.moreItems(m,
 		"edit.copyName", "edit.copySize", "edit.copyRows", "-",
-		"item.treemap", "item.scanWindow", "export.selection", "-",
+		"item.details", "item.refresh", "item.treemap", "item.scanWindow", "export.selection", "-",
 		"tree.expandAll", "tree.collapseSub", "-",
-		"edit.deletePerm")
+		"item.skip", "edit.deletePerm")
 }
 
 // Tree View.
@@ -739,6 +743,13 @@ func (a *App) extTable(c *ui.Context, pal palette) {
 				ext := ft.Extension
 				a.post(func() { a.showExtensionFiles(ext) })
 			}
+			if key := index.CategoryKey(ft.Extension); m.Item("Show Files in Category: " + index.CategoryOf(ft.Extension)).Chosen() {
+				q := "cat:other type:file"
+				if key != "" {
+					q = "cat:" + key + " type:file"
+				}
+				a.post(func() { a.showQuery(q, a.files.scope) })
+			}
 			if m.Item("Copy Extension").Chosen() {
 				a.copyText([]string{ft.Extension}, "extension")
 			}
@@ -757,12 +768,14 @@ func (a *App) extTable(c *ui.Context, pal palette) {
 			case 1:
 				ui.Text(c, platform.CachedFileTypeName(ft.Extension)).TextColor(t.TextMuted).SingleLine()
 			case 2:
-				ui.Text(c, count(ft.Count)).TextColor(t.TextMuted)
+				ui.Text(c, index.CategoryOf(ft.Extension)).TextColor(t.TextMuted).SingleLine()
 			case 3:
-				ui.Text(c, a.size(ft.Bytes))
+				ui.Text(c, count(ft.Count)).TextColor(t.TextMuted)
 			case 4:
-				ui.Text(c, a.size(ft.Allocated)).TextColor(t.TextMuted)
+				ui.Text(c, a.size(ft.Bytes))
 			case 5:
+				ui.Text(c, a.size(ft.Allocated)).TextColor(t.TextMuted)
+			case 6:
 				share := percent(metric, totalMetric)
 				shareBar(c, share/100, 80*a.zoom(), pal)
 				ui.Text(c, percentText(share)).SingleLine()

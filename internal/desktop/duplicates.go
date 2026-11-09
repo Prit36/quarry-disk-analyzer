@@ -319,3 +319,183 @@ func (a *App) duplicateBar(c *ui.Context, pal palette) {
 		}
 	})
 }
+
+// Reviewing duplicate groups.
+
+// groupMembers returns the files of a group, by one-based number, that
+// shown holds (every file when shown is nil).
+func (a *App) groupMembers(g int, shown map[index.ID]bool) []index.ID {
+	d := &a.duplicates
+	if g <= 0 || g > len(d.result.Groups) {
+		return nil
+	}
+	var out []index.ID
+	for _, id := range d.result.Groups[g-1].IDs {
+		if shown == nil || shown[id] {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// shownSet is the files File View lists now, or nil for all of them.
+func (f *fileModel) shownSet() map[index.ID]bool {
+	if strings.TrimSpace(f.ran) == "" {
+		return nil
+	}
+	m := make(map[index.ID]bool, len(f.ids))
+	for _, id := range f.ids {
+		m[id] = true
+	}
+	return m
+}
+
+// selectCopies selects, in every group or only in group, every file but
+// the one keep chooses: the copies to remove, after review.
+func (a *App) selectCopies(only int, keep func(ids []index.ID) index.ID) {
+	d := &a.duplicates
+	f := &a.files
+	if !d.verified {
+		return
+	}
+	f.sel = ui.Selection[index.ID]{}
+	groups, files := 0, 0
+	var size uint64
+	shown := f.shownSet() // once: every group consults it
+	for g := range d.result.Groups {
+		if only > 0 && g+1 != only {
+			continue
+		}
+		ids := a.groupMembers(g+1, shown)
+		if len(ids) < 2 {
+			continue
+		}
+		keeper := keep(ids)
+		for _, id := range ids {
+			if id != keeper {
+				f.sel.Add(id)
+				files++
+				size += d.result.Groups[g].Size
+			}
+		}
+		groups++
+	}
+	f.selCache.peak = max(f.selCache.peak, f.sel.Len())
+	f.selCache.invalidate()
+	a.invalidateSelections()
+	if files > 0 {
+		f.openAllGroups(true)
+	}
+	a.notify("Selected %s (%s) in %s, keeping one copy of each. Review, then Delete moves them to the Recycle Bin.", plural(uint64(files), "copy", "copies"), a.size(size), plural(uint64(groups), "group", "groups"))
+}
+
+// keepers choose the copy to keep in a group.
+func (a *App) keepFirst(ids []index.ID) index.ID { return ids[0] }
+func (a *App) keepNewest(ids []index.ID) index.ID {
+	return slices.MaxFunc(ids, func(x, y index.ID) int { return cmpInt64(a.snap.Nodes[x].ModTime(), a.snap.Nodes[y].ModTime()) })
+}
+func (a *App) keepOldest(ids []index.ID) index.ID {
+	return slices.MinFunc(ids, func(x, y index.ID) int { return cmpInt64(a.snap.Nodes[x].ModTime(), a.snap.Nodes[y].ModTime()) })
+}
+func (a *App) keepShortest(ids []index.ID) index.ID {
+	return slices.MinFunc(ids, func(x, y index.ID) int { return len(a.pathOf(x)) - len(a.pathOf(y)) })
+}
+
+func cmpInt64(x, y int64) int {
+	switch {
+	case x < y:
+		return -1
+	case x > y:
+		return 1
+	}
+	return 0
+}
+
+// duplicateRowItems adds the keeper commands to a file's menu while File
+// View lists duplicates.
+func (a *App) duplicateRowItems(m *ui.Menu) {
+	d := &a.duplicates
+	if a.prefs.View != viewFiles || !d.active || d.forSnap == nil || a.source != "" {
+		return
+	}
+	id := a.current()
+	g := d.groups[id]
+	m.Separator()
+	if !d.verified {
+		m.Item("Keep This Copy, Select the Others").Disabled(true)
+		if m.Item("Verify Contents to Choose Copies…").Chosen() {
+			a.post(func() { a.refreshDuplicates(true) })
+		}
+		return
+	}
+	if g > 0 && m.Item("Keep This Copy, Select the Others").Disabled(len(a.selected()) != 1).Chosen() {
+		keeper := id
+		a.post(func() { a.selectCopies(g, func([]index.ID) index.ID { return keeper }) })
+	}
+	m.Submenu("Select Copies in Every Group", func(sm *ui.Menu) {
+		for _, k := range []struct {
+			label string
+			keep  func([]index.ID) index.ID
+		}{{"Keep the First Listed", a.keepFirst}, {"Keep the Newest", a.keepNewest}, {"Keep the Oldest", a.keepOldest}, {"Keep the Shortest Path", a.keepShortest}} {
+			if sm.Item(k.label).Chosen() {
+				keep := k.keep
+				a.post(func() { a.selectCopies(0, keep) })
+			}
+		}
+	})
+}
+
+// recheckDuplicates confirms, before verified copies are deleted, that in
+// each group at least one file stays and that the files still have the
+// keeper's exact contents. ok runs on the UI thread when every group passed.
+func (a *App) recheckDuplicates(ids []index.ID, ok func()) {
+	d := &a.duplicates
+	byGroup := map[int][]index.ID{}
+	for _, id := range ids {
+		if g := d.groups[id]; g > 0 {
+			byGroup[g] = append(byGroup[g], id)
+		}
+	}
+	type check struct {
+		keeper index.ID
+		others []index.ID
+	}
+	var checks []check
+	for g, sel := range byGroup {
+		keeper := index.None
+		for _, id := range d.result.Groups[g-1].IDs {
+			if !slices.Contains(sel, id) {
+				keeper = id
+				break
+			}
+		}
+		if keeper == index.None {
+			a.fail("Every copy in duplicate group %d is selected. Keep at least one (right-click → Keep This Copy, Select the Others).", g)
+			return
+		}
+		checks = append(checks, check{keeper, sel})
+	}
+	if len(checks) == 0 {
+		ok()
+		return
+	}
+	s := a.snap
+	a.notify("Checking that the copies are still identical…")
+	go func() {
+		var err error
+		for _, ch := range checks {
+			if err = s.RecheckDuplicates(context.Background(), ch.keeper, ch.others, nil); err != nil {
+				break
+			}
+		}
+		a.post(func() {
+			if err != nil {
+				a.stale = "Some duplicates changed since they were verified."
+				a.fail("Not deleted: %v. Verify contents again before removing copies.", err)
+				return
+			}
+			a.message = ""
+			ok()
+		})
+	}()
+}

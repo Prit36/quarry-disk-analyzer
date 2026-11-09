@@ -439,3 +439,48 @@ readRegions:
 	identity, hasIdentity := readDuplicateIdentity(file)
 	return hashOutcome{digest: digest, info: opened, ok: true, bytes: readBytes, identity: identity, hasIdentity: hasIdentity}
 }
+
+// RecheckDuplicates confirms, just before copies are deleted, that keeper
+// and each of others are still the files that were scanned (same size and
+// time) and still have identical contents, by a full SHA-256 of each. It
+// returns the first difference found; nothing is deleted here.
+func (s *Snapshot) RecheckDuplicates(ctx context.Context, keeper ID, others []ID, progress *DuplicateProgress) error {
+	buffer := make([]byte, 64<<10)
+	full := func(id ID) (hashOutcome, error) {
+		if s.Nodes[id].IsDir() {
+			return hashOutcome{}, fmt.Errorf("%s is a folder", s.Path(id))
+		}
+		out := s.hashCandidate(ctx, id, s.Nodes[id].Size, buffer, progress)
+		if out.err != nil {
+			return out, out.err
+		}
+		if !out.ok {
+			msg := "could not be read"
+			if out.issue != nil {
+				msg = out.issue.Message
+			}
+			return out, fmt.Errorf("%s: %s", s.Path(id), msg)
+		}
+		return out, nil
+	}
+	want, err := full(keeper)
+	if err != nil {
+		return fmt.Errorf("the copy to keep cannot be confirmed: %w", err)
+	}
+	for _, id := range others {
+		if id == keeper {
+			return fmt.Errorf("%s is both kept and deleted", s.Path(id))
+		}
+		if s.Nodes[id].Size != s.Nodes[keeper].Size {
+			return fmt.Errorf("%s is not the same size as %s", s.Path(id), s.Path(keeper))
+		}
+		got, err := full(id)
+		if err != nil {
+			return err
+		}
+		if got.digest != want.digest {
+			return fmt.Errorf("%s no longer has the same contents as %s", s.Path(id), s.Path(keeper))
+		}
+	}
+	return nil
+}

@@ -68,11 +68,15 @@ var searchHelp = []helpSection{
 		{"modified:<2025-01-01", "Before a date. modified:> is after it, modified:2025-03-14 one day, modified:2025-01-01..2025-02-01 a range"},
 		{"after:2025-01-01", "Modified on or after a date"},
 		{"before:2025-12-31", "Modified on or before a date, that day included"},
+		{"age:>1y", "Not modified for over a year. age:<30d changed in the last 30 days, age:90d..1y a range. Units d, w, m (30 days), y"},
+		{"cat:videos", "Kind of file: videos, images, audio, archives, installers, diskimages, documents, code, programs, databases, temporary, other. cat:videos;audio for several"},
+		{"is:cloud", "Online-only cloud files (OneDrive and similar). is:hardlink, is:incomplete; -is:cloud excludes them"},
 		{"path:node_modules", "Any part of the full path (wildcards allowed)"},
 		{"name:backup", "Same as a bare term"},
 		{"type:file", "Files only. type:folder for folders"},
 		{`regex:^IMG_\d+\.jpe?g$`, "Go RE2 regular expression on the name (linear time)"},
 	}},
+	{note: "While typing, operators are suggested under the search box: Tab takes the first. The Filters button in File View sets size, age and kind without typing, and Quick Filters in the search menu runs common searches.\nWhile File View shows a search or duplicates, the treemap dims everything that holds no match (View → Highlight Matches in Treemap)."},
 	{note: "Units: B, KB, MB, GB, TB (powers of 1000) and KiB, MiB, GiB, TiB (powers of 1024).\nDates are local calendar dates (YYYY-MM-DD). Entries without a modification time never match date filters."},
 }
 
@@ -193,7 +197,7 @@ func wrapWords(s string, width int) []string {
 // shortcutHelp lists the keyboard shortcuts from the command registry, so the
 // dialog always shows the keys that work.
 func (a *App) shortcutHelp() []helpSection {
-	order := []string{"edit.find", "tools.search", "scan.folder", "scan.rescan", "scan.stop", "view.tree", "view.files", "view.ext", "nav.back", "nav.forward", "nav.up", "nav.root", "item.open", "item.goInto", "item.explorer", "item.properties", "item.reveal", "edit.copy", "edit.cut", "edit.copyPath", "edit.copyRows", "edit.selectAll", "edit.rename", "edit.delete", "edit.deletePerm", "export.view", "file.saveScan", "tools.filter", "tree.expandAll", "tree.collapseSub", "tree.expandLevel", "tree.collapseLvl", "tree.collapseAll", "view.treemap", "view.maxTreemap", "view.types", "zoom.in", "zoom.out", "zoom.reset", "file.newWindow", "help.keys"}
+	order := []string{"edit.find", "tools.search", "scan.folder", "scan.rescan", "scan.stop", "view.tree", "view.files", "view.ext", "nav.back", "nav.forward", "nav.up", "nav.root", "item.open", "item.goInto", "item.explorer", "item.properties", "item.reveal", "edit.copy", "edit.cut", "edit.copyPath", "edit.copyRows", "edit.selectAll", "edit.rename", "edit.delete", "edit.deletePerm", "export.view", "file.saveScan", "tools.filter", "tools.insights", "item.basketAdd", "tools.basket", "tree.expandAll", "tree.collapseSub", "tree.expandLevel", "tree.collapseLvl", "tree.collapseAll", "view.treemap", "view.maxTreemap", "view.types", "zoom.in", "zoom.out", "zoom.reset", "file.newWindow", "help.keys"}
 	keys := helpSection{}
 	for _, id := range order {
 		cmd := a.cmds[id]

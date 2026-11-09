@@ -45,6 +45,11 @@ type prefs struct {
 	ConfirmRecycle bool
 	FileLimit      int
 	LayoutRev      int // bumped when the default column order changes
+
+	MapMatches  bool    // the treemap dims what a search or duplicate list does not match
+	KeepHistory bool    // remember a summary of each completed scan, for trends
+	KeepScans   int     // full scans kept per root in history, for detailed comparison
+	GrowthAlert float64 // alert when a top folder grows by this many GB since the last remembered scan, 0 for never
 }
 
 func defaultPrefs() prefs {
@@ -55,6 +60,7 @@ func defaultPrefs() prefs {
 		TreeSort: ui.SortOrder{Column: "Size", Descending: true}, FileSort: ui.SortOrder{Column: "Size", Descending: true},
 		ExtSort: ui.SortOrder{Column: "Size", Descending: true}, ScanMode: "Automatic", ConfirmRecycle: true,
 		Exclusions: []string{}, UseExclusions: true, LayoutRev: 2,
+		MapMatches: true, KeepScans: 3, GrowthAlert: 5,
 	}
 }
 
@@ -140,6 +146,12 @@ func loadPrefs() prefs {
 	delete(p.FileHidden, "Name")
 	p.Recent = clip(p.Recent, 12)
 	p.SearchHistory = clip(p.SearchHistory, 15)
+	if p.KeepScans < 0 || p.KeepScans > 50 {
+		p.KeepScans = 3
+	}
+	if math.IsNaN(p.GrowthAlert) || p.GrowthAlert < 0 || p.GrowthAlert > 1e6 {
+		p.GrowthAlert = 5
+	}
 	return p
 }
 

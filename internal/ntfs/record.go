@@ -35,7 +35,15 @@ type Record struct {
 	Modified                          int64
 	Links                             uint16
 	Directory, Reparse, AttributeList bool
+	// Cloud marks a cloud-sync placeholder whose data is recalled on
+	// access (FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS, RECALL_ON_OPEN or
+	// OFFLINE in $STANDARD_INFORMATION).
+	Cloud bool
 }
+
+// CloudAttributes are the file attributes of a cloud placeholder whose
+// contents are not stored locally.
+const CloudAttributes = 0x00400000 | 0x00040000 | 0x00001000
 
 func Fixup(b []byte, sector int) error {
 	if len(b) < 48 || string(b[:4]) != "FILE" || sector < 256 || len(b)%sector != 0 {
@@ -153,6 +161,7 @@ func ParseRaw(b []byte, number uint64) (Record, bool, error) {
 			}
 			r.Modified = int64(le.Uint64(v[8:])/10000000) - 11644473600
 			r.Reparse = le.Uint32(v[32:])&0x400 != 0
+			r.Cloud = le.Uint32(v[32:])&CloudAttributes != 0
 		case 0x20:
 			r.AttributeList = true
 		case 0x30:

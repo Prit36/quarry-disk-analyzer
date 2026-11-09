@@ -17,6 +17,7 @@ import (
 
 	"golang.org/x/sys/windows"
 	"quarry/internal/index"
+	"quarry/internal/ntfs"
 )
 
 var getFileInfo = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetFileInformationByHandleEx")
@@ -190,6 +191,9 @@ func enumerateOpen(ctx context.Context, h windows.Handle, path string, dir *dirH
 				}
 				if attrs&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
 					flags |= index.Reparse
+				}
+				if attrs&ntfs.CloudAttributes != 0 && flags&index.Directory == 0 {
+					flags |= index.CloudOnly
 				}
 				e := entry{size: binary.LittleEndian.Uint64(r[40:]), allocated: binary.LittleEndian.Uint64(r[48:]), modified: unixTime(binary.LittleEndian.Uint64(r[24:])), fileID: binary.LittleEndian.Uint64(r[96:]), flags: flags}
 				if flags&index.Directory != 0 {

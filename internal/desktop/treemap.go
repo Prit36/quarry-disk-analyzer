@@ -56,6 +56,7 @@ type treemapModel struct {
 	tipCell  int
 	tipFor   styleKey
 	tipSnap  *index.Snapshot
+	matches  mapMatches // what File View lists, for dimming the rest
 }
 
 type tileKey struct {
@@ -691,8 +692,8 @@ func (a *App) treemapView(c *ui.Context, pal palette) {
 			a.post(func() { a.navigate(id) })
 		}
 		// The same groups and order as the rows' menu.
-		a.contextItems(menu, "-", "item.open", "item.explorer", "-", "edit.copy", "edit.copyPath", "-", "item.searchHere", "item.scanHere", "nav.up", "-", "edit.delete", "-", "item.properties")
-		a.moreItems(menu, "edit.copyName", "edit.copySize", "item.scanWindow")
+		a.contextItems(menu, "-", "item.open", "item.explorer", "-", "edit.copy", "edit.copyPath", "-", "item.searchHere", "item.scanHere", "nav.up", "-", "edit.delete", "item.basketAdd", "item.basketRemove", "-", "item.properties")
+		a.moreItems(menu, "edit.copyName", "edit.copySize", "-", "item.details", "item.refresh", "item.scanWindow", "-", "item.skip")
 	})
 	if box.Shortcut(0, ui.KeyBackspace) {
 		a.up()
@@ -716,6 +717,7 @@ func (a *App) treemapView(c *ui.Context, pal palette) {
 	if a.prefs.View == viewExtensions {
 		focusExt, _ = a.ext.currentExt()
 	}
+	lit := a.treemapMatches(s, m.cells)
 	var tip tipInfo
 	m.ensureStyles(s, t.Dark)
 	if hover >= 0 {
@@ -766,7 +768,7 @@ func (a *App) treemapView(c *ui.Context, pal palette) {
 				continue
 			}
 			lightEnd, darkEnd := st.lightEnd, st.darkEnd
-			if focusExt != "" && st.ext != focusExt {
+			if focusExt != "" && st.ext != focusExt || lit != nil && !lit[i] {
 				col = col.Mix(pal.grid, .75)
 				lightEnd, darkEnd = col.Mix(ui.Hex("#FFFFFF"), .10), col.Mix(ui.Hex("#000000"), .18)
 				fg = labelOn(lightEnd, dark)

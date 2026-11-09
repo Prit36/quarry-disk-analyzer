@@ -161,7 +161,7 @@ func (e *extModel) refresh(text string) {
 	e.forText = text
 	e.shown = e.shown[:0]
 	for i, t := range e.types {
-		if text == "" || strings.Contains(t.Extension, text) || strings.Contains(strings.ToLower(platform.CachedFileTypeName(t.Extension)), text) {
+		if text == "" || strings.Contains(t.Extension, text) || strings.Contains(strings.ToLower(platform.CachedFileTypeName(t.Extension)), text) || strings.Contains(strings.ToLower(index.CategoryOf(t.Extension)), text) {
 			e.shown = append(e.shown, i)
 		}
 	}
@@ -186,6 +186,8 @@ func (e *extModel) sortShown() {
 			v = strings.Compare(a.Extension, b.Extension)
 		case "Type":
 			v = strings.Compare(typeNames[x], typeNames[y])
+		case "Category":
+			v = strings.Compare(index.CategoryOf(a.Extension), index.CategoryOf(b.Extension))
 		case "Files":
 			v = cmp.Compare(a.Count, b.Count)
 		case "Allocated":

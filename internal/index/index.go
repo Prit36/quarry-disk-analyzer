@@ -29,6 +29,13 @@ const (
 	Unplaced
 )
 
+// CloudOnly marks a cloud-sync placeholder (OneDrive Files On-Demand and
+// other cloud filter providers): the file's contents are stored online and
+// recalled when opened, so it takes little or no space on the drive. Its
+// logical size is the online file's; Allocated is what the drive holds.
+// (1<<5 is Removed, in mutate.go.)
+const CloudOnly uint16 = 1 << 6
+
 // Node is 48 bytes, with no GC-scanned pointers.
 type Node struct {
 	Size, Allocated uint64

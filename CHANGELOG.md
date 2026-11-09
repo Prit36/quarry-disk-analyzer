@@ -1,5 +1,48 @@
 # Changelog
 
+## Unreleased
+
+- **Scan comparison by folder.** Tools → Compare with Saved Scan lists what was
+  added, removed, grew or shrank, folder by folder (double-click to go deeper)
+  or as the largest changed files, largest change first, with filters. Current
+  entries can be revealed in Tree View or listed in File View; entries found
+  only in the previous scan are marked as no longer on disk.
+- **Cleanup basket.** Add to Cleanup Basket (Ctrl+B) collects items from
+  anywhere in the scan; its review (Ctrl+Shift+B) shows each path, size,
+  estimated disk space and status (protected, changed or missing items are
+  left alone, items inside a basket folder are counted once) before anything
+  is moved to the Recycle Bin or deleted. It is not saved.
+- **Storage insights and folder details** (Ctrl+I, or right-click a folder →
+  More → Folder Details): largest folder inside, dominant kind of file, large
+  files unchanged for a year, possible duplicates, temporary files, installers
+  and archives, online-only files and unreadable items, with File Age and
+  Categories tabs. Every number opens its files in File View.
+- **Search:** `age:` (time since the last change), `cat:` (kind of file) and
+  `is:cloud`/`is:hardlink`/`is:incomplete`; operator suggestions while typing
+  (Tab accepts); a Filters button for size, age and kind; Quick Filters for
+  files over 100 MB, 1 GB and 10 GB, old large files, old downloads and more.
+- **Treemap match highlighting.** While File View lists a search or
+  duplicates, tiles without a match are dimmed (View → Highlight Matches in
+  Treemap).
+- **Duplicate review.** After Verify Contents, groups offer Keep This Copy, Select the Others and Select Copies in Every
+  Group (first, newest, oldest, shortest path). Before verified copies are
+  deleted, at least one copy of each group must remain and the files are read
+  again to confirm they did not change. Deleting unverified candidates warns.
+- **Refresh This Folder** rescans one folder into the current results. Scan
+  Issues gains Retry and Skip in Future Scans; any folder's menu has Skip This
+  Folder in Future Scans, with an explanation first.
+- **Online-only cloud files** (OneDrive and similar) are detected by both scan
+  methods, marked in the lists, searchable and counted in the insights.
+- **Opt-in scan history** (Options → Remember Scans for Trends): small
+  summaries and the last few full scans per folder; Tools → Scan History shows
+  the trend and folder growth between scans, compares a kept scan in detail,
+  and can alert when a folder grows past a chosen size.
+- **HTML report** (File → Export → Report) with options to replace user names
+  or hide every file and folder name.
+- Extensions view: a Category column and Show Files in Category.
+- After a deletion the status bar says how many items went where and that the
+  Recycle Bin still holds their space until it is emptied.
+
 ## 0.2.6 - 2026-10-31
 
 - **One layout from the start.** The window opens on its usual toolbar, tabs,

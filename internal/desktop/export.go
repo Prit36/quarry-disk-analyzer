@@ -214,26 +214,3 @@ func (a *App) openSnapshot(path string) {
 		})
 	}()
 }
-
-// compareDialog compares the current scan with a saved scan of the same root.
-func (a *App) compareDialog() {
-	scan, allocated := a.completeScan(), a.metricAllocated()
-	go func() {
-		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: a.win, Title: "Compare with Saved Scan", Filters: scanFilters})
-		if err != nil || len(paths) == 0 {
-			return
-		}
-		previous, err := index.LoadSnapshot(context.Background(), paths[0])
-		var changes []index.Change
-		if err == nil {
-			changes, err = index.CompareSnapshots(previous, scan(), allocated)
-		}
-		a.post(func() {
-			if err != nil {
-				a.fail("Compare: %v", err)
-				return
-			}
-			a.dlg.compare = compareDialog{open: true, changes: changes, label: filepath.Base(paths[0]) + " (" + platform.FormatDateTime(previous.Started) + ")"}
-		})
-	}()
-}

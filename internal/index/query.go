@@ -340,7 +340,7 @@ func (s *Snapshot) matchEntry(id ID, f *Filter, ancestorOK []bool, tally *search
 			full = paths.path(id)
 		}
 		return full
-	}, paths, inherited)
+	}, paths, inherited) && (!f.kinds || f.matchKinds(name, n))
 	if tally != nil && (matched || n.FirstChild != None) {
 		const covered, metadata = 1, 2
 		var state uint32

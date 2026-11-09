@@ -61,6 +61,16 @@ Unrestricted searches give workers disjoint, capacity-clipped ranges of a
 single result array. Incorrect saved counts can grow individual ranges safely;
 the coordinator then copies or compacts them without changing traversal order.
 
+### Analysis on demand
+
+`age.go`, `categories.go`, `diff.go`, `graft.go` and `history.go` add analyses that read the immutable index and never change it:
+
+- `AgeProfiles` sums files into five age ranges (the same bounds as the `age:` search terms, so a range's count equals its query's) for several minimum sizes in one parallel piece walk, as `SummarizeScope` splits work. Insights and the report make three walks in all: `Analyze` (extension totals and largest files), the age ranges, and the duplicate candidates. `SummarizeCategories` folds extension totals into fixed categories (`cat:` terms; `cat:other` is everything else). The online-only cloud flag (`CloudOnly`, from the recall/offline attributes) is stored in the node flags and saved with them.
+- `Comparison` relates two snapshots of the same root by path. Folder totals already exist in both, so `Children` only matches one folder's children by folded name; `LargestChanges` walks the rest, skipping folders whose totals and counts are unchanged: the heaviest folders are opened until there are pieces for every worker, each worker keeps its own bounded heap, and a total order (change, size, IDs) makes the merged result independent of the split. Folded names live in a per-folder arena, so matching allocates nothing per entry.
+- `Graft` replaces one folder's contents with a fresh scan of it: the old children are detached (as `Remove` does), the new nodes appended with new IDs, and ancestors adjusted by the difference, so every other ID and selection stays valid. The node table is copied once, sized for both.
+- `RecheckDuplicates` re-hashes a keeper and the copies to be deleted in full and fails on any change of size, time or contents.
+- History summaries (`SummarizeHistory`) hold totals and the folders near the root; they are small JSON files listed without loading any index, and `CompareSummaries` compares two of them.
+
 ## Scanning
 
 - **MFT** (`mft_windows.go`, administrator): two readers with their own unbuffered volume handles read the MFT in 2 MiB chunks, skipping regions the `$BITMAP` marks unused, and parse records into per-chunk arenas; the coordinator applies chunks in order, so IDs are deterministic. Names found in extension records (large folders such as WinSxS keep theirs there) replace or supply the base record's.
@@ -75,6 +85,9 @@ the coordinator then copies or compacts them without changing traversal order.
 - `treemap.go` - hierarchy built off-thread (6,000 tiles, 7 levels, "Smaller items" aggregates), dominant extension per aggregated block, geometry cached per size, tile colors and labels cached per layout and setting.
 - `selection.go` - selected entries in row order and facts about them (all on disk, total size), cached between frames and invalidated directly on table input changes (`Table.Changed()`). A complete file selection borrows the immutable result list and validates its cardinality/generation without hashing every ID. Partial selections retain fingerprint checks. Replacing a bulk selection with one entry releases its large map without clearing every bucket.
 
+- `query.go` - `showQuery` (every summary leads to its files in File View), quick filter presets, the Filters menu and operator suggestions under the search box (an overlay whose rows keep the focus in the box).
+- `insights.go`, `compare.go`, `basket.go`, `history.go`, `report.go`, `refresh.go` - Storage Insights/Folder Details, the scan comparison, the cleanup basket, opt-in scan history, the HTML report and folder refresh. Each is a modal or menu command over the existing views; their work runs on goroutines with generation counters, like File View's, and nothing is kept after the window closes except opt-in history.
+- `mapmatch.go` - which treemap tiles hold a File View match: bit sets of matched entries and their ancestors built off-thread per result set, then one lookup per tile.
 - `ops.go` - file operations through `internal/platform`, each re-validating the on-disk entry first, then updating the index copy-on-write.
 - `view.go`, `tables.go`, `dialogs.go` - layout, grids and modal dialogs.
 - `prefs.go` - persisted settings (atomic write on close).

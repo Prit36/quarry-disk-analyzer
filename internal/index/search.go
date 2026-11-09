@@ -50,11 +50,18 @@ type Filter struct {
 	hasAfter, hasBefore       bool
 	regex                     *regexp.Regexp
 	needsPath, needsAncestors bool
+	// categories holds the extensions of cat: terms; a file matches when
+	// its extension is in any of them.
+	categories    map[string]bool
+	otherCategory bool // cat:other: files whose extension no category lists
+	// flags and noFlags are entry flags that must be set or clear (is:).
+	flags, noFlags uint16
+	kinds          bool // any is: or cat: term, for matchKinds
 }
 
 // Empty reports whether the filter has no criteria.
 func (f *Filter) Empty() bool {
-	return f.Kind == KindAny && len(f.terms) == 0 && len(f.paths) == 0 && len(f.extensions) == 0 && !f.hasMinimum && !f.hasMaximum && !f.hasAfter && !f.hasBefore && f.regex == nil
+	return f.Kind == KindAny && len(f.terms) == 0 && len(f.paths) == 0 && len(f.extensions) == 0 && !f.hasMinimum && !f.hasMaximum && !f.hasAfter && !f.hasBefore && f.regex == nil && f.categories == nil && f.flags == 0 && f.noFlags == 0
 }
 
 // NeedsPath reports whether a full path must be built per entry.
@@ -64,8 +71,13 @@ func (f *Filter) NeedsPath() bool { return f.needsPath }
 // they match when any ancestor component matches and are evaluated per name.
 func (f *Filter) AncestorTerms() bool { return f.needsAncestors }
 
-// ParseFilter compiles a search query.
+// ParseFilter compiles a search query. Relative ages (age:) count from now.
 func ParseFilter(text string) (Filter, error) {
+	return ParseFilterAt(text, time.Now())
+}
+
+// ParseFilterAt compiles a search query with age: terms counted from now.
+func ParseFilterAt(text string, now time.Time) (Filter, error) {
 	f := Filter{}
 	tokens, err := tokenize(text)
 	if err != nil {
@@ -160,6 +172,47 @@ func ParseFilter(text string) (Filter, error) {
 			if err := f.setKind(KindFolders); err != nil {
 				return f, err
 			}
+		case "age":
+			if err := f.parseAge(value, now); err != nil {
+				return f, err
+			}
+		case "cat", "category":
+			if f.categories == nil {
+				f.categories = map[string]bool{}
+			}
+			for _, name := range strings.FieldsFunc(value, func(r rune) bool { return r == ';' || r == ',' || r == '|' }) {
+				if strings.EqualFold(strings.TrimSpace(name), "other") {
+					f.otherCategory = true
+					continue
+				}
+				c, ok := FindCategory(name)
+				if !ok {
+					return f, fmt.Errorf("unknown category %q; try %s", name, categoryKeys())
+				}
+				for _, e := range c.Extensions {
+					f.categories[e] = true
+				}
+			}
+			if len(f.categories) == 0 && !f.otherCategory {
+				return f, fmt.Errorf("cat: needs a category, e.g. cat:videos")
+			}
+		case "is", "-is":
+			var flag uint16
+			switch strings.ToLower(value) {
+			case "cloud", "online", "onlineonly", "placeholder":
+				flag = CloudOnly
+			case "hardlink", "link", "shared":
+				flag = Shared
+			case "incomplete", "unreadable":
+				flag = Incomplete
+			default:
+				return f, fmt.Errorf("is: must be cloud, hardlink or incomplete")
+			}
+			if lower == "-is" {
+				f.noFlags |= flag
+			} else {
+				f.flags |= flag
+			}
 		case "regex":
 			if len(value) > 1000 {
 				return f, fmt.Errorf("regular expression is too long")
@@ -179,6 +232,7 @@ func ParseFilter(text string) (Filter, error) {
 	if f.hasAfter && f.hasBefore && f.after >= f.before {
 		return f, fmt.Errorf("modified date range is reversed")
 	}
+	f.kinds = f.categories != nil || f.flags != 0 || f.noFlags != 0
 	return f, nil
 }
 
@@ -365,6 +419,121 @@ func (f *Filter) parseDateRange(value string) error {
 	return nil
 }
 
+// parseAge reads age:>1y, age:<30d, age:30d..90d: how long ago entries were
+// last modified. Units are d (days), w (weeks), m (30-day months) and y
+// (365-day years). age:>X is older than X, age:<X newer.
+func (f *Filter) parseAge(value string, now time.Time) error {
+	at := func(v string) (int64, error) {
+		d, err := ParseAge(v)
+		if err != nil {
+			return 0, err
+		}
+		return now.Add(-d).Unix(), nil
+	}
+	if low, high, ok := strings.Cut(value, ".."); ok {
+		newest, err := at(low)
+		if err != nil {
+			return err
+		}
+		oldest, err := at(high)
+		if err != nil {
+			return err
+		}
+		if oldest > newest {
+			oldest, newest = newest, oldest
+		}
+		f.setAfter(oldest)
+		f.setBefore(newest)
+		return nil
+	}
+	op, rest := splitOperator(value)
+	t, err := at(rest)
+	if err != nil {
+		return err
+	}
+	switch op {
+	case ">", ">=", "", "=":
+		f.setBefore(t)
+	case "<", "<=":
+		f.setAfter(t)
+	}
+	return nil
+}
+
+// ParseAge reads a duration such as 30d, 2w, 6m or 1y.
+func ParseAge(s string) (time.Duration, error) {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if len(s) < 2 {
+		return 0, fmt.Errorf("invalid age %q; try 30d, 6m or 1y", s)
+	}
+	days := map[byte]float64{'d': 1, 'w': 7, 'm': 30, 'y': 365}[s[len(s)-1]]
+	v, err := strconv.ParseFloat(s[:len(s)-1], 64)
+	if days == 0 || err != nil || v < 0 || v > 1000*365 || math.IsNaN(v) {
+		return 0, fmt.Errorf("invalid age %q; try 30d, 6m or 1y", s)
+	}
+	return time.Duration(v * days * float64(24*time.Hour)), nil
+}
+
+func categoryKeys() string {
+	keys := make([]string, len(Categories))
+	for i, c := range Categories {
+		keys[i] = c.Key
+	}
+	return strings.Join(keys, ", ")
+}
+
+// matchKinds applies is: and cat: terms. Callers test it after matchNode,
+// behind one flag: inside matchNode, even a call that is never reached
+// slows the search loop measurably.
+//
+//go:noinline
+func (f *Filter) matchKinds(name string, n *Node) bool {
+	if f.flags != 0 && n.Flags&f.flags != f.flags || n.Flags&f.noFlags != 0 {
+		return false
+	}
+	if f.categories != nil {
+		if n.IsDir() {
+			return false
+		}
+		ext := ""
+		if i := strings.LastIndexByte(name, '.'); i >= 0 {
+			ext = name[i:]
+		}
+		return f.matchCategory(ext)
+	}
+	return true
+}
+
+// matchCategory reports whether a file extension (with its dot, any case,
+// "" for none) is in the cat: terms' categories. It folds into a stack
+// buffer, so matching allocates nothing: every listed extension is short
+// ASCII, so a longer or non-ASCII one can only be Other.
+func (f *Filter) matchCategory(ext string) bool {
+	var buf [16]byte
+	if ext == "" || len(ext) > len(buf) {
+		return f.otherCategory
+	}
+	for i := 0; i < len(ext); i++ {
+		c := ext[i]
+		if c >= 0x80 {
+			return f.otherCategory
+		}
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		buf[i] = c
+	}
+	key := buf[:len(ext)]
+	if f.categories[string(key)] {
+		return true
+	}
+	if f.otherCategory {
+		_, listed := categoryOf[string(key)]
+		return !listed
+	}
+	return false
+}
+
 func splitOperator(value string) (string, string) {
 	for _, op := range []string{">=", "<=", ">", "<", "="} {
 		if strings.HasPrefix(value, op) {
@@ -407,7 +576,7 @@ func ParseSize(s string) (uint64, error) {
 // MatchNode tests an entry. path is only consulted when NeedsPath; ancestor
 // reports whether an ancestor already satisfied every path: term.
 func (f *Filter) MatchNode(name string, n Node, path func() string, ancestor bool) bool {
-	return f.matchNode(name, &n, path, nil, ancestor)
+	return f.matchNode(name, &n, path, nil, ancestor) && (!f.kinds || f.matchKinds(name, &n))
 }
 
 // matchNode is MatchNode. With paths, the path terms paths tracks are

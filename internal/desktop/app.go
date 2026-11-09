@@ -81,6 +81,8 @@ type App struct {
 	search         string
 	searchLeftTree bool // typing a search switched Tree View to File View
 	searchHandle   ui.Handle
+	searchCaretEnd bool      // put the caret at the end of the search next frame
+	chips          chipCache // the Filters button's count, by search text
 	targetHandle   ui.Handle // the location bar while it is a text box
 	locText        string
 	locEdit        bool // the location bar is a text box
@@ -103,6 +105,14 @@ type App struct {
 
 	selFacts selectionFacts // cached facts about the active selection
 	mutMemo  mutableMemo    // cached answer of mutable for the active selection
+
+	basket      basketModel // the cleanup basket, for this window only
+	compareView comparisonView
+	insights    insightsView
+	refreshing  bool // a folder is being rescanned into the current scan
+	historyView historyView
+	report      reportDialog
+	skip        skipDialog
 
 	dlg dialogs
 }
@@ -310,6 +320,7 @@ func (a *App) startScan() {
 				a.notify("Scan stopped after %s. Results are partial.", duration(s.Elapsed))
 			default:
 				a.notify("Scan completed in %s.", duration(s.Elapsed))
+				a.recordHistory(s)
 			}
 		})
 		// Free space may have changed; the results are shown first.

@@ -138,6 +138,20 @@ func newCommands() map[string]*command {
 		"tools.compare":     {label: "Compare with Saved Scan…", enabled: hasScan, run: (*App).compareDialog},
 		"tools.issues":      {label: "Scan Issues…", enabled: func(a *App) bool { return a.snap != nil && a.snap.Errors > 0 }, run: func(a *App) { a.dlg.issues = true }},
 		"tools.info":        {label: "Scan Information…", enabled: hasScan, run: func(a *App) { a.dlg.info = true }},
+		"tools.basket":      {label: "Cleanup Basket…", keys: "Ctrl+Shift+B", mods: ui.Ctrl | ui.Shift, key: ui.KeyB, inText: true, run: (*App).reviewBasket},
+		"tools.insights":    {label: "Storage Insights…", keys: "Ctrl+I", mods: ui.Ctrl, key: ui.KeyI, inText: true, enabled: hasScan, run: func(a *App) { a.openInsights(0, insightsOverview) }},
+		"tools.age":         {label: "File Age…", enabled: hasScan, run: func(a *App) { a.openInsights(a.insightScope(), insightsAge) }},
+		"tools.categories":  {label: "Storage Categories…", enabled: hasScan, run: func(a *App) { a.openInsights(a.insightScope(), insightsCategories) }},
+		"tools.history":     {label: "Scan History…", run: (*App).openHistory},
+		"export.report":     {label: "Report (HTML)…", enabled: hasScan, run: (*App).openReport},
+
+		// Cleanup basket and folder actions (context menus)
+		"item.basketAdd":    {label: "Add to Cleanup Basket", keys: "Ctrl+B", mods: ui.Ctrl, key: ui.KeyB, visible: func(a *App) bool { return liveScan(a) }, enabled: itemsOnDisk, run: (*App).addToBasket},
+		"item.basketRemove": {label: "Remove from Cleanup Basket", visible: (*App).selectionInBasket, enabled: hasItems, run: (*App).removeFromBasket},
+		"item.details":      {label: "Folder Details…", visible: func(a *App) bool { return singleItem(a) && a.currentIsDir() }, enabled: singleItem, run: func(a *App) { a.openInsights(a.current(), insightsOverview) }},
+		"item.refresh":      {label: "Refresh This Folder", visible: func(a *App) bool { return liveScan(a) && singleItem(a) && a.currentIsDir() }, enabled: func(a *App) bool { return idle(a) && !a.refreshing && itemsOnDisk(a) }, run: func(a *App) { a.refreshFolder(a.current()) }},
+		"item.skip":         {label: "Skip This Folder in Future Scans…", visible: func(a *App) bool { return singleItem(a) && a.currentIsDir() && a.current() != 0 }, enabled: singleItem, run: func(a *App) { a.skipFolder(a.current()) }},
+		"view.mapMatches":   {label: "Highlight Matches in Treemap", checked: func(a *App) bool { return a.prefs.MapMatches }, run: func(a *App) { a.prefs.MapMatches = !a.prefs.MapMatches; a.tm.matchesChanged() }},
 
 		// Options
 		"opt.exclusions": {label: "Skip During Scan…", run: func(a *App) { a.dlg.openExclusions(a) }},
@@ -148,6 +162,7 @@ func newCommands() map[string]*command {
 		"opt.explorer":   {label: "Add “Analyze with Quarry” to Explorer", checked: func(a *App) bool { return a.dlg.explorerVerb }, run: (*App).toggleExplorerVerb},
 		"opt.showMeta":   {label: "Show NTFS Metadata Files", checked: func(a *App) bool { return a.prefs.ShowMetadata }, run: func(a *App) { a.prefs.ShowMetadata = !a.prefs.ShowMetadata; a.applyFilter() }},
 		"opt.confirm":    {label: "Confirm Before Moving to Recycle Bin", checked: func(a *App) bool { return a.prefs.ConfirmRecycle }, run: func(a *App) { a.prefs.ConfirmRecycle = !a.prefs.ConfirmRecycle }},
+		"opt.history":    {label: "Remember Scans for Trends", checked: func(a *App) bool { return a.prefs.KeepHistory }, run: (*App).toggleHistory},
 
 		// Help
 		"help.keys":   {label: "Keyboard Shortcuts", keys: "F1", key: ui.KeyF1, inText: true, run: func(a *App) { a.dlg.help = helpKeys }},
@@ -329,21 +344,21 @@ func (a *App) buildMenu() *menuBar {
 		d := d
 		drives = append(drives, &mygo.MenuItem{Label: driveLabel(d, a), Click: func(*mygo.MenuItem, *mygo.Window) { a.scanPath(d.Path) }})
 	}
-	export := list("export.view", "export.selection", "export.scan", "export.ext", "export.json")
+	export := list("export.view", "export.selection", "export.scan", "export.ext", "export.json", "-", "export.report")
 	file := append(append([]*mygo.MenuItem{sub("Scan Drive", drives)}, list("scan.folder", "scan.rescan", "scan.stop", "-")...), sub("Recent Locations", recent))
 	file = append(file, list("-", "item.open", "item.explorer", "item.properties", "-", "file.openScan", "file.saveScan")...)
 	file = append(file, sub("Export", export))
 	file = append(file, list("-", "file.newWindow", "-", "file.exit")...)
 	view := list("view.tree", "view.files", "view.ext", "-", "nav.back", "nav.forward", "nav.up", "nav.root", "nav.location", "-", "tree.expandLevel", "tree.collapseLvl", "tree.collapseAll", "-", "view.treemap", "view.maxTreemap", "view.types", "view.resetLayout", "-")
-	view = append(view, sub("Size Metric", list("metric.logical", "metric.allocated")), sub("Treemap Colors", list("color.ext", "color.folder", "color.mono")), sub("Size Units", list("units.binary", "units.decimal")))
+	view = append(view, sub("Size Metric", list("metric.logical", "metric.allocated")), sub("Treemap Colors", list("color.ext", "color.folder", "color.mono")), item("view.mapMatches"), sub("Size Units", list("units.binary", "units.decimal")))
 	view = append(view, list("-", "zoom.in", "zoom.out", "zoom.reset", "view.compact")...)
 	view = append(view, sub("Theme", list("theme.system", "theme.dark", "theme.light")))
 	mb.menu = mygo.NewMenu([]*mygo.MenuItem{
 		sub("&File", file),
 		sub("&Edit", list("edit.cut", "edit.copy", "edit.copyPath", "edit.copyName", "edit.copySize", "edit.copyRows", "-", "edit.selectAll", "-", "edit.rename", "edit.delete", "edit.deletePerm", "-", "edit.find")),
 		sub("&View", view),
-		sub("&Tools", list("tools.search", "tools.filter", "tools.clearFilter", "-", "tools.dups", "tools.compare", "-", "tools.issues", "tools.info")),
-		sub("&Options", append(list("opt.exclusions", "opt.useExcl", "-"), append([]*mygo.MenuItem{sub("Scan Method", list("opt.scanAuto", "opt.scanEnum"))}, list("opt.admin", "-", "opt.showMeta", "opt.explorer", "opt.confirm")...)...)),
+		sub("&Tools", list("tools.search", "tools.filter", "tools.clearFilter", "-", "tools.insights", "tools.age", "tools.categories", "tools.dups", "-", "tools.basket", "-", "tools.compare", "tools.history", "-", "tools.issues", "tools.info")),
+		sub("&Options", append(list("opt.exclusions", "opt.useExcl", "-"), append([]*mygo.MenuItem{sub("Scan Method", list("opt.scanAuto", "opt.scanEnum"))}, list("opt.admin", "-", "opt.showMeta", "opt.explorer", "opt.confirm", "-", "opt.history")...)...)),
 		sub("&Help", list("help.keys", "help.syntax", "help.cli", "-", "help.about")),
 	})
 	return mb

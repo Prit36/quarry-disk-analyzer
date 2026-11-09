@@ -46,21 +46,14 @@ type exclusionsDialog struct {
 	use  bool
 }
 
-type compareDialog struct {
-	open    bool
-	label   string
-	changes []index.Change
-	list    ui.ListState
-}
-
 type dialogs struct {
 	rename       renameDialog
 	filter       filterDialog
 	search       searchDialog
 	exclusions   exclusionsDialog
-	compare      compareDialog
 	issues, info bool
 	issueList    ui.ListState
+	issueCursor  int
 	help         int
 	explorerVerb bool
 }
@@ -260,6 +253,7 @@ func (a *App) dialogs(c *ui.Context, pal palette) {
 			}
 			s := a.snap
 			ui.Text(c, fmt.Sprintf("%s could not be read. Totals for their folders may be incomplete. Showing the first %d.", plural(s.Errors, "item", "items"), len(s.Issues))).TextColor(t.TextMuted)
+			d.issueList.Selected = &d.issueCursor
 			ui.Table(c.Key("issue-table"), &d.issueList, []ui.TableColumn{{Title: "Path", Width: 420}, {Title: "Problem", MinWidth: 160}}, len(s.Issues), func(row, col int) {
 				text := s.Issues[row].Path
 				if col == 1 {
@@ -274,6 +268,20 @@ func (a *App) dialogs(c *ui.Context, pal palette) {
 						lines = append(lines, is.Path+"\t"+is.Message)
 					}
 					a.copyText(lines, "issues")
+				}
+				var issue index.Issue
+				hasIssue := d.issueCursor >= 0 && d.issueCursor < len(s.Issues)
+				if hasIssue {
+					issue = s.Issues[d.issueCursor]
+				}
+				live := a.source == "" && !a.scanning && !a.refreshing
+				if ui.Button(c, "Retry").Disabled(!hasIssue || !live).Tooltip("Read the folder of the selected item again, as after fixing its permissions or reconnecting a drive").Clicked() {
+					d.issues = false
+					a.retryIssue(issue)
+				}
+				if ui.Button(c, "Skip in Future Scans…").Disabled(!hasIssue).Tooltip("Stop reading the selected item in future scans").Clicked() {
+					d.issues = false
+					a.skipPath(issue.Path)
 				}
 				if !a.admin && ui.Button(c, "Restart as Administrator").Clicked() {
 					a.restartElevated()
@@ -336,40 +344,6 @@ func (a *App) dialogs(c *ui.Context, pal palette) {
 		})
 	})
 
-	// Comparison.
-	ui.Modal(c.Key("compare"), &d.compare.open, func() {
-		cmpd := &d.compare
-		ui.Column(c).Width(640).MaxWidthPercent(100).Height(440).MaxHeightPercent(100).Padding(8).Gap(8).Children(func() {
-			dialogTitle(c, "Changes since "+cmpd.label)
-			ui.Text(c, "Top-level folders of the scan root, by "+strings.ToLower(a.prefs.Metric)+" size.").TextColor(t.TextMuted)
-			ui.Table(c.Key("compare-table"), &cmpd.list, []ui.TableColumn{{Title: "Name", MinWidth: 160}, {Title: "Before", Width: 100, Align: ui.End}, {Title: "Now", Width: 100, Align: ui.End}, {Title: "Change", Width: 110, Align: ui.End}}, len(cmpd.changes), func(row, col int) {
-				ch := cmpd.changes[row]
-				switch col {
-				case 0:
-					ui.Text(c, ch.Name).SingleLine()
-				case 1:
-					ui.Text(c, a.size(ch.Previous)).TextColor(t.TextMuted)
-				case 2:
-					ui.Text(c, a.size(ch.Current))
-				case 3:
-					sign, color := "+", t.Warning
-					if !ch.Increase {
-						sign, color = "−", t.Focus
-					}
-					if ch.Difference == 0 {
-						sign, color = "", t.TextMuted
-					}
-					ui.Text(c, sign+a.size(ch.Difference)).TextColor(color)
-				}
-			}).Grow(1).MinHeight(0).Border(1, t.Border)
-			buttons(c, func() {
-				if ui.PrimaryButton(c, "Close").Clicked() {
-					cmpd.open = false
-				}
-			})
-		})
-	})
-
 	// Help.
 	open := d.help != helpNone
 	ui.Modal(c.Key("help"), &open, func() {
@@ -404,6 +378,13 @@ func (a *App) dialogs(c *ui.Context, pal palette) {
 	if !open {
 		d.help = helpNone
 	}
+
+	a.basketDialog(c)
+	a.comparisonDialog(c)
+	a.insightsDialog(c)
+	a.historyDialog(c)
+	a.reportDialog(c)
+	a.skipDialog(c)
 }
 
 // Version is set by main.

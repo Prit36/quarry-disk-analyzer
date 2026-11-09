@@ -302,7 +302,9 @@ func (a *App) findPath(path string) (index.ID, bool) {
 			continue
 		}
 		next := index.None
-		for _, k := range s.Children(id) {
+		// Walk the siblings in place: Children would copy a wide
+		// folder's IDs for every component looked up.
+		for k := s.Nodes[id].FirstChild; k != index.None; k = s.Nodes[k].NextSibling {
 			if strings.EqualFold(s.NameView(k), part) {
 				next = k
 				break
@@ -346,6 +348,12 @@ func (a *App) searchBox(c *ui.Context) {
 		if field.Focused() {
 			box.Border(1, t.Focus)
 		}
+		if a.searchCaretEnd {
+			a.searchCaretEnd = false
+			n := len([]rune(*text))
+			field.SetTextSelection(n, n)
+		}
+		a.searchSuggestions(c, box, field)
 		if field.Shortcut(0, ui.KeyEscape) {
 			if *text != "" {
 				*text = ""
@@ -405,6 +413,8 @@ func (a *App) searchBox(c *ui.Context) {
 				}
 				m.Separator()
 			}
+			m.Submenu("Quick Filters", a.presetItems)
+			m.Separator()
 			a.contextItems(m, "tools.search", "tools.filter", "help.syntax")
 		})
 	})
@@ -514,7 +524,12 @@ func (a *App) viewTabs(c *ui.Context, pal palette) {
 	ui.Row(c).Height(30).Shrink(0).Padding(0, 6).Gap(2).AlignItems(ui.Stretch).Background(pal.chrome).BorderWidth(0, 0, 1, 0).BorderColor(pal.separator).Children(func() {
 		a.tabButtons(c, true)
 		if a.prefs.View == viewFiles {
-			ui.Row(c).Padding(0, 0, 0, 12).AlignItems(ui.Center).Shrink(0).Children(func() { a.duplicatesToggle(c) })
+			ui.Row(c).Padding(0, 0, 0, 12).Gap(8).AlignItems(ui.Center).Shrink(0).Children(func() {
+				a.duplicatesToggle(c)
+				if !a.duplicates.active {
+					a.filterChips(c)
+				}
+			})
 		}
 		ui.Spacer(c)
 		ui.Row(c).Gap(10).AlignItems(ui.Center).MinWidth(0).Shrink(1).Clip().Children(func() {
