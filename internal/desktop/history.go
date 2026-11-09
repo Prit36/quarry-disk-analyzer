@@ -157,7 +157,7 @@ func (a *App) historyDialog(c *ui.Context) {
 		return
 	}
 	t := c.Theme()
-	ui.Modal(c.Key("history"), &v.open, func() {
+	a.modal(c.Key("history"), &v.open, func() {
 		ui.Column(c).Width(860).MaxWidthPercent(100).Height(600).MaxHeightPercent(100).Padding(8).Gap(8).Children(func() {
 			dialogTitle(c, "Scan History")
 			root := v.root

@@ -650,9 +650,11 @@ func (a *App) treemapView(c *ui.Context, pal palette) {
 		}
 		return false
 	})
+	// PointerPosition sees through what covers the map, as a dialog or a
+	// popup: the map hovers only when the pointer is on it (hovered).
 	px, py, over := box.PointerPosition()
 	hover := -1
-	if over && !m.busy {
+	if over && a.hovered(box) && !m.busy {
 		hover = m.hit(px, py)
 	}
 	if hover >= 0 {

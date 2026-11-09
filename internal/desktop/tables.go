@@ -319,7 +319,7 @@ func (a *App) treeTable(c *ui.Context, pal palette) {
 		id := r.id
 		n := s.Nodes[id]
 		cell := cellBox(c, cols[col].Align)
-		if cell.Hovered() {
+		if a.hovered(cell) {
 			a.hover = id
 		}
 		cell.ContextMenu(func(m *ui.Menu) {
@@ -600,7 +600,7 @@ func (a *App) fileTable(c *ui.Context, pal palette) {
 		}
 		id := f.rows[row]
 		cell := cellBox(c, cols[col].Align)
-		if cell.Hovered() {
+		if a.hovered(cell) {
 			a.hover = id
 		}
 		cell.ContextMenu(func(m *ui.Menu) {

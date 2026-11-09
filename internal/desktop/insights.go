@@ -234,7 +234,7 @@ func (a *App) insightsDialog(c *ui.Context) {
 		return
 	}
 	t := c.Theme()
-	ui.Modal(c.Key("insights"), &v.open, func() {
+	a.modal(c.Key("insights"), &v.open, func() {
 		ui.Column(c).Width(720).MaxWidthPercent(100).Height(560).MaxHeightPercent(100).Padding(8).Gap(8).Children(func() {
 			title := "Storage Insights"
 			if v.scope != 0 {

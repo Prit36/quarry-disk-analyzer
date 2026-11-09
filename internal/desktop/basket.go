@@ -439,7 +439,7 @@ func cleanupFeedback(done, asked int, size string, permanent, aborted bool) stri
 func (a *App) basketDialog(c *ui.Context) {
 	b := &a.basket
 	t := c.Theme()
-	ui.Modal(c.Key("basket"), &b.open, func() {
+	a.modal(c.Key("basket"), &b.open, func() {
 		ui.Column(c).Width(820).MaxWidthPercent(100).Height(500).MaxHeightPercent(100).Padding(8).Gap(8).Children(func() {
 			dialogTitle(c, "Cleanup Basket")
 			tot := sumBasket(b.rows)

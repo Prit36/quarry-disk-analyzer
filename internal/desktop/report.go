@@ -222,7 +222,7 @@ func (a *App) reportDialog(c *ui.Context) {
 			d.open = false
 		}
 	}
-	ui.Modal(c.Key("report"), &d.open, func() {
+	a.modal(c.Key("report"), &d.open, func() {
 		ui.Column(c).Width(520).Padding(8).Gap(8).Children(func() {
 			dialogTitle(c, "Export Report (HTML)")
 			ui.Text(c, "A single web page with totals, the largest folders and files, kinds of files and their age, for sharing with someone who does not have Quarry.").TextColor(t.TextMuted).MaxWidth(490)

@@ -64,7 +64,7 @@ func (a *App) drivePicker(c *ui.Context) {
 		color = disabledColor(t)
 	case b.Pressed():
 		b.Background(t.SurfacePressed)
-	case b.Hovered():
+	case a.hovered(b):
 		b.Background(t.SurfaceHover)
 	default:
 		b.Background(t.Surface)
@@ -123,7 +123,7 @@ func (a *App) scanButton(c *ui.Context) {
 		color = disabledColor(t)
 	case b.Pressed():
 		b.Background(t.SurfacePressed)
-	case b.Hovered():
+	case a.hovered(b):
 		b.Background(t.SurfaceHover)
 	default:
 		b.Background(t.Surface)

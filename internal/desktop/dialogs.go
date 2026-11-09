@@ -75,12 +75,29 @@ func field(c *ui.Context, label string, value *string, placeholder string) ui.El
 	return in
 }
 
+// modal is ui.Modal for every dialog of the window: it notes the dialog is
+// up, so the window behind it stops reacting to the pointer (hovered).
+func (a *App) modal(c *ui.Context, open *bool, fn func()) ui.Element {
+	if *open {
+		a.modalUp = true
+	}
+	return ui.Modal(c, open, fn)
+}
+
+// hovered is e.Hovered() for an element of the window behind the dialogs:
+// false while a modal dialog is up. mygo hit-tests only as the pointer
+// moves, so what was under the pointer as a dialog opened from the keyboard
+// or a click would otherwise keep hovering beneath it.
+func (a *App) hovered(e ui.Element) bool {
+	return e.Hovered() && !a.underModal
+}
+
 func (a *App) dialogs(c *ui.Context, pal palette) {
 	d := &a.dlg
 	t := c.Theme()
 
 	// Rename (F2).
-	ui.Modal(c.Key("rename"), &d.rename.open, func() {
+	a.modal(c.Key("rename"), &d.rename.open, func() {
 		r := &d.rename
 		ui.Column(c).Width(420).Padding(8).Gap(8).Children(func() {
 			dialogTitle(c, "Rename")
@@ -117,7 +134,7 @@ func (a *App) dialogs(c *ui.Context, pal palette) {
 	})
 
 	// Analysis filter.
-	ui.Modal(c.Key("filter"), &d.filter.open, func() {
+	a.modal(c.Key("filter"), &d.filter.open, func() {
 		f := &d.filter
 		ui.Column(c).Width(560).Padding(8).Gap(8).Children(func() {
 			dialogTitle(c, "Show/Hide Filter")
@@ -152,7 +169,7 @@ func (a *App) dialogs(c *ui.Context, pal palette) {
 	})
 
 	// Advanced search builds a query in the search syntax.
-	ui.Modal(c.Key("search"), &d.search.open, func() {
+	a.modal(c.Key("search"), &d.search.open, func() {
 		s := &d.search
 		ui.Column(c).Width(560).Padding(8).Gap(6).Children(func() {
 			dialogTitle(c, "Advanced Search")
@@ -207,7 +224,7 @@ func (a *App) dialogs(c *ui.Context, pal palette) {
 	})
 
 	// Scan exclusions.
-	ui.Modal(c.Key("exclusions"), &d.exclusions.open, func() {
+	a.modal(c.Key("exclusions"), &d.exclusions.open, func() {
 		e := &d.exclusions
 		ui.Column(c).Width(560).Padding(8).Gap(8).Children(func() {
 			dialogTitle(c, "Skip During Scan")
@@ -245,7 +262,7 @@ func (a *App) dialogs(c *ui.Context, pal palette) {
 	})
 
 	// Scan issues.
-	ui.Modal(c.Key("issues"), &d.issues, func() {
+	a.modal(c.Key("issues"), &d.issues, func() {
 		ui.Column(c).Width(760).MaxWidthPercent(100).Height(440).MaxHeightPercent(100).Padding(8).Gap(8).Children(func() {
 			dialogTitle(c, "Scan Issues")
 			if a.snap == nil {
@@ -294,7 +311,7 @@ func (a *App) dialogs(c *ui.Context, pal palette) {
 	})
 
 	// Scan information and space accounting.
-	ui.Modal(c.Key("info"), &d.info, func() {
+	a.modal(c.Key("info"), &d.info, func() {
 		ui.Column(c).Width(600).Padding(8).Gap(4).Children(func() {
 			dialogTitle(c, "Scan Information")
 			if a.snap == nil {
@@ -346,7 +363,7 @@ func (a *App) dialogs(c *ui.Context, pal palette) {
 
 	// Help.
 	open := d.help != helpNone
-	ui.Modal(c.Key("help"), &open, func() {
+	a.modal(c.Key("help"), &open, func() {
 		ui.Column(c).Width(640).MaxHeight(660).Padding(8).Gap(8).Children(func() {
 			var title string
 			var sections []helpSection

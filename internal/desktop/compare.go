@@ -204,7 +204,7 @@ func (a *App) comparisonDialog(c *ui.Context) {
 	}
 	a.refreshComparison()
 	t := c.Theme()
-	ui.Modal(c.Key("comparison"), &v.open, func() {
+	a.modal(c.Key("comparison"), &v.open, func() {
 		ui.Column(c).Width(900).MaxWidthPercent(100).Height(600).MaxHeightPercent(100).Padding(8).Gap(8).Children(func() {
 			dialogTitle(c, "Changes since "+v.label)
 			root := v.cmp.Root()

@@ -521,3 +521,43 @@ func TestDrivePickerAndScanButton(t *testing.T) {
 	}
 	a.scanning = false
 }
+
+// Nothing behind a modal dialog hovers: neither a row nor a treemap tile,
+// whether the pointer moves under the dialog or rests where it opened.
+func TestModalBlocksHoverBehind(t *testing.T) {
+	a := testApp(t)
+	hover := index.None
+	tt := ui.NewTester(func(c *ui.Context) { a.view(c); hover = a.hover }, 1280, 800)
+	tt.Frame()
+	r, ok := tt.Find("readme.txt")
+	if !ok {
+		t.Fatal("no readme.txt row")
+	}
+	tt.Move(r.X+5, r.Y+r.H/2)
+	tt.Frame()
+	if hover == index.None {
+		t.Fatal("the row under the pointer should hover")
+	}
+	a.dlg.issues = true
+	tt.Frame()
+	if hover != index.None {
+		t.Fatalf("row %d hovers behind a dialog opened under the pointer", hover)
+	}
+	tt.Move(1000, 600) // the treemap
+	tt.Frame()
+	if hover != index.None {
+		t.Fatalf("tile %d hovers behind a dialog", hover)
+	}
+	a.dlg.issues = false
+	tt.Frame()
+	tt.Move(1001, 600)
+	tt.Frame()
+	if hover == index.None {
+		t.Fatal("the treemap should hover once the dialog closes")
+	}
+	a.dlg.info = true
+	tt.Frame()
+	if hover != index.None {
+		t.Fatalf("tile %d hovers behind a dialog opened under the pointer", hover)
+	}
+}

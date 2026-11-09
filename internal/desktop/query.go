@@ -196,7 +196,7 @@ func (a *App) filterChips(c *ui.Context) {
 	}
 	active, label := ch.active, ch.label
 	b := ui.ButtonBase(c.Key("filter-chips")).Height(22).Padding(0, 6).Radius(4).Border(1, t.Border).AlignItems(ui.Center).Gap(4).Shrink(0).Label("Filters").Tooltip("Narrow the list by size, age or kind of file. These add ordinary search terms.")
-	if b.Hovered() {
+	if a.hovered(b) {
 		b.Background(t.SurfaceHover)
 	}
 	b.Children(func() {

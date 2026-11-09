@@ -95,6 +95,8 @@ type App struct {
 
 	hover      index.ID // entry under the pointer in a list or the treemap, this frame
 	hoverOther bool     // hover is the "Smaller items" block of that folder
+	underModal bool     // a modal dialog is up: the window behind it takes no hover
+	modalUp    bool     // a modal dialog was built in this frame
 
 	message   string // transient status-bar message
 	messageAt time.Time

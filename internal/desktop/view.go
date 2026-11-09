@@ -21,6 +21,7 @@ func (a *App) view(c *ui.Context) {
 	t, pal := a.appTheme()
 	c.SetTheme(t)
 	a.hover, a.hoverOther = index.None, false
+	a.modalUp = false
 	a.syncMenu()
 	a.shortcuts(c)
 	if c.Shortcut(0, ui.KeyEscape) && a.scanning {
@@ -72,6 +73,12 @@ func (a *App) view(c *ui.Context) {
 		a.statusBar(c, pal)
 	})
 	a.dialogs(c, pal)
+	if a.modalUp != a.underModal {
+		// What was built before the dialogs looked at the last frame's
+		// state: build again so it hovers, or stops hovering, at once.
+		a.underModal = a.modalUp
+		c.Invalidate()
+	}
 	a.trimAfterShown(c)
 }
 

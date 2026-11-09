@@ -117,7 +117,7 @@ func (a *App) skipPath(path string) {
 func (a *App) skipDialog(c *ui.Context) {
 	d := &a.skip
 	t := c.Theme()
-	ui.Modal(c.Key("skip"), &d.open, func() {
+	a.modal(c.Key("skip"), &d.open, func() {
 		ui.Column(c).Width(520).Padding(8).Gap(8).Children(func() {
 			dialogTitle(c, "Skip This Folder in Future Scans")
 			ui.Text(c, d.path).Selectable().MaxWidth(490)
