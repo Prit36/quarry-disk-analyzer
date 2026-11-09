@@ -551,7 +551,10 @@ func (s *Snapshot) Compact() *Snapshot {
 	c := *s
 	c.Nodes = make([]Node, 0, len(s.Nodes))
 	c.Names = make([]byte, 0, len(s.Names))
-	remap := make(map[ID]ID, len(s.Nodes))
+	// Old ID -> new ID. A dense array rather than a map: 4 bytes per entry
+	// instead of a hash table, and no hashing. A parent is always visited
+	// (and so mapped) before its children in the depth-first walk.
+	remap := make([]ID, len(s.Nodes))
 	_ = s.walk(context.Background(), 0, func(id ID) (bool, error) {
 		n := s.Nodes[id]
 		name := s.NameView(id)
@@ -566,8 +569,9 @@ func (s *Snapshot) Compact() *Snapshot {
 		c.Nodes = append(c.Nodes, n)
 		return true, nil
 	})
-	// Relink children in their original order.
-	last := make([]ID, len(c.Nodes))
+	// Relink children in their original order. The mapping is no longer
+	// needed; its storage holds each new parent's last child.
+	last := remap[:len(c.Nodes)]
 	for i := range last {
 		last[i] = None
 	}

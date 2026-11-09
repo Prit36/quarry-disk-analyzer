@@ -27,8 +27,8 @@ type duplicateModel struct {
 	notice              string
 	forSnap, runFor     *index.Snapshot
 	scope               index.ID
-	groups              map[index.ID]int // one-based group numbers
-	ids                 []index.ID       // immutable default Group/Name order
+	groups              map[index.ID]int32 // one-based group numbers; 32-bit halves each map slot
+	ids                 []index.ID         // immutable default Group/Name order
 	waste               uint64
 	fileSort            ui.SortOrder
 }
@@ -146,7 +146,7 @@ func (a *App) findDuplicates() {
 		for _, group := range result.Groups {
 			entries += len(group.IDs)
 		}
-		groups := make(map[index.ID]int, entries)
+		groups := make(map[index.ID]int32, entries)
 		ids := make([]index.ID, 0, entries)
 		var waste uint64
 		for g, group := range result.Groups {
@@ -165,7 +165,7 @@ func (a *App) findDuplicates() {
 				if i&4095 == 0 && ctx.Err() != nil {
 					return
 				}
-				groups[id] = g + 1
+				groups[id] = int32(g + 1)
 			}
 		}
 		if ctx.Err() != nil {
@@ -209,7 +209,7 @@ func (a *App) duplicateStatus() string {
 
 func (a *App) duplicateGroupText(id index.ID) string {
 	d := &a.duplicates
-	g := d.groups[id]
+	g := int(d.groups[id])
 	if g <= 0 || g > len(d.result.Groups) {
 		return ""
 	}
@@ -419,7 +419,7 @@ func (a *App) duplicateRowItems(m *ui.Menu) {
 		return
 	}
 	id := a.current()
-	g := d.groups[id]
+	g := int(d.groups[id])
 	m.Separator()
 	if !d.verified {
 		m.Item("Keep This Copy, Select the Others").Disabled(true)
@@ -452,7 +452,7 @@ func (a *App) recheckDuplicates(ids []index.ID, ok func()) {
 	d := &a.duplicates
 	byGroup := map[int][]index.ID{}
 	for _, id := range ids {
-		if g := d.groups[id]; g > 0 {
+		if g := int(d.groups[id]); g > 0 {
 			byGroup[g] = append(byGroup[g], id)
 		}
 	}

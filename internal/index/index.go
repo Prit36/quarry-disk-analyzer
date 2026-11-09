@@ -3,16 +3,13 @@
 package index
 
 import (
-	"bufio"
 	"cmp"
 	"context"
-	"encoding/csv"
 	"fmt"
 	"io"
 	"math"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 	"unsafe"
@@ -516,11 +513,17 @@ func (s *Snapshot) Export(ctx context.Context, w io.Writer) error {
 }
 
 func (s *Snapshot) ExportScope(ctx context.Context, w io.Writer, root ID) error {
-	return s.exportRecords(w, s.newPathWalker().path, func(visit func(ID) error) error { return s.Visit(ctx, root, visit) })
+	paths := s.newPathWalker()
+	return s.exportRecords(w, func(visit func(ID, string) error) error {
+		return s.Visit(ctx, root, func(id ID) error { return visit(id, paths.path(id)) })
+	})
 }
 
 func (s *Snapshot) ExportRows(ctx context.Context, w io.Writer, rows []Row) error {
-	return s.exportRecords(w, s.Path, func(visit func(ID) error) error {
+	// Arbitrary rows have no shared ancestry to walk; each path is built in
+	// one reused buffer instead of a string per row.
+	scratch := make([]byte, 0, 512)
+	return s.exportRecords(w, func(visit func(ID, string) error) error {
 		for position, row := range rows {
 			if position&1023 == 0 {
 				if err := ctx.Err(); err != nil {
@@ -530,7 +533,8 @@ func (s *Snapshot) ExportRows(ctx context.Context, w io.Writer, rows []Row) erro
 			if row.ID == None || int(row.ID) >= len(s.Nodes) {
 				return fmt.Errorf("invalid export record")
 			}
-			if err := visit(row.ID); err != nil {
+			scratch = s.AppendPath(scratch[:0], row.ID)
+			if err := visit(row.ID, unsafe.String(unsafe.SliceData(scratch), len(scratch))); err != nil {
 				return err
 			}
 		}
@@ -538,56 +542,18 @@ func (s *Snapshot) ExportRows(ctx context.Context, w io.Writer, rows []Row) erro
 	})
 }
 
-// exportRecords writes one CSV row per visited entry. Fields are formatted
-// into one reused buffer and passed as views of it (the CSV writer copies
-// them), so a row allocates nothing.
-func (s *Snapshot) exportRecords(w io.Writer, path func(ID) string, visit func(func(ID) error) error) error {
-	buffered := bufio.NewWriterSize(w, 1<<20)
-	c := csv.NewWriter(buffered)
-	if err := c.Write([]string{"Path", "Type", "Size", "Allocated", "Files", "Folders", "Modified", "Shared", "Incomplete"}); err != nil {
-		return err
-	}
-	row := make([]string, 9)
-	scratch := make([]byte, 0, 128)
-	field := func(start int) string {
-		return unsafe.String(unsafe.SliceData(scratch[start:]), len(scratch)-start)
-	}
-	err := visit(func(id ID) error {
-		n := s.Nodes[id]
-		row[0] = path(id)
-		row[1] = "file"
-		if n.IsDir() {
-			row[1] = "folder"
-		}
-		scratch = scratch[:0]
-		start := len(scratch)
-		scratch = strconv.AppendUint(scratch, n.Size, 10)
-		row[2] = field(start)
-		start = len(scratch)
-		scratch = strconv.AppendUint(scratch, n.Allocated, 10)
-		row[3] = field(start)
-		start = len(scratch)
-		scratch = strconv.AppendUint(scratch, uint64(n.Files), 10)
-		row[4] = field(start)
-		start = len(scratch)
-		scratch = strconv.AppendUint(scratch, uint64(n.Dirs), 10)
-		row[5] = field(start)
-		row[6] = ""
-		if n.Modified != 0 {
-			start = len(scratch)
-			scratch = time.Unix(n.ModTime(), 0).UTC().AppendFormat(scratch, time.RFC3339)
-			row[6] = field(start)
-		}
-		row[7] = strconv.FormatBool(n.Flags&Shared != 0)
-		row[8] = strconv.FormatBool(n.Flags&Incomplete != 0)
-		return c.Write(row)
+// exportRecords writes one CSV row per visited entry, with the bytes
+// encoding/csv wrote: rows are formatted straight into one output buffer,
+// so a row allocates nothing and numbers skip the quoting scan.
+func (s *Snapshot) exportRecords(w io.Writer, visit func(func(ID, string) error) error) error {
+	out := newExportBuffer(w)
+	out.buf = append(out.buf, csvHeader...)
+	err := visit(func(id ID, path string) error {
+		out.buf = appendCSVRecord(out.buf, path, &s.Nodes[id])
+		return out.done()
 	})
 	if err != nil {
 		return err
 	}
-	c.Flush()
-	if err := c.Error(); err != nil {
-		return err
-	}
-	return buffered.Flush()
+	return out.flush()
 }

@@ -113,16 +113,59 @@ func LoadSnapshot(ctx context.Context, path string) (*Snapshot, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(path)
+	data, release, err := readSnapshotFile(path)
 	if err != nil {
 		return nil, err
 	}
+	defer release()
 	snapshot, err := loadSnapshot(ctx, data, true)
 	if errors.Is(err, errSnapshotSegment) {
 		// Not decodable member by member: read it serially for the real error.
 		snapshot, err = loadSnapshot(ctx, data, false)
 	}
 	return snapshot, err
+}
+
+// readSnapshotFile reads a saved scan's compressed bytes into memory outside
+// the Go heap where the platform allows it. They are needed only while
+// decoding, so release returns them to the system at once instead of
+// raising the collector's heap target by the file's size. Decoding copies
+// everything it keeps (nodes, names, metadata strings) out of data.
+func readSnapshotFile(path string) (data []byte, release func(), err error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, nil, err
+	}
+	size := info.Size()
+	if size <= 0 || size > 1<<31 {
+		// Empty or implausibly large files take the ordinary path,
+		// which reports their errors as before.
+		data, err = os.ReadFile(path)
+		return data, func() {}, err
+	}
+	raw := rawAlloc(int(size))
+	n, err := io.ReadFull(file, raw)
+	var extra [1]byte
+	if err == nil {
+		// The file grew while reading: read it as it is now.
+		if m, _ := file.Read(extra[:]); m > 0 {
+			rawFree(raw)
+			data, err = os.ReadFile(path)
+			return data, func() {}, err
+		}
+	} else if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
+		err = nil // it shrank: decode what is there
+	}
+	if err != nil {
+		rawFree(raw)
+		return nil, nil, err
+	}
+	return raw[:n], func() { rawFree(raw) }, nil
 }
 
 // loadSnapshot decodes a saved scan from its file contents. Files written by

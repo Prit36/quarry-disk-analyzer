@@ -22,39 +22,26 @@ func (s *Snapshot) ExportJSON(ctx context.Context, writer io.Writer, root ID) er
 	if err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(writer, "{\"scan\":%s,\"nodes\":[", metadata); err != nil {
-		return err
-	}
-	encoder := json.NewEncoder(writer)
+	out := newExportBuffer(writer)
+	out.buf = fmt.Appendf(out.buf, "{\"scan\":%s,\"nodes\":[", metadata)
 	walker := s.newPathWalker()
 	first := true
-	// One record value is reused for every node: encoding a pointer to it
-	// does not box a fresh copy per node, and the JSON is the same.
-	var record struct {
-		Path, Name      string
-		Size, Allocated uint64
-		Files, Folders  uint32
-		Modified        int64
-		Flags           uint16
-	}
+	// Each record is the json.Encoder output for
+	// {Path, Name string; Size, Allocated uint64; Files, Folders uint32;
+	// Modified int64; Flags uint16}, newline included, formatted directly.
 	err = s.Visit(ctx, root, func(id ID) error {
 		if !first {
-			if _, err := io.WriteString(writer, ","); err != nil {
-				return err
-			}
+			out.buf = append(out.buf, ',')
 		}
 		first = false
-		node := s.Nodes[id]
-		record.Path, record.Name = walker.path(id), s.NameView(id)
-		record.Size, record.Allocated, record.Files, record.Folders = node.Size, node.Allocated, node.Files, node.Dirs
-		record.Modified, record.Flags = node.ModTime(), node.Flags
-		return encoder.Encode(&record)
+		out.buf = appendJSONRecord(out.buf, walker.path(id), s.NameView(id), &s.Nodes[id])
+		return out.done()
 	})
 	if err != nil {
 		return err
 	}
-	_, err = io.WriteString(writer, "]}\n")
-	return err
+	out.buf = append(out.buf, "]}\n"...)
+	return out.flush()
 }
 
 func (s *Snapshot) ExportReport(ctx context.Context, writer io.Writer, root ID) error {

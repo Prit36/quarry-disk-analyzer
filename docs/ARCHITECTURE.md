@@ -1,5 +1,8 @@
 # Architecture
 
+The latest export, saving, loading and duplicate-view measurements are in
+[PERFORMANCE-EXPORT-SAVE.md](PERFORMANCE-EXPORT-SAVE.md).
+
 The latest sorting, filtering and search measurements against commit
 `38f9eeb` are in [PERFORMANCE-SORTS-FILTERS.md](PERFORMANCE-SORTS-FILTERS.md).
 The preceding passes are in [PERFORMANCE-INTERACTIONS.md](PERFORMANCE-INTERACTIONS.md)
@@ -30,7 +33,9 @@ Snapshots are shared with background goroutines and never mutated in place. A de
 
 `ParseFilter` compiles the search syntax (wildcards, quoted phrases, negation, `ext:`, `size:`, `modified:`, `path:`, `type:`, `regex:` with Go's linear-time RE2) into a `Filter`; `Search` walks a scope without recursion and evaluates `path:` terms incrementally per folder rather than by building paths. Prefix, suffix and contains wildcards match ASCII names without backtracking. Scopes of 32,768 entries or more are divided into subtrees searched on all cores and concatenated in index order. Small adjacent sibling subtrees share tasks, keeping wide folders from allocating a descriptor and result slice for every file.
 
-Saved scans keep the original format: 52-byte little-endian records, gzip. They are written as 1 MiB gzip members compressed in parallel, which any gzip reader (and every earlier release) reads as one stream. Loading finds those member boundaries and decodes the members in parallel, falling back to one serial stream for older files or when a member does not decode.
+Saved scans keep the original format: 52-byte little-endian records, gzip. They are written as 1 MiB gzip members compressed in parallel, which any gzip reader (and every earlier release) reads as one stream. Loading finds those member boundaries and decodes the members in parallel, falling back to one serial stream for older files or when a member does not decode. The compressed file is read into memory outside the Go heap and released as soon as decoding finishes. `Compact` renumbers through a dense ID array rather than a map.
+
+CSV and JSON exports format each row straight into one output buffer (`exportfmt.go`), with the bytes `encoding/csv` and `encoding/json` produced: quoting is decided by an eight-byte scan, times are formatted without `time.Time`, and the rare strings needing HTML or control-character escapes are passed to `encoding/json` itself. Row exports build each path in one reused buffer.
 
 `Filtered` combines matching, child-list rebuilding and aggregation in one
 depth-first folder walk. Empty subtrees are isolated as their parent's totals

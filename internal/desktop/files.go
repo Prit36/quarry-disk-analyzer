@@ -661,34 +661,38 @@ func rawExtOf(s *index.Snapshot, id index.ID) string {
 
 // groupDuplicates puts each duplicate group's files together, in the order
 // of the group's first file in ids, keeping their order within the group.
-func groupDuplicates(ids []index.ID, groups map[index.ID]int) ([]index.ID, []uint32) {
-	rank := map[int]int{}
+// Group numbers are dense (one-based, 0 for none), so ranks are an array
+// indexed by group rather than a growing map.
+func groupDuplicates(ids []index.ID, groups map[index.ID]int32) ([]index.ID, []uint32) {
+	if len(ids) == 0 {
+		return ids, nil
+	}
+	// Each file's group is looked up once; the passes below reuse it.
+	of := make([]int32, len(ids))
+	most := int32(0)
+	for i, id := range ids {
+		g := max(groups[id], 0)
+		of[i], most = g, max(most, g)
+	}
+	rank := make([]int32, int(most)+1)
+	for i := range rank {
+		rank[i] = -1
+	}
 	var lens []uint32
-	for _, id := range ids {
-		g := groups[id]
-		r, ok := rank[g]
-		if !ok {
-			r = len(lens)
+	together, last := true, int32(-1)
+	for _, g := range of {
+		r := rank[g]
+		if r < 0 {
+			r = int32(len(lens))
 			rank[g] = r
 			lens = append(lens, 0)
+		} else if r != last {
+			together = false // a group seen before resumes after another
 		}
 		lens[r]++
+		last = r
 	}
 	// Results sorted by group are already together and need no copy.
-	together, at := true, 0
-	for _, n := range lens {
-		r := rank[groups[ids[at]]]
-		for _, id := range ids[at : at+int(n)] {
-			if rank[groups[id]] != r {
-				together = false
-				break
-			}
-		}
-		if !together {
-			break
-		}
-		at += int(n)
-	}
 	if together {
 		return ids, lens
 	}
@@ -698,8 +702,8 @@ func groupDuplicates(ids []index.ID, groups map[index.ID]int) ([]index.ID, []uin
 		next[r] = start
 	}
 	order := make([]index.ID, len(ids))
-	for _, id := range ids {
-		r := rank[groups[id]]
+	for i, id := range ids {
+		r := rank[of[i]]
 		order[next[r]] = id
 		next[r]++
 	}
@@ -730,7 +734,7 @@ func (f *fileModel) layOutRows() {
 }
 
 func (f *fileModel) dupGroupOpen(id index.ID) bool {
-	return f.dupOpenAll != f.dupOpen[f.a.duplicates.groups[id]]
+	return f.dupOpenAll != f.dupOpen[int(f.a.duplicates.groups[id])]
 }
 
 // toggleGroup opens or closes the duplicate group of row, keeping the
@@ -741,7 +745,7 @@ func (f *fileModel) toggleGroup(row int, open bool) {
 		return
 	}
 	id := f.rows[row]
-	g := f.a.duplicates.groups[id]
+	g := int(f.a.duplicates.groups[id])
 	if f.dupGroupOpen(id) == open {
 		return
 	}
@@ -830,7 +834,7 @@ func (f *fileModel) selectOnly(id index.ID) {
 		if f.dupOpen == nil {
 			f.dupOpen = map[int]bool{}
 		}
-		g := f.a.duplicates.groups[id]
+		g := int(f.a.duplicates.groups[id])
 		f.dupOpen[g] = !f.dupOpen[g]
 		f.layOutRows()
 		f.cursor = slices.Index(f.rows, id)
