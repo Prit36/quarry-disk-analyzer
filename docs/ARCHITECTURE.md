@@ -3,6 +3,9 @@
 The latest export, saving, loading and duplicate-view measurements are in
 [PERFORMANCE-EXPORT-SAVE.md](PERFORMANCE-EXPORT-SAVE.md).
 
+The preceding duplicate detection, snapshot loading and treemap allocation results
+are in [PERFORMANCE-MEMORY.md](PERFORMANCE-MEMORY.md).
+
 The latest sorting, filtering and search measurements against commit
 `38f9eeb` are in [PERFORMANCE-SORTS-FILTERS.md](PERFORMANCE-SORTS-FILTERS.md).
 The preceding passes are in [PERFORMANCE-INTERACTIONS.md](PERFORMANCE-INTERACTIONS.md)

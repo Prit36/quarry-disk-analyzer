@@ -1,0 +1,677 @@
+{
+  "method": {
+    "pairs": 3,
+    "order": [
+      "before",
+      "after",
+      "after",
+      "before",
+      "before",
+      "after"
+    ],
+    "benchtime": "700ms",
+    "gc_percent": 25,
+    "cache": "warm filesystem cache; no duplicate-result cache",
+    "time_excludes": "snapshot creation/loading, file generation, GPU presentation",
+    "memory": "total Go bytes allocated per operation; not peak RAM"
+  },
+  "benchmarks": {
+    "BenchmarkDuplicateMetadata/Mixed": {
+      "median": {
+        "before": {
+          "ns": 317438600,
+          "allocated_bytes": 218505362,
+          "allocations": 1905469
+        },
+        "after": {
+          "ns": 26176300,
+          "allocated_bytes": 37352173,
+          "allocations": 864
+        }
+      },
+      "speedup": 12.1269468947101,
+      "allocation_reduction_percent": 82.90560347896634,
+      "runs": {
+        "before": [
+          {
+            "ns": 316124833,
+            "allocated_bytes": 218505362,
+            "allocations": 1905469,
+            "source": "run-1-before-index.txt"
+          },
+          {
+            "ns": 320433267,
+            "allocated_bytes": 218006354,
+            "allocations": 1905450,
+            "source": "run-4-before-index.txt"
+          },
+          {
+            "ns": 317438600,
+            "allocated_bytes": 218965368,
+            "allocations": 1905487,
+            "source": "run-5-before-index.txt"
+          }
+        ],
+        "after": [
+          {
+            "ns": 25982287,
+            "allocated_bytes": 37348558,
+            "allocations": 865,
+            "source": "run-2-after-index.txt"
+          },
+          {
+            "ns": 26176300,
+            "allocated_bytes": 37352173,
+            "allocations": 864,
+            "source": "run-3-after-index.txt"
+          },
+          {
+            "ns": 26215281,
+            "allocated_bytes": 37365885,
+            "allocations": 864,
+            "source": "run-6-after-index.txt"
+          }
+        ]
+      }
+    },
+    "BenchmarkDuplicateMetadata/SameSize": {
+      "median": {
+        "before": {
+          "ns": 312318667,
+          "allocated_bytes": 218651645,
+          "allocations": 1905383
+        },
+        "after": {
+          "ns": 25317320,
+          "allocated_bytes": 37349764,
+          "allocations": 854
+        }
+      },
+      "speedup": 12.336166189786281,
+      "allocation_reduction_percent": 82.91814177752927,
+      "runs": {
+        "before": [
+          {
+            "ns": 309928000,
+            "allocated_bytes": 218651645,
+            "allocations": 1905387,
+            "source": "run-1-before-index.txt"
+          },
+          {
+            "ns": 315431200,
+            "allocated_bytes": 218149872,
+            "allocations": 1905366,
+            "source": "run-4-before-index.txt"
+          },
+          {
+            "ns": 312318667,
+            "allocated_bytes": 218798986,
+            "allocations": 1905383,
+            "source": "run-5-before-index.txt"
+          }
+        ],
+        "after": [
+          {
+            "ns": 25375236,
+            "allocated_bytes": 37355143,
+            "allocations": 854,
+            "source": "run-2-after-index.txt"
+          },
+          {
+            "ns": 25133742,
+            "allocated_bytes": 37346853,
+            "allocations": 852,
+            "source": "run-3-after-index.txt"
+          },
+          {
+            "ns": 25317320,
+            "allocated_bytes": 37349764,
+            "allocations": 854,
+            "source": "run-6-after-index.txt"
+          }
+        ]
+      }
+    },
+    "BenchmarkDuplicateMetadata/Repeated": {
+      "median": {
+        "before": {
+          "ns": 110921443,
+          "allocated_bytes": 51627840,
+          "allocations": 1011198
+        },
+        "after": {
+          "ns": 21840943,
+          "allocated_bytes": 32932388,
+          "allocations": 364
+        }
+      },
+      "speedup": 5.078601368081955,
+      "allocation_reduction_percent": 36.211958509207435,
+      "runs": {
+        "before": [
+          {
+            "ns": 110921443,
+            "allocated_bytes": 50471304,
+            "allocations": 1011198,
+            "source": "run-1-before-index.txt"
+          },
+          {
+            "ns": 109852843,
+            "allocated_bytes": 51627840,
+            "allocations": 1011197,
+            "source": "run-4-before-index.txt"
+          },
+          {
+            "ns": 111667057,
+            "allocated_bytes": 51628955,
+            "allocations": 1011199,
+            "source": "run-5-before-index.txt"
+          }
+        ],
+        "after": [
+          {
+            "ns": 21710735,
+            "allocated_bytes": 32918975,
+            "allocations": 366,
+            "source": "run-2-after-index.txt"
+          },
+          {
+            "ns": 21866700,
+            "allocated_bytes": 32932388,
+            "allocations": 364,
+            "source": "run-3-after-index.txt"
+          },
+          {
+            "ns": 21840943,
+            "allocated_bytes": 32972147,
+            "allocations": 364,
+            "source": "run-6-after-index.txt"
+          }
+        ]
+      }
+    },
+    "BenchmarkDuplicateMetadata/Unique": {
+      "median": {
+        "before": {
+          "ns": 366447600,
+          "allocated_bytes": 286542516,
+          "allocations": 2008382
+        },
+        "after": {
+          "ns": 10737369,
+          "allocated_bytes": 28412966,
+          "allocations": 145
+        }
+      },
+      "speedup": 34.128248735793655,
+      "allocation_reduction_percent": 90.08420586353753,
+      "runs": {
+        "before": [
+          {
+            "ns": 370899300,
+            "allocated_bytes": 286369088,
+            "allocations": 2008375,
+            "source": "run-1-before-index.txt"
+          },
+          {
+            "ns": 366447600,
+            "allocated_bytes": 286542516,
+            "allocations": 2008382,
+            "source": "run-4-before-index.txt"
+          },
+          {
+            "ns": 360872750,
+            "allocated_bytes": 286543352,
+            "allocations": 2008385,
+            "source": "run-5-before-index.txt"
+          }
+        ],
+        "after": [
+          {
+            "ns": 10737369,
+            "allocated_bytes": 28412966,
+            "allocations": 145,
+            "source": "run-2-after-index.txt"
+          },
+          {
+            "ns": 10670204,
+            "allocated_bytes": 28413307,
+            "allocations": 146,
+            "source": "run-3-after-index.txt"
+          },
+          {
+            "ns": 11175059,
+            "allocated_bytes": 28412964,
+            "allocations": 145,
+            "source": "run-6-after-index.txt"
+          }
+        ]
+      }
+    },
+    "BenchmarkDuplicateMetadata/Unicode": {
+      "median": {
+        "before": {
+          "ns": 68511983,
+          "allocated_bytes": 44537084,
+          "allocations": 381136
+        },
+        "after": {
+          "ns": 12414816,
+          "allocated_bytes": 14257403,
+          "allocations": 200604
+        }
+      },
+      "speedup": 5.518566122929248,
+      "allocation_reduction_percent": 67.98756963971866,
+      "runs": {
+        "before": [
+          {
+            "ns": 72233710,
+            "allocated_bytes": 44537084,
+            "allocations": 381136,
+            "source": "run-1-before-index.txt"
+          },
+          {
+            "ns": 66524025,
+            "allocated_bytes": 44537561,
+            "allocations": 381136,
+            "source": "run-4-before-index.txt"
+          },
+          {
+            "ns": 68511983,
+            "allocated_bytes": 44536742,
+            "allocations": 381135,
+            "source": "run-5-before-index.txt"
+          }
+        ],
+        "after": [
+          {
+            "ns": 13070793,
+            "allocated_bytes": 14257403,
+            "allocations": 200604,
+            "source": "run-2-after-index.txt"
+          },
+          {
+            "ns": 12337058,
+            "allocated_bytes": 14256795,
+            "allocations": 200604,
+            "source": "run-3-after-index.txt"
+          },
+          {
+            "ns": 12414816,
+            "allocated_bytes": 14257403,
+            "allocations": 200604,
+            "source": "run-6-after-index.txt"
+          }
+        ]
+      }
+    },
+    "BenchmarkDuplicateRealMetadata": {
+      "median": {
+        "before": {
+          "ns": 363268550,
+          "allocated_bytes": 170262584,
+          "allocations": 957734
+        },
+        "after": {
+          "ns": 37776933,
+          "allocated_bytes": 37842784,
+          "allocations": 891
+        }
+      },
+      "speedup": 9.61614723990431,
+      "allocation_reduction_percent": 77.77386956608153,
+      "runs": {
+        "before": [
+          {
+            "ns": 359785000,
+            "allocated_bytes": 170262584,
+            "allocations": 957734,
+            "source": "run-1-before-index.txt"
+          },
+          {
+            "ns": 364164650,
+            "allocated_bytes": 170262568,
+            "allocations": 957734,
+            "source": "run-4-before-index.txt"
+          },
+          {
+            "ns": 363268550,
+            "allocated_bytes": 170263268,
+            "allocations": 957735,
+            "source": "run-5-before-index.txt"
+          }
+        ],
+        "after": [
+          {
+            "ns": 37602800,
+            "allocated_bytes": 37835908,
+            "allocations": 891,
+            "source": "run-2-after-index.txt"
+          },
+          {
+            "ns": 37776933,
+            "allocated_bytes": 37845422,
+            "allocations": 891,
+            "source": "run-3-after-index.txt"
+          },
+          {
+            "ns": 44151300,
+            "allocated_bytes": 37842784,
+            "allocations": 891,
+            "source": "run-6-after-index.txt"
+          }
+        ]
+      }
+    },
+    "BenchmarkDuplicateVerify/SmallPairs": {
+      "median": {
+        "before": {
+          "ns": 39968845,
+          "allocated_bytes": 1245256,
+          "allocations": 8724
+        },
+        "after": {
+          "ns": 23481247,
+          "allocated_bytes": 1213698,
+          "allocations": 6985
+        }
+      },
+      "speedup": 1.7021602387641508,
+      "allocation_reduction_percent": 2.534258016022406,
+      "runs": {
+        "before": [
+          {
+            "ns": 39968845,
+            "allocated_bytes": 1245256,
+            "allocations": 8725,
+            "source": "run-1-before-index.txt"
+          },
+          {
+            "ns": 40340068,
+            "allocated_bytes": 1244735,
+            "allocations": 8723,
+            "source": "run-4-before-index.txt"
+          },
+          {
+            "ns": 38937076,
+            "allocated_bytes": 1245262,
+            "allocations": 8724,
+            "source": "run-5-before-index.txt"
+          }
+        ],
+        "after": [
+          {
+            "ns": 23481247,
+            "allocated_bytes": 1213698,
+            "allocations": 6985,
+            "source": "run-2-after-index.txt"
+          },
+          {
+            "ns": 22213719,
+            "allocated_bytes": 1213571,
+            "allocations": 6985,
+            "source": "run-3-after-index.txt"
+          },
+          {
+            "ns": 27394510,
+            "allocated_bytes": 1214008,
+            "allocations": 6987,
+            "source": "run-6-after-index.txt"
+          }
+        ]
+      }
+    },
+    "BenchmarkDuplicateVerify/SharedHeader": {
+      "median": {
+        "before": {
+          "ns": 35109679,
+          "allocated_bytes": 829887,
+          "allocations": 1686
+        },
+        "after": {
+          "ns": 12187870,
+          "allocated_bytes": 730662,
+          "allocations": 1110
+        }
+      },
+      "speedup": 2.880706719057555,
+      "allocation_reduction_percent": 11.956447082554611,
+      "runs": {
+        "before": [
+          {
+            "ns": 35109679,
+            "allocated_bytes": 830097,
+            "allocations": 1686,
+            "source": "run-1-before-index.txt"
+          },
+          {
+            "ns": 35423241,
+            "allocated_bytes": 829848,
+            "allocations": 1687,
+            "source": "run-4-before-index.txt"
+          },
+          {
+            "ns": 35053855,
+            "allocated_bytes": 829887,
+            "allocations": 1686,
+            "source": "run-5-before-index.txt"
+          }
+        ],
+        "after": [
+          {
+            "ns": 12221315,
+            "allocated_bytes": 730681,
+            "allocations": 1111,
+            "source": "run-2-after-index.txt"
+          },
+          {
+            "ns": 12187870,
+            "allocated_bytes": 730662,
+            "allocations": 1110,
+            "source": "run-3-after-index.txt"
+          },
+          {
+            "ns": 12120355,
+            "allocated_bytes": 730598,
+            "allocations": 1110,
+            "source": "run-6-after-index.txt"
+          }
+        ]
+      }
+    },
+    "BenchmarkDuplicateVerify/AllCopies": {
+      "median": {
+        "before": {
+          "ns": 35021777,
+          "allocated_bytes": 824152,
+          "allocations": 1617
+        },
+        "after": {
+          "ns": 34891924,
+          "allocated_bytes": 823859,
+          "allocations": 1611
+        }
+      },
+      "speedup": 1.0037215775203454,
+      "allocation_reduction_percent": 0.03555169434764638,
+      "runs": {
+        "before": [
+          {
+            "ns": 34744443,
+            "allocated_bytes": 824004,
+            "allocations": 1616,
+            "source": "run-1-before-index.txt"
+          },
+          {
+            "ns": 35502632,
+            "allocated_bytes": 824152,
+            "allocations": 1617,
+            "source": "run-4-before-index.txt"
+          },
+          {
+            "ns": 35021777,
+            "allocated_bytes": 824493,
+            "allocations": 1618,
+            "source": "run-5-before-index.txt"
+          }
+        ],
+        "after": [
+          {
+            "ns": 34663259,
+            "allocated_bytes": 823600,
+            "allocations": 1610,
+            "source": "run-2-after-index.txt"
+          },
+          {
+            "ns": 35017546,
+            "allocated_bytes": 823882,
+            "allocations": 1611,
+            "source": "run-3-after-index.txt"
+          },
+          {
+            "ns": 34891924,
+            "allocated_bytes": 823859,
+            "allocations": 1611,
+            "source": "run-6-after-index.txt"
+          }
+        ]
+      }
+    },
+    "BenchmarkDuplicateFilesReady/Synthetic1M": {
+      "median": {
+        "before": {
+          "ns": 371800000,
+          "allocated_bytes": 235003064,
+          "allocations": 1906571
+        },
+        "after": {
+          "ns": 37894843,
+          "allocated_bytes": 42887931,
+          "allocations": 1399
+        }
+      },
+      "speedup": 9.811361403450068,
+      "allocation_reduction_percent": 81.75005454396968,
+      "runs": {
+        "before": [
+          {
+            "ns": 370532100,
+            "allocated_bytes": 236093556,
+            "allocations": 1906608,
+            "source": "run-1-before-ui.txt"
+          },
+          {
+            "ns": 377131150,
+            "allocated_bytes": 235003064,
+            "allocations": 1906571,
+            "source": "run-4-before-ui.txt"
+          },
+          {
+            "ns": 371800000,
+            "allocated_bytes": 234315904,
+            "allocations": 1906549,
+            "source": "run-5-before-ui.txt"
+          }
+        ],
+        "after": [
+          {
+            "ns": 37894843,
+            "allocated_bytes": 42887931,
+            "allocations": 1401,
+            "source": "run-2-after-ui.txt"
+          },
+          {
+            "ns": 34700624,
+            "allocated_bytes": 42883494,
+            "allocations": 1396,
+            "source": "run-3-after-ui.txt"
+          },
+          {
+            "ns": 41456350,
+            "allocated_bytes": 42892204,
+            "allocations": 1399,
+            "source": "run-6-after-ui.txt"
+          }
+        ]
+      }
+    },
+    "BenchmarkDuplicateFilesReady/SavedScan": {
+      "median": {
+        "before": {
+          "ns": 488206850,
+          "allocated_bytes": 205888960,
+          "allocations": 959936
+        },
+        "after": {
+          "ns": 87589300,
+          "allocated_bytes": 48991944,
+          "allocations": 1935
+        }
+      },
+      "speedup": 5.5738183773588785,
+      "allocation_reduction_percent": 76.20467654020887,
+      "runs": {
+        "before": [
+          {
+            "ns": 488206850,
+            "allocated_bytes": 205888960,
+            "allocations": 959936,
+            "source": "run-1-before-ui.txt"
+          },
+          {
+            "ns": 473080100,
+            "allocated_bytes": 205944824,
+            "allocations": 959937,
+            "source": "run-4-before-ui.txt"
+          },
+          {
+            "ns": 489269000,
+            "allocated_bytes": 205864044,
+            "allocations": 959927,
+            "source": "run-5-before-ui.txt"
+          }
+        ],
+        "after": [
+          {
+            "ns": 85255900,
+            "allocated_bytes": 48991944,
+            "allocations": 1933,
+            "source": "run-2-after-ui.txt"
+          },
+          {
+            "ns": 87589300,
+            "allocated_bytes": 49014185,
+            "allocations": 1939,
+            "source": "run-3-after-ui.txt"
+          },
+          {
+            "ns": 99785525,
+            "allocated_bytes": 48986208,
+            "allocations": 1935,
+            "source": "run-6-after-ui.txt"
+          }
+        ]
+      }
+    }
+  },
+  "environment": {
+    "date": "2026-10-31",
+    "os": "windows/amd64",
+    "go": "1.27.2",
+    "cpu": "Intel Core i5-12400F",
+    "cores": 6,
+    "logical_processors": 12,
+    "ram_bytes": 17030299648,
+    "baseline": "working tree at start of this performance request, including metadata-only duplicate default"
+  },
+  "saved_scan_parity": {
+    "candidates": 415199,
+    "files": 1115623,
+    "groups": 95607,
+    "nodes": 1452146,
+    "ordered_sha256": "fec83c55a433bf88b24ce8a2f77a5be802bf821712c4c3067355b1e10c648d39",
+    "root": "C:\\"
+  },
+  "saved_scan_sha256": "d47d7e07795011538cc9c01c5c174e01b281482a10d9bcb28926e95f09d3509d"
+}

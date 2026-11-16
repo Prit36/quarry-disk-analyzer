@@ -8,7 +8,7 @@ Continue using the existing GitHub repository. The publication cleanup removes `
 
 A Git rewrite does not remove separately uploaded release binaries, release screenshots, pull-request references, forks or cached objects. Review older release downloads before making the repository public, particularly releases made before the Quarry rebrand. GitHub may retain old objects accessible by their original IDs even after a force push.
 
-Build and test using Go 1.27.1 or later. `scripts/build.ps1 -Portable` includes the application license and dependency notices. `scripts/export-public.ps1` remains an optional way to export the current source without Git metadata; a new repository is not required.
+Build and test using Go 1.27.4 or later. `scripts/build.ps1 -Portable` includes the application license and dependency notices. `scripts/export-public.ps1` remains an optional way to export the current source without Git metadata; a new repository is not required.
 
 ## Scope and remaining ownership review
 

@@ -1,14 +1,15 @@
 Quarry contains or links the following third-party components:
 
-MyGO v0.5.5 — https://github.com/egoist/mygo
-purego v0.11.1 — https://github.com/ebitengine/purego
+MyGO v0.9.2 — https://github.com/egoist/mygo
+purego v0.11.3 — https://github.com/ebitengine/purego
 go-text/typesetting v0.3.5 — https://github.com/go-text/typesetting
-golang.org/x/image v0.46.0 — https://go.googlesource.com/image
-golang.org/x/text v0.43.0 — https://go.googlesource.com/text
-golang.org/x/sys v0.48.0 — https://go.googlesource.com/sys
+golang.org/x/image v0.48.0 — https://go.googlesource.com/image
+golang.org/x/net v0.62.0 — https://go.googlesource.com/net
+golang.org/x/text v0.44.0 — https://go.googlesource.com/text
+golang.org/x/sys v0.50.0 — https://go.googlesource.com/sys
 Fluent UI System Icons — https://github.com/microsoft/fluentui-system-icons
 
-Their license texts accompany this notice. Go's runtime license is included
+Their license texts accompany this notice. Go 1.27.4's runtime license is included
 as go-LICENSE.txt. Quarry's original source and generated artwork are licensed
 under MIT; see the repository LICENSE or the distributed Quarry-LICENSE.txt.
 Third-party components retain their respective copyright and license terms.

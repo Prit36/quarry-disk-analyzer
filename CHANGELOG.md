@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.0.4 — 2026-11-16
+
+- Use Go 1.27.4, MyGO 0.9.2 and updated runtime and packaging dependencies.
+- Refresh bundled dependency license notices and build requirements.
+- Include duplicate detection and memory performance reports and benchmarks.
+- Resume the 0.0.x release series; this release supersedes 0.2.6.
+
 ## Unreleased
 
 - **Scan comparison by folder.** Tools → Compare with Saved Scan lists what was
