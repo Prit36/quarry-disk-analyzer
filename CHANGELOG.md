@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.0.5 - 2026-11-17
+
+- Keep MyGo's default menu appearance and behavior without overrides or dependency patches.
+- Align the About dialog and CLI version with the 0.0.x release series.
+
 ## 0.0.4 — 2026-11-16
 
 - Use Go 1.27.4, MyGO 0.9.2 and updated runtime and packaging dependencies.
